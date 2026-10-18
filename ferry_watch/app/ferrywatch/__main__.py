@@ -235,6 +235,7 @@ class FerryWatch:
                 **self.tracker.ship_summary(ship["mmsi"]),
                 "name": ship["name"],
                 "color": ship["color"],
+                "alerts": self.store.alerts_on(ship["mmsi"]),
                 "photo": self.photos.public_info(ship["mmsi"]) if self.photos else None,
             })
         fleet_ships = []
@@ -298,6 +299,7 @@ class FerryWatch:
         used = {s["color"] for s in self.store.ships()}
         color = next((c for c in EXTRA_COLORS if c not in used), EXTRA_COLORS[len(used) % len(EXTRA_COLORS)])
         self.store.add_ship(mmsi, name, color)
+        self.store.set_alerts(mmsi, False)  # only the four ferries alert unless switched on
         self.tracker.load()
         self.fleet_tracker.load()
         self.feed.sync_subscriptions()

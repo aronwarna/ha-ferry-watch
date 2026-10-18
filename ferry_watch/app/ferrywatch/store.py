@@ -142,12 +142,28 @@ class Store:
         self.db.execute("DELETE FROM ships WHERE mmsi = ?", (mmsi,))
         self.db.commit()
 
+    # Ships that never send phone alerts. The four ferries alert; ships added later don't
+    # until their Alerts switch is turned on.
+    def alerts_on(self, mmsi: int) -> bool:
+        return mmsi not in self.kv_get("quiet_ships", [])
+
+    def set_alerts(self, mmsi: int, on: bool) -> None:
+        quiet = set(self.kv_get("quiet_ships", []))
+        if on:
+            quiet.discard(mmsi)
+        else:
+            quiet.add(mmsi)
+        self.kv_set("quiet_ships", sorted(quiet))
+
     def change_mmsi(self, old: int, new: int) -> None:
         """Move a ship and its history to a new MMSI (after a re-flag)."""
         with self.db:
             for table in ("ships", "positions", "voyages", "passages"):
                 self.db.execute(f"UPDATE {table} SET mmsi = ? WHERE mmsi = ?", (new, old))
             self.db.execute("UPDATE ships SET auto_resolve = 0 WHERE mmsi = ?", (new,))
+        if not self.alerts_on(old):
+            self.set_alerts(old, True)
+            self.set_alerts(new, False)
 
     # --- positions -------------------------------------------------------
 

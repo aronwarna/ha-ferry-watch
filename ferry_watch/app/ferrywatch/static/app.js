@@ -702,6 +702,24 @@
       sub.className = "muted small";
       sub.textContent = `MMSI ${info.mmsi} · ${info.position ? `last report ${ago(info.position.ts)}` : "no data yet"}`;
       grow.append(name, sub);
+      // Inner-route alerts per ship: on for the four ferries, off for ships added later.
+      const alerts = document.createElement("label");
+      alerts.className = "alert-switch small";
+      alerts.title = "Send a phone alert when this ship takes the inner route";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.className = "switch";
+      toggle.checked = info.alerts !== false;
+      toggle.addEventListener("change", async () => {
+        toggle.disabled = true;
+        try {
+          await api(`api/ships/${info.mmsi}/alerts`, { method: "POST", body: { enabled: toggle.checked } });
+          info.alerts = toggle.checked;
+        } finally {
+          toggle.disabled = false;
+        }
+      });
+      alerts.append("Alerts", toggle);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.textContent = "Remove";
@@ -710,7 +728,7 @@
         await fetch(`api/ships/${info.mmsi}`, { method: "DELETE" });
         await loadState();
       });
-      li.append(dot, grow, remove);
+      li.append(dot, grow, alerts, remove);
       return li;
     }));
   }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6
+
+- Alerts switch per ship in the Ships tab. The four ferries alert; ships you
+  add later are tracked and counted but don't alert unless you switch it on.
+  Fleet, followed and rescue ships never alert.
+
 ## 0.6.5
 
 - Chart showed only chart series A (east of Helsinki). It now stacks

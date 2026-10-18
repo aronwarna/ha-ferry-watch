@@ -145,3 +145,43 @@ def test_feed_warnings_only_by_day():
     night = dt.datetime(2026, 10, 18, 3, 0).timestamp()
     assert notify.feed_warning_hours(day)
     assert not notify.feed_warning_hours(night)
+
+
+def test_two_inner_lines_alert_once_per_trip_with_direction(tmp_path, monkeypatch):
+    """Wiring as in the app: only the main tracker (my ships) feeds the detector."""
+    from ferrywatch.passages import Detector
+    fw, n = make_fw(tmp_path, monkeypatch)
+    store = fw.store
+    store.add_zone("Inner west end", "inner", "line", [[60.05, 24.30], [59.95, 24.30]])
+    store.add_zone("Inner east end", "inner", "line", [[60.05, 24.50], [59.95, 24.50]])
+    store.add_ship(230000999, "Some tanker", "#000000")
+    store.set_alerts(230000999, False)
+    tracker = Tracker(store)
+    tracker.load()
+    fleet = Tracker(store, members=lambda: {276000101})
+    fleet.load()
+    passages = []
+    detector = Detector(store, passages.append)
+    tracker.subscribe(detector.on_event)
+
+    async def run():
+        now = int(time.time())  # after make_fw's earlier reports
+        for i in range(20):  # westbound through both lines, a report a minute
+            lon = 24.60 - i * 0.02
+            for mmsi in (MMSI, 230000999):
+                tracker.on_location(mmsi, {"time": now + i * 60, "lat": 60.0, "lon": lon, "sog": 17.0,
+                                           "cog": 270.0, "heading": 270})
+            fleet.on_location(276000101, {"time": now + i * 60, "lat": 60.0, "lon": lon, "sog": 25.0,
+                                          "cog": 270.0, "heading": 270})
+        for p in passages:
+            await n.handle(p)
+
+    asyncio.run(run())
+    by_ship = {}
+    for p in passages:
+        by_ship.setdefault(p["mmsi"], []).append(p)
+    assert set(by_ship) == {MMSI, 230000999}  # the fleet ship never counts
+    assert len(by_ship[MMSI]) == 1 and by_ship[MMSI][0]["direction"] == "west"  # second line: same trip
+    assert len(fw.ha.calls) == 1 and fw.ha.calls[0][1]["message"].startswith("Towards Stockholm")
+    notes = {r["mmsi"]: r["note"] for r in store.passages()}
+    assert notes[230000999] == "alerts off for this ship"

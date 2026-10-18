@@ -64,6 +64,8 @@ class Notifier:
         try:
             if passage["route"] != "inner":
                 return False, "outer route"
+            if not store.alerts_on(passage["mmsi"]):
+                return False, "alerts off for this ship"
             if not self.fw.ha:
                 return False, "Home Assistant not connected"
             if time.time() - passage["ts"] > MAX_PASSAGE_AGE:

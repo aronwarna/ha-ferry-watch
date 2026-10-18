@@ -75,6 +75,7 @@ class Web:
         r.add_post("/api/ships/{mmsi}/photo", self.upload_photo)
         r.add_post("/api/ships", self.add_ship)
         r.add_delete("/api/ships/{mmsi}", self.remove_ship)
+        r.add_post("/api/ships/{mmsi}/alerts", self.set_alerts)
         r.add_get("/api/search", self.search)
         r.add_get("/api/ws", self.websocket)
         r.add_get("/api/zones", self.zones)
@@ -204,6 +205,15 @@ class Web:
 
     async def unfollow(self, request: web.Request) -> web.Response:
         await self.fw.unfollow(_mmsi(request))
+        return web.json_response({"ok": True})
+
+    async def set_alerts(self, request: web.Request) -> web.Response:
+        mmsi = _mmsi(request)
+        if not self.fw.store.ship(mmsi):
+            raise web.HTTPNotFound()
+        body = await request.json()
+        self.fw.store.set_alerts(mmsi, bool(body.get("enabled")))
+        await self.broadcast_ships()
         return web.json_response({"ok": True})
 
     async def remove_ship(self, request: web.Request) -> web.Response:

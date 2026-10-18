@@ -84,6 +84,12 @@ minutes between two positions is not treated as a crossing.
 
 ## Notifications
 
+Only ships with **Alerts** switched on in the Ships tab send alerts: the four
+ferries by default. Ships you add later are tracked and counted in the stats
+but stay quiet until you switch it on. Fleet, followed and rescue ships never
+alert. The direction comes from which way the ship crossed the line: east is
+"towards Helsinki", west "towards Stockholm".
+
 The **Send a test notification** button in the menu's Ships tab (top right) sends a
 sample alert for the ship that moved most recently, and tells you whether a
 real alert would go out where your phone is now.
