@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2
+
+- Drawn chart: no more "Map data not yet available" around the chart. Esri's
+  ocean map has no detail past zoom 10 in the Baltic, so the ordinary map
+  takes over from zoom 11, and it shows faintly through the land for roads
+  and towns.
+- Fewer names until you zoom in: towns from zoom 11, islands from 12, bays and
+  sea areas from 13, other land names only from 15. Zoomed out (zoom 11) only
+  lit marks are shown, as on overview charts.
+
 ## 0.11.1
 
 - Drawn chart: leaves out railway-station style names such as

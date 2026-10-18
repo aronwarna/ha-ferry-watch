@@ -55,7 +55,7 @@ PAGE = 20000
 MAX_RESPONSE = 20 * 1024 * 1024  # bytes; more than this from one request is refused, to spare RAM
 MEMORY_BLOCKS = 6  # parsed blocks kept in RAM; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
-TILE_REV = 3  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 4  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # What to fetch: layer key -> (service, type name, kind, properties to keep)
@@ -484,7 +484,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         tile["sounding"] = _thin_soundings(tile["sounding"])
     if "aid" in tile:
         tile["aid"] = [[px, py, AID_TYPES.get(str(t or "").lower(), "o"), _int(cat), 1 if lit == "K" else 0, name]
-                       for px, py, t, cat, lit, name in tile["aid"]]
+                       for px, py, t, cat, lit, name in tile["aid"]
+                       if z >= 12 or lit == "K"]  # zoomed out, only lit marks, as on overview charts
     if "sector" in tile:
         # Light sectors: [x, y, from°, to°, colour], bearings towards the light as charts give them.
         tile["sector"] = [[px, py, a, b, str(c or "v")] for px, py, a, b, c in
@@ -509,24 +510,49 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             text = str(text or "")
             if not text or ("," in text and text.isupper()):
                 continue  # e.g. "HANKO, POHJOINEN": station names, not chart names
-            kind = _name_kind(_int(code))
-            if z < 12 and kind != "s":
-                continue  # only towns and villages when zoomed out
-            names.append([px, py, str(text), kind, 0 if lang in (None, "fin", "fi") else 1])
+            code = _int(code)
+            kind = _name_kind(code, text)
+            if z < _name_min_z(code, kind, text):
+                continue
+            names.append([px, py, text, kind, 0 if lang in (None, "fin", "fi") else 1])
         # Finnish first, so where both languages share a spot the panel keeps the Finnish one.
         tile["name"] = [row[:4] for row in sorted(names, key=lambda r: r[4])]
     return {k: v for k, v in tile.items() if v != []}
 
 
-def _name_kind(code: int | None) -> str:
-    """Name class for the panel: s settlement, w water, l land (islands, capes ...)."""
-    if code is None:
-        return "l"
-    if 48000 <= code < 49000:
+# Name endings that mark islands, islets and capes, or bays and open water, in Finnish and
+# Swedish: a fallback for when the feature class doesn't say.
+ISLAND_ENDINGS = ("skär", "skäret", "holm", "holmen", "holmarna", "ö", "ön", "öarna", "saari", "saaret",
+                  "luoto", "luodot", "kari", "karit", "klobb", "klobben", "kobb", "kobben", "kobbarna",
+                  "harun", "hällen", "grund", "grundet", "grynnan", "båda", "bådan", "udd", "udden",
+                  "niemi", "näs", "näset", "kallio", "lands", "landet")
+WATER_ENDINGS = ("fjärd", "fjärden", "viken", "vik", "selkä", "lahti", "sund", "sundet", "salmi",
+                 "fladan", "träsk", "träsket", "järvi", "bukt", "bukten", "strömmen", "ström", "selet")
+
+
+def _name_kind(code: int | None, text: str = "") -> str:
+    """Name class for the panel: s settlement, w water, i island or cape, l other land."""
+    low = text.lower()
+    if code is not None and 48000 <= code < 49000:
         return "s"
-    if 36000 <= code < 37000:
+    if (code is not None and 36000 <= code < 37000) or low.endswith(WATER_ENDINGS):
         return "w"
+    if code in (35060, 35070) or low.endswith(ISLAND_ENDINGS):
+        return "i"
     return "l"
+
+
+def _name_min_z(code: int | None, kind: str, text: str) -> int:
+    """Zoom from which a name shows: islands and sea areas first, inland names only up close."""
+    if kind == "s":
+        return 11 if code in (48111, 48112) else 13
+    if text.isupper():
+        return 16  # all-capital names are mostly stations, airports and the like
+    if kind == "i":
+        return 12
+    if kind == "w":
+        return 13
+    return 15
 
 
 def _int(value: Any) -> int | None:

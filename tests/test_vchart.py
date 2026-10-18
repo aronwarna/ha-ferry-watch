@@ -218,7 +218,7 @@ def test_rocks_wrecks_names_and_lights(tmp_path):
         tile, ok = await chart.tile(*tile_at(60.005, 24.4, 13))
         assert ok
         assert tile["rock"] and {r[2] for r in tile["rock"]} <= {1, 2, 3}
-        assert any(n[2] == "Rönnskari" and n[3] == "l" for n in tile["name"])
+        assert any(n[2] == "Rönnskari" and n[3] == "i" for n in tile["name"])
         # Finnish names come before Swedish ones, so the Finnish one wins a shared spot.
         names = [n[2] for n in tile["name"]]
         assert names.index("Rönnskari") < names.index("Rönnskär")
@@ -252,9 +252,41 @@ def test_adding_a_key_fetches_only_the_new_part(tmp_path):
 
 
 def test_station_names_are_left_out():
-    rows = {"name": [[[ "HANKO, POHJOINEN", "fin", 48120], 100.0, 100.0], [["Hanko", "fin", 48120], 200.0, 200.0]]}
+    rows = {"name": [[[ "HANKO, POHJOINEN", "fin", 48120], 100.0, 100.0], [["Hanko", "fin", 48111], 200.0, 200.0]]}
     tile = vchart.make_tile(11, 0, 0, {(0, 0): rows})
     assert [n[2] for n in tile["name"]] == ["Hanko"]
+
+
+def test_names_appear_by_zoom():
+    rows = {"name": [
+        [["Granskär", "swe", None], 100.0, 100.0],         # island, by its ending
+        [["Västerfjärden", "swe", 36490], 300.0, 300.0],    # water
+        [["Stormossen", "swe", 35010], 500.0, 500.0],       # inland
+        [["HANGON LENTOKENTTÄ", "fin", 35010], 700.0, 700.0],
+        [["Hanko", "fin", 48111], 900.0, 900.0],            # town
+    ]}
+
+    def names(z):
+        return sorted(r[2] for r in vchart.make_tile(z, 0, 0, {(0, 0): rows}).get("name", []))
+
+    assert names(11) == ["Hanko"]
+    assert names(12) == ["Granskär", "Hanko"]
+    assert names(13) == ["Granskär", "Hanko", "Västerfjärden"]
+    assert names(15) == ["Granskär", "Hanko", "Stormossen", "Västerfjärden"]
+    assert "HANGON LENTOKENTTÄ" in names(16)
+
+
+def test_unlit_marks_hidden_when_zoomed_out(tmp_path):
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer)
+        z, x, y = tile_at(60.0, 24.4, 11)
+        out, _ = await chart.tile(z, x, y)
+        assert out["aid"] and all(a[4] == 1 for a in out["aid"])
+        near = [a for i in (0, 1) for j in (0, 1)
+                for a in (await chart.tile(12, 2 * x + i, 2 * y + j))[0].get("aid", [])]
+        assert any(a[4] == 0 for a in near)
+
+    asyncio.run(run())
 
 
 def test_mml_features_are_converted_to_mercator():

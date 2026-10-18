@@ -8,7 +8,7 @@
   "use strict";
 
   const C = {
-    land: "#f6e7ad",
+    land: "rgba(246, 231, 173, 0.78)", // see-through, so the map's roads and towns show faintly
     coast: "rgba(70, 64, 40, 0.95)",
     depth: ["#c9e0b4", "#a6d1f0", "#c4e2f6", "#e1f0fa", "#ffffff"], // drying, 0-3, 3-6, 6-10, deeper
     contour: "#3b8fcc",

@@ -48,17 +48,19 @@
   // charts already draw their own.
   const oceanBase = () => L.layerGroup([
     L.tileLayer(`${ESRI}/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}`, {
-      maxZoom: 13, referrerPolicy: REFERRER, zIndex: 1, className: "chart-under",
+      maxZoom: 10, referrerPolicy: REFERRER, zIndex: 1, className: "chart-under",
       attribution: "Ocean © Esri, GEBCO, NOAA, Garmin",
     }),
-    // The ocean map stops at zoom 13; closer in, the ordinary map takes over.
+    // In the Baltic the ocean map has no detail past zoom 10 ("Map data not yet
+    // available"); closer in, the ordinary map takes over, which also gives the
+    // drawn chart's land its roads and towns.
     L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
-      minZoom: 14, maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
+      minZoom: 11, maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
       className: "chart-under", attribution: "© Esri, HERE, Garmin, OpenStreetMap",
     }),
   ]);
   const oceanLabels = (zIndex) => L.tileLayer(`${ESRI}/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}`, {
-    maxZoom: 13, referrerPolicy: REFERRER, zIndex,
+    maxZoom: 10, referrerPolicy: REFERRER, zIndex,
   });
   const seamarksAbroad = () => L.tileLayer("api/tiles/seamark-abroad/{z}/{x}/{y}.png", {
     maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
