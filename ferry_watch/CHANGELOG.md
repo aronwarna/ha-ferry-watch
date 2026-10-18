@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- Stats can be grouped by years, months, weeks, weekdays or hours, with the
+  busiest one named under the chart. Tap a bar to see just that period.
+- Tap a month to get a calendar of it: each day shows a dot per inner-route
+  passage in the ship's colour; tap a day to see that day's passages.
+
 ## 0.6.6
 
 - Alerts switch per ship in the Ships tab. The four ferries alert; ships you

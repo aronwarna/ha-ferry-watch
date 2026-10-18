@@ -407,3 +407,30 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 }
 @media (prefers-reduced-motion: reduce) { .air-badge { animation: none; } }
 .alert-switch { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; color: var(--muted); margin-right: 8px; }
+
+/* Stats: grouping buttons and the month calendar */
+.stats-views { display: flex; flex-wrap: wrap; margin-top: 8px; width: fit-content; max-width: 100%; }
+.stats-views button { font-size: 12px; padding: 4px 9px; }
+.stats-calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 10px; }
+.cal-head { font-size: 11px; color: var(--muted); text-align: center; }
+.cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-height: 40px;
+  padding: 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cal-day.has { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.cal-day.today { border-color: var(--accent); }
+.cal-day.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cal-dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; max-width: 30px; }
+.cal-dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+.cal-day.selected .cal-dots i { box-shadow: 0 0 0 1px #fff; }

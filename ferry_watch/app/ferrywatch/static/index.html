@@ -133,7 +133,15 @@
         <select id="stats-year" aria-label="Year" hidden></select>
       </div>
       <p class="small muted" id="stats-summary"></p>
+      <div class="segmented stats-views" role="group" aria-label="Group by">
+        <button type="button" data-stats-view="year">Years</button>
+        <button type="button" data-stats-view="month">Months</button>
+        <button type="button" data-stats-view="week">Weeks</button>
+        <button type="button" data-stats-view="weekday">Weekdays</button>
+        <button type="button" data-stats-view="hour">Hours</button>
+      </div>
       <div id="stats-chart" class="stats-chart"></div>
+      <div id="stats-calendar" class="stats-calendar" hidden></div>
       <p class="small muted" id="stats-scope"></p>
       <ul id="stats-ships" class="ships-list stats-ships"></ul>
       <h3>Recent passages</h3>

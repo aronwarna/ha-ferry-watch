@@ -1150,7 +1150,27 @@
   const MONTHS_LONG = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "long" }));
   let statsData = null;
   let statsYear = new Date().getFullYear();
-  let statsMonth = null; // 0-11, or null for the whole year
+  let statsView = "month"; // year, month, week, weekday or hour
+  let statsPick = null; // the bar tapped in the current view, or null for all
+  let statsDay = null; // a day tapped in the month calendar
+  const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const WEEKDAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+  function isoWeek(d) {
+    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+    return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
+  }
+
+  // Bars for each view: the keys along the axis, a short label, and a long name.
+  function statsAxis(view, years) {
+    const range = (n) => Array.from({ length: n }, (_, i) => i);
+    if (view === "year") return years.map((y) => ({ key: y, label: String(y), name: String(y) }));
+    if (view === "week") return range(53).map((w) => ({ key: w + 1, label: (w + 1) % 4 === 1 ? String(w + 1) : "", name: `week ${w + 1}` }));
+    if (view === "weekday") return range(7).map((d) => ({ key: d, label: WEEKDAYS[d], name: `${WEEKDAYS_LONG[d]}s` }));
+    if (view === "hour") return range(24).map((h) => ({ key: h, label: h % 3 === 0 ? String(h).padStart(2, "0") : "", name: `${hhmm(h * 60)}–${hhmm((h + 1) * 60 % 1440)}` }));
+    return range(12).map((m) => ({ key: m, label: MONTHS[m], name: MONTHS_LONG[m] }));
+  }
 
   const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const hhmm = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
@@ -1180,7 +1200,7 @@
     const years = new Set(data.passages.map(([ts]) => new Date(ts * 1000).getFullYear()));
     years.add(new Date().getFullYear());
     const sorted = [...years].sort((a, b) => b - a);
-    if (!years.has(statsYear)) statsYear = sorted[0];
+    if (!years.has(statsYear)) { statsYear = sorted[0]; statsPick = null; }
     const select = $("stats-year");
     select.replaceChildren(...sorted.map((y) => new Option(String(y), String(y), false, y === statsYear)));
     select.hidden = sorted.length < 2;
@@ -1189,65 +1209,162 @@
 
   $("stats-year").addEventListener("change", (ev) => {
     statsYear = Number(ev.target.value);
-    statsMonth = null;
+    statsPick = null;
     renderStats();
   });
 
+  document.querySelectorAll("[data-stats-view]").forEach((b) => b.addEventListener("click", () => {
+    statsView = b.dataset.statsView;
+    statsPick = null;
+    store.set("fw-stats-view", statsView);
+    renderStats();
+  }));
+  statsView = store.get("fw-stats-view") || "month";
+
   function renderStats() {
-    const rows = statsData.passages.map(([ts, mmsi, route, direction]) => {
+    const all = statsData.passages.map(([ts, mmsi, route, direction]) => {
       const d = new Date(ts * 1000);
-      return { mmsi, route, direction, year: d.getFullYear(), month: d.getMonth(), minute: d.getHours() * 60 + d.getMinutes() };
-    }).filter((p) => p.year === statsYear);
+      return {
+        mmsi, route, direction, ts,
+        year: d.getFullYear(), month: d.getMonth(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
+        hour: d.getHours(), minute: d.getHours() * 60 + d.getMinutes(),
+      };
+    });
+    const years = [...new Set([...all.map((p) => p.year), new Date().getFullYear()])].sort((a, b) => a - b);
+    // The Years view covers everything; the others cover the chosen year.
+    const rows = statsView === "year" ? all : all.filter((p) => p.year === statsYear);
     const inner = rows.filter((p) => p.route === "inner");
+    const axis = statsAxis(statsView, years);
     const today = new Date();
-    const isThisYear = statsYear === today.getFullYear();
+
+    document.querySelectorAll("[data-stats-view]").forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.statsView === statsView));
+    });
+    $("stats-year").hidden = statsView === "year" || years.length < 2;
 
     if (!statsData.passages.length) {
       $("stats-summary").textContent = "None yet. Passages are counted from when an inner-route line is in place.";
+    } else if (statsView === "year") {
+      $("stats-summary").textContent = `${inner.length} since ${new Date(all[0].ts * 1000).toLocaleDateString([], { dateStyle: "medium" })}`;
     } else {
       const parts = [`${inner.length} in ${statsYear}`];
-      if (isThisYear) parts.push(`${inner.filter((p) => p.month === today.getMonth()).length} in ${MONTHS_LONG[today.getMonth()]}`);
+      if (statsYear === today.getFullYear()) {
+        parts.push(`${inner.filter((p) => p.month === today.getMonth()).length} in ${MONTHS_LONG[today.getMonth()]}`);
+        parts.push(`${inner.filter((p) => p.week === isoWeek(today)).length} this week`);
+      }
       $("stats-summary").textContent = parts.join(" · ");
     }
-    renderStatsChart(inner, isThisYear ? today.getMonth() : 11);
-    $("stats-scope").textContent = statsMonth === null
-      ? (inner.length ? "Tap a month to see it on its own." : "")
-      : `${MONTHS_LONG[statsMonth]} ${statsYear}. Tap it again for the whole year.`;
-    renderStatsShips(statsMonth === null ? rows : rows.filter((p) => p.month === statsMonth));
+
+    const counts = new Map(axis.map((a) => [a.key, new Map()]));
+    for (const p of inner) {
+      const bucket = counts.get(p[statsView]);
+      if (bucket) bucket.set(p.mmsi, (bucket.get(p.mmsi) || 0) + 1);
+    }
+    const totals = axis.map((a) => [...counts.get(a.key).values()].reduce((x, y) => x + y, 0));
+    renderStatsChart(axis, counts, totals);
+
+    const best = Math.max(0, ...totals);
+    const busiest = axis.filter((a, i) => totals[i] === best && best > 0).map((a) => a.name);
+    const busyText = busiest.length && busiest.length < axis.length / 2 ? `Busiest: ${busiest.join(", ")} (${best}). ` : "";
+    const picked = axis.find((a) => a.key === statsPick);
+    const inMonth = statsView === "month" && picked;
+    if (!inMonth) statsDay = null;
+    renderCalendar(inMonth ? inner.filter((p) => p.month === statsPick) : null);
+    let scope = picked ? rows.filter((p) => p[statsView] === statsPick) : rows;
+    if (statsDay) {
+      scope = scope.filter((p) => new Date(p.ts * 1000).getDate() === statsDay);
+      $("stats-scope").textContent = `${statsDay} ${picked.name} ${statsYear}. Tap the day again for the whole month.`;
+    } else {
+      $("stats-scope").textContent = picked
+        ? `${picked.name}${statsView === "year" ? "" : `, ${statsYear}`}. ${inMonth ? "Tap a day to see it on its own, or the month again for all." : "Tap it again for all."}`
+        : (inner.length ? `${busyText}Tap a bar to see it on its own.` : "");
+    }
+    renderStatsShips(scope);
   }
 
-  function renderStatsChart(inner, lastMonth) {
-    const W = 360, H = 140, TOP = 16, BOTTOM = 20, GAP = 6;
-    const col = W / 12;
-    const counts = Array.from({ length: 12 }, () => new Map());
-    for (const p of inner) counts[p.month].set(p.mmsi, (counts[p.month].get(p.mmsi) || 0) + 1);
-    const totals = counts.map((m) => [...m.values()].reduce((a, b) => a + b, 0));
+  // A month as a calendar: each day shows a dot per inner passage in the ship's colour.
+  function renderCalendar(inner) {
+    const box = $("stats-calendar");
+    box.hidden = !inner;
+    if (!inner) { box.replaceChildren(); return; }
+    const first = new Date(statsYear, statsPick, 1);
+    const days = new Date(statsYear, statsPick + 1, 0).getDate();
+    const byDay = new Map();
+    for (const p of inner) {
+      const d = new Date(p.ts * 1000).getDate();
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(p);
+    }
+    const colors = new Map(statsData.ships.map((s) => [s.mmsi, s.color]));
+    const today = new Date();
+    const cells = WEEKDAYS.map((w) => {
+      const head = document.createElement("span");
+      head.className = "cal-head";
+      head.textContent = w[0];
+      return head;
+    });
+    for (let i = 0; i < (first.getDay() + 6) % 7; i++) cells.push(document.createElement("span"));
+    for (let d = 1; d <= days; d++) {
+      const list = byDay.get(d) || [];
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "cal-day";
+      if (list.length) cell.classList.add("has");
+      if (statsDay === d) cell.classList.add("selected");
+      if (today.getFullYear() === statsYear && today.getMonth() === statsPick && today.getDate() === d) cell.classList.add("today");
+      cell.setAttribute("aria-label", `${d} ${MONTHS_LONG[statsPick]}: ${list.length} inner passages`);
+      const num = document.createElement("span");
+      num.textContent = String(d);
+      const dots = document.createElement("span");
+      dots.className = "cal-dots";
+      for (const p of list.sort((a, b) => a.ts - b.ts).slice(0, 6)) {
+        const dot = document.createElement("i");
+        dot.style.background = colors.get(p.mmsi) || "#64748b";
+        dot.title = `${hhmm(p.minute)} ${DIRECTIONS[p.direction] || ""}`;
+        dots.append(dot);
+      }
+      cell.append(num, dots);
+      cell.addEventListener("click", () => {
+        statsDay = statsDay === d ? null : d;
+        renderStats();
+      });
+      cells.push(cell);
+    }
+    box.replaceChildren(...cells);
+  }
+
+  function renderStatsChart(axis, counts, totals) {
+    const W = 360, H = 140, TOP = 16, BOTTOM = 20;
+    const col = W / axis.length;
+    const gap = Math.min(6, col * 0.25);
     const unit = (H - TOP - BOTTOM) / Math.max(1, ...totals);
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Inner route passages per month">`;
-    for (let m = 0; m < 12; m++) {
-      const x = m * col + GAP / 2, w = col - GAP, cx = x + w / 2;
-      const cls = ["month", statsMonth === m ? "selected" : "", statsMonth !== null && statsMonth !== m ? "dim" : "",
-        m > lastMonth ? "future" : ""].join(" ");
+    const showCounts = axis.length <= 12;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Inner route passages">`;
+    axis.forEach((a, i) => {
+      const x = i * col + gap / 2, w = col - gap, cx = x + w / 2;
+      const cls = ["bar", statsPick === a.key ? "selected" : "", statsPick !== null && statsPick !== a.key ? "dim" : ""].join(" ");
       let y = H - BOTTOM;
-      svg += `<g class="${cls}" data-month="${m}"><rect class="hit" x="${m * col}" y="0" width="${col}" height="${H}"/>`;
+      svg += `<g class="${cls}" data-key="${a.key}"><rect class="hit" x="${i * col}" y="0" width="${col}" height="${H}"><title>${esc(a.name)}: ${totals[i]}</title></rect>`;
       for (const ship of statsData.ships) {
-        const n = counts[m].get(ship.mmsi);
+        const n = counts.get(a.key).get(ship.mmsi);
         if (!n) continue;
         y -= n * unit;
         svg += `<rect x="${x}" y="${y}" width="${w}" height="${n * unit}" fill="${esc(ship.color)}"><title>${esc(ship.name)}: ${n}</title></rect>`;
       }
-      if (totals[m]) svg += `<text class="count" x="${cx}" y="${y - 4}">${totals[m]}</text>`;
-      svg += `<text class="label" x="${cx}" y="${H - 6}">${MONTHS[m]}</text></g>`;
-    }
+      if (showCounts && totals[i]) svg += `<text class="count" x="${cx}" y="${y - 4}">${totals[i]}</text>`;
+      if (a.label) svg += `<text class="label" x="${cx}" y="${H - 6}">${esc(a.label)}</text>`;
+      svg += "</g>";
+    });
     svg += `<line class="axis" x1="0" x2="${W}" y1="${H - BOTTOM}" y2="${H - BOTTOM}"/></svg>`;
     $("stats-chart").innerHTML = svg;
   }
 
   $("stats-chart").addEventListener("click", (ev) => {
-    const month = ev.target.closest("[data-month]");
-    if (!month) return;
-    const m = Number(month.dataset.month);
-    statsMonth = statsMonth === m ? null : m;
+    const bar = ev.target.closest("[data-key]");
+    if (!bar) return;
+    const key = Number(bar.dataset.key);
+    statsPick = statsPick === key ? null : key;
+    statsDay = null;
     renderStats();
   });
 
