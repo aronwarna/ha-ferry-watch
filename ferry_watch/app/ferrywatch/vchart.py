@@ -49,7 +49,7 @@ POINT_BUFFER = 64  # wider for points: symbols, light sectors and soundings reac
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
 PAGE = 20000
-MEMORY_BLOCKS = 12
+MEMORY_BLOCKS = 6  # parsed blocks kept in RAM; the rest are read from disk when needed
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # What to fetch: layer key -> (service, type name, kind, properties to keep)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- The drawn chart keeps at most 6 areas' data in memory (was 12), to stay light
+  on RAM; others are read back from the NAS's disk when needed.
+
 ## 0.9.0
 
 - New drawn chart, like the Luotsi app: the add-on draws the chart itself from
