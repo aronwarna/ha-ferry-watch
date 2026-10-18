@@ -25,7 +25,7 @@
       <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
       </button>
-      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships, stats and notifications" title="Ships, stats and notifications">
+      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships, stats and fleets" title="Ships, stats and fleets">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
       </button>
     </div>
@@ -49,9 +49,11 @@
       <p class="card-line strong" id="card-motion"></p>
       <p class="card-line" id="card-voyage"></p>
       <p class="card-line muted" id="card-seen"></p>
+      <p class="card-line muted" id="card-fleet" hidden></p>
       <div class="card-actions">
         <button type="button" id="card-zoom">Show whole track</button>
-        <label class="link-button">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
+        <label class="link-button" id="card-photo-label">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
+        <button type="button" class="link-button" id="card-follow" hidden>Add to my ships</button>
       </div>
     </div>
   </section>
@@ -96,6 +98,7 @@
       <div class="segmented tabs" role="tablist" aria-label="Menu">
         <button type="button" role="tab" data-tab="ships">Ships</button>
         <button type="button" role="tab" data-tab="stats">Stats</button>
+        <button type="button" role="tab" data-tab="fleets">Fleets</button>
       </div>
       <form method="dialog">
         <button class="icon-button plain" aria-label="Close">
@@ -126,6 +129,10 @@
       <h3>Recent passages</h3>
       <ul id="passages-list" class="ships-list passages"></ul>
       <p class="small"><a id="stats-csv" href="api/passages.csv" download="ferry-watch-passages.csv">Download all passages (CSV)</a></p>
+    </div>
+    <div data-pane="fleets" role="tabpanel" hidden>
+      <p class="small muted">Switched-on fleets are shown on the map with their current voyage. Switching one off stops following it.</p>
+      <div id="fleets-list"></div>
     </div>
   </dialog>
 

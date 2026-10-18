@@ -318,6 +318,42 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 .passages li.clickable { cursor: pointer; }
 .passages li.clickable:hover { background: rgba(127, 127, 127, 0.08); }
 
+/* Fleets */
+.fleet { margin-top: 14px; }
+.fleet-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.fleet-head .grow { flex: 1; }
+.fleet-ships li.clickable { cursor: pointer; }
+.fleet-ships li { font-size: 13px; }
+.switch {
+  appearance: none;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(127, 127, 127, 0.35);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex: 0 0 auto;
+  margin: 0;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+.switch:disabled { opacity: 0.6; }
+.ship-icon.fleet svg { opacity: 0.9; }
+.tabs button { padding: 5px 12px; }
+
 /* Touch screens pinch to zoom; the buttons would sit under the ship chips. */
 @media (pointer: coarse) {
   .leaflet-control-zoom { display: none; }

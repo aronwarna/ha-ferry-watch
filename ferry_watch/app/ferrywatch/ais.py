@@ -34,7 +34,8 @@ class DigitrafficFeed:
         self.loop = loop
         self.session = session
         self.store = store
-        self.tracker = tracker
+        self.tracker = tracker  # the configured ships
+        self.trackers = [tracker]  # plus the fleets, once added
         self.client: mqtt.Client | None = None
         self.subscribed: set[int] = set()
         self.connected = False
@@ -107,19 +108,28 @@ class DigitrafficFeed:
         kind = parts[2]
         self.loop.call_soon_threadsafe(self._dispatch, mmsi, kind, data)
 
+    def add_tracker(self, tracker: Tracker) -> None:
+        self.trackers.append(tracker)
+
     def _dispatch(self, mmsi: int, kind: str, data: dict[str, Any]) -> None:
         self.last_message_ts = time.time()
         self.message_count += 1
-        if kind.startswith("location"):
-            self.tracker.on_location(mmsi, data)
-        elif kind == "metadata":
-            self.tracker.on_metadata(mmsi, data)
+        for tracker in self.trackers:
+            if mmsi not in tracker.ships:
+                continue
+            if kind.startswith("location"):
+                tracker.on_location(mmsi, data)
+            elif kind == "metadata":
+                tracker.on_metadata(mmsi, data)
+
+    def wanted(self) -> set[int]:
+        return set().union(*(t.ships for t in self.trackers))
 
     def sync_subscriptions(self) -> None:
-        """Match MQTT subscriptions to the configured ships."""
+        """Match MQTT subscriptions to the ships the trackers follow."""
         if not self.client or not self.connected:
             return
-        wanted = set(self.tracker.ships)
+        wanted = self.wanted()
         for mmsi in self.subscribed - wanted:
             self.client.unsubscribe(self._topics(mmsi))
         for mmsi in wanted - self.subscribed:
@@ -136,8 +146,9 @@ class DigitrafficFeed:
 
     async def bootstrap(self, mmsis: list[int] | None = None) -> None:
         """Load latest known positions so the map is not empty after a restart."""
-        await self.resolve_reflagged()
-        for mmsi in mmsis or list(self.tracker.ships):
+        if mmsis is None:
+            await self.resolve_reflagged()
+        for mmsi in mmsis if mmsis is not None else list(self.wanted()):
             try:
                 data = await self._get_json(f"{REST}/locations", {"mmsi": mmsi})
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
@@ -146,23 +157,32 @@ class DigitrafficFeed:
             for feature in data.get("features", []):
                 msg = rest_feature_to_location(feature)
                 if msg:
-                    self.tracker.on_location(mmsi, msg)
+                    self._dispatch_quiet(mmsi, "location", msg)
             try:
                 meta = await self._get_json(f"{REST}/vessels/{mmsi}")
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 continue
             if isinstance(meta, dict) and meta:
-                self.tracker.on_metadata(mmsi, meta)
+                self._dispatch_quiet(mmsi, "metadata", meta)
 
-    async def vessels(self) -> list[dict[str, Any]]:
-        """All vessel metadata Digitraffic knows (cached for a day)."""
+    def _dispatch_quiet(self, mmsi: int, kind: str, data: dict[str, Any]) -> None:
+        # REST data must not count as live messages (the feed watchdog relies on them).
+        last, count = self.last_message_ts, self.message_count
+        self._dispatch(mmsi, kind, data)
+        self.last_message_ts, self.message_count = last, count
+
+    async def vessels(self, cache: bool = True) -> list[dict[str, Any]]:
+        """All vessel metadata Digitraffic knows. Cached for a day for searching; the
+        daily fleet update passes cache=False so the big list isn't kept in memory."""
         if self._vessels and time.time() - self._vessels_ts < VESSEL_LIST_TTL:
             return self._vessels
         data = await self._get_json(f"{REST}/vessels")
-        if isinstance(data, list):
+        if not isinstance(data, list):
+            return self._vessels
+        if cache:
             self._vessels = data
             self._vessels_ts = time.time()
-        return self._vessels
+        return data
 
     async def search(self, query: str, limit: int = 15) -> list[dict[str, Any]]:
         query = query.strip()

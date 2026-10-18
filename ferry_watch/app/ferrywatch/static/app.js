@@ -4,6 +4,7 @@
 
   const TAIL_MINUTES = 60;
   const STALE_SECONDS = 30 * 60;
+  const FLEET_HIDE_SECONDS = 7 * 86400; // fleet ships not heard from in a week are left off the map
   const DEFAULT_VIEW = { center: [60.02, 24.45], zoom: 9 };
 
   const $ = (id) => document.getElementById(id);
@@ -167,8 +168,8 @@
 
   // --- markers ----------------------------------------------------------------
 
-  function shipSvg(color, rotation) {
-    return `<svg width="28" height="28" viewBox="-14 -14 28 28" style="transform: rotate(${rotation}deg)">
+  function shipSvg(color, rotation, size = 28) {
+    return `<svg width="${size}" height="${size}" viewBox="-14 -14 28 28" style="transform: rotate(${rotation}deg)">
       <path d="M0 -12 L6 -2 L6 10 Q0 13 -6 10 L-6 -2 Z" fill="${color}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
     </svg>`;
   }
@@ -179,11 +180,13 @@
     const classes = ["ship-icon"];
     if (dimmed) classes.push("dimmed");
     if (isStale(info)) classes.push("stale");
+    if (info.fleet) classes.push("fleet");
+    const size = info.fleet ? 20 : 28;
     return L.divIcon({
       className: classes.join(" "),
-      html: shipSvg(info.color, rotation),
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
+      html: shipSvg(info.color, rotation, size),
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
     });
   }
 
@@ -196,24 +199,37 @@
     entry.info = info;
     const p = info.position;
     if (!p) return entry;
+    if (info.fleet && now() - p.ts > FLEET_HIDE_SECONDS) {
+      entry.marker?.remove();
+      entry.tail?.remove();
+      entry.marker = entry.tail = null;
+      return entry;
+    }
     const dimmed = focused && focused.mmsi !== info.mmsi;
     if (!entry.marker) {
-      entry.marker = L.marker([p.lat, p.lon], { icon: markerIcon(info, dimmed), keyboard: true, title: info.name })
+      // Fleet ships are smaller, sit below the main ships and are named on hover only.
+      entry.marker = L.marker([p.lat, p.lon], {
+        icon: markerIcon(info, dimmed), keyboard: true, title: info.name, zIndexOffset: info.fleet ? -500 : 0,
+      })
         .on("click", () => focusShip(info.mmsi))
-        .bindTooltip(shortName(info.name), {
-          permanent: true, direction: "right", offset: [12, 0], className: "ship-label",
-        })
+        .bindTooltip(info.fleet ? info.name : shortName(info.name), info.fleet
+          ? { direction: "top", offset: [0, -8], className: "ship-label" }
+          : { permanent: true, direction: "right", offset: [12, 0], className: "ship-label" })
         .addTo(map);
-      entry.tail = L.polyline([], { color: info.color, weight: 2.5, opacity: 0.55, interactive: false }).addTo(map);
+      entry.tail = L.polyline([], {
+        color: info.color, weight: info.fleet ? 1.5 : 2.5, opacity: tailOpacity(info), interactive: false,
+      }).addTo(map);
     } else {
       entry.marker.setLatLng([p.lat, p.lon]);
       entry.marker.setIcon(markerIcon(info, dimmed));
-      entry.marker.getTooltip()?.setContent(shortName(info.name));
+      entry.marker.getTooltip()?.setContent(info.fleet ? info.name : shortName(info.name));
     }
     entry.tail.setStyle({ color: info.color });
     entry.marker.getTooltip()?.getElement()?.classList.toggle("dimmed", Boolean(dimmed));
     return entry;
   }
+
+  const tailOpacity = (info) => (info.fleet ? 0.4 : 0.55);
 
   function removeShip(mmsi) {
     const entry = ships.get(mmsi);
@@ -235,6 +251,7 @@
   }
 
   function onPosition(info) {
+    if (!ships.has(info.mmsi) && !info.name) return; // not loaded yet; the next state load brings it
     const entry = upsertShip({ ...ships.get(info.mmsi)?.info, ...info });
     const p = info.position;
     if (!p || !entry.tail) return;
@@ -302,7 +319,7 @@
   }
 
   function fitAllShips() {
-    const pts = [...ships.values()].filter((e) => e.info.position && !isStale(e.info))
+    const pts = [...ships.values()].filter((e) => !e.info.fleet && e.info.position && !isStale(e.info))
       .map((e) => [e.info.position.lat, e.info.position.lon]);
     if (pts.length > 1) map.fitBounds(L.latLngBounds(pts), { ...cardPadding(), maxZoom: 11 });
   }
@@ -326,7 +343,7 @@
         entry.marker.setIcon(markerIcon(entry.info, dimmed));
         entry.marker.getTooltip()?.getElement()?.classList.toggle("dimmed", dimmed);
       }
-      entry.tail?.setStyle({ opacity: dimmed ? 0.15 : 0.55 });
+      entry.tail?.setStyle({ opacity: dimmed ? 0.15 : tailOpacity(entry.info) });
       if (focused && focused.mmsi === entry.info.mmsi) entry.tail?.setStyle({ opacity: 0 });
     }
   }
@@ -351,6 +368,11 @@
     }
     $("card-voyage").textContent = voyage;
     $("card-seen").textContent = info.position ? `Last report ${ago(info.position.ts)}` : "Waiting for the first report";
+    const fleet = info.fleet && lastState?.fleets?.find((f) => f.id === info.fleet);
+    $("card-fleet").hidden = !fleet;
+    if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;
+    $("card-follow").hidden = !info.fleet;
+    $("card-photo-label").hidden = Boolean(info.fleet);
 
     const photo = info.photo;
     const box = $("card-photo");
@@ -369,6 +391,15 @@
   }
 
   $("card-close").addEventListener("click", unfocus);
+  $("card-follow").addEventListener("click", async () => {
+    // A fleet ship becomes one of my ships: alerts, stats and a photo.
+    const info = focused && ships.get(focused.mmsi)?.info;
+    if (!info?.fleet) return;
+    await api("api/ships", { method: "POST", body: { mmsi: info.mmsi, name: info.name } });
+    await loadState();
+    await loadTails();
+    focusShip(info.mmsi);
+  });
   $("card-zoom").addEventListener("click", zoomToTrack);
   $("card-upload").addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
@@ -385,7 +416,7 @@
 
   function renderStrip() {
     const strip = $("strip");
-    const items = [...ships.values()].map((e) => e.info);
+    const items = [...ships.values()].map((e) => e.info).filter((info) => !info.fleet);
     strip.replaceChildren(...items.map((info) => {
       const b = document.createElement("button");
       b.type = "button";
@@ -437,7 +468,7 @@
     lastState = state;
     clockSkew = state.now - Date.now() / 1000;
     const seen = new Set();
-    for (const info of state.ships) {
+    for (const info of [...state.ships, ...(state.fleet_ships || [])]) {
       seen.add(info.mmsi);
       upsertShip(info);
     }
@@ -449,6 +480,7 @@
     renderShipsList();
     renderZones(state.zones || []);
     renderNotifyStatus();
+    if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
     $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored`;
   }
 
@@ -494,7 +526,7 @@
 
   function renderShipsList() {
     const list = $("ships-list");
-    list.replaceChildren(...[...ships.values()].map(({ info }) => {
+    list.replaceChildren(...[...ships.values()].filter(({ info }) => !info.fleet).map(({ info }) => {
       const li = document.createElement("li");
       const dot = document.createElement("span");
       dot.className = "dot";
@@ -578,7 +610,7 @@
   $("ships-button").addEventListener("click", () => {
     renderShipsList();
     $("notify-result").textContent = "";
-    setTab(store.get("fw-tab") === "stats" ? "stats" : "ships");
+    setTab(["stats", "fleets"].includes(store.get("fw-tab")) ? store.get("fw-tab") : "ships");
     $("ships-dialog").showModal();
   });
 
@@ -951,6 +983,7 @@
     document.querySelectorAll("[data-pane]").forEach((pane) => { pane.hidden = pane.dataset.pane !== name; });
     store.set("fw-tab", name);
     if (name === "stats") loadStats().catch(console.error);
+    if (name === "fleets") renderFleets();
   }
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
 
@@ -1071,6 +1104,85 @@
       count.textContent = String(inner.length);
       li.append(dot, grow, count);
       return li;
+    }));
+  }
+
+  // --- fleets -------------------------------------------------------------------
+
+  function renderFleets() {
+    const box = $("fleets-list");
+    const fleets = lastState?.fleets || [];
+    box.replaceChildren(...fleets.map((fleet) => {
+      const section = document.createElement("section");
+      section.className = "fleet";
+      const head = document.createElement("label");
+      head.className = "fleet-head";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.className = "switch";
+      toggle.checked = fleet.enabled;
+      toggle.addEventListener("change", async () => {
+        toggle.disabled = true;
+        try {
+          await api(`api/fleets/${fleet.id}`, { method: "POST", body: { enabled: toggle.checked } });
+          await loadState();
+          await loadTails();
+        } finally {
+          toggle.disabled = false;
+        }
+      });
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = fleet.color;
+      const name = document.createElement("span");
+      name.className = "grow strong";
+      name.textContent = fleet.name;
+      const count = document.createElement("span");
+      count.className = "small muted";
+      head.append(dot, name, count, toggle);
+      section.append(head);
+
+      const members = fleet.members.map((mmsi) => ships.get(mmsi)?.info).filter(Boolean);
+      const seen = members.filter((info) => info.position && now() - info.position.ts < FLEET_HIDE_SECONDS);
+      const moving = seen.filter((info) => !info.in_port && info.position.sog > 2);
+      count.textContent = fleet.members.length
+        ? `${fleet.members.length} ships${fleet.enabled ? `, ${moving.length} under way` : ""}`
+        : "None found yet";
+      if (!fleet.enabled) return section;
+
+      seen.sort((a, b) => Number(Boolean(a.fleet)) - Number(Boolean(b.fleet)) || a.name.localeCompare(b.name));
+      const list = document.createElement("ul");
+      list.className = "ships-list fleet-ships";
+      list.replaceChildren(...seen.map((info) => {
+        const li = document.createElement("li");
+        li.className = "clickable";
+        const d = document.createElement("span");
+        d.className = "dot";
+        d.style.background = info.color;
+        const grow = document.createElement("div");
+        grow.className = "grow";
+        const n = document.createElement("span");
+        n.textContent = info.fleet ? info.name : `${info.name} (my ship)`;
+        const sub = document.createElement("span");
+        sub.className = "small muted";
+        sub.textContent = isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info);
+        grow.append(n, sub);
+        li.append(d, grow);
+        li.addEventListener("click", () => {
+          $("ships-dialog").close();
+          focusShip(info.mmsi);
+        });
+        return li;
+      }));
+      section.append(list);
+      const quiet = members.length - seen.length + (fleet.members.length - members.length);
+      if (quiet > 0) {
+        const note = document.createElement("p");
+        note.className = "small muted";
+        note.textContent = `${quiet} more not seen in Finnish waters this week.`;
+        section.append(note);
+      }
+      return section;
     }));
   }
 

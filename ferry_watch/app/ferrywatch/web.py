@@ -18,6 +18,7 @@ from aiohttp import WSMsgType, web
 
 from . import stats
 from .config import DEV
+from .fleets import FLEET_IDS
 
 if TYPE_CHECKING:
     from .__main__ import FerryWatch
@@ -84,6 +85,7 @@ class Web:
         r.add_get("/api/passages.csv", self.passages_csv)
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
+        r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_static("/static/", STATIC, append_version=False)
 
     # --- pages -----------------------------------------------------------
@@ -104,7 +106,8 @@ class Web:
     async def tails(self, request: web.Request) -> web.Response:
         minutes = min(int(request.query.get("minutes", 60)), TAIL_MAX_MINUTES)
         since = int(time.time()) - minutes * 60
-        data = {str(m): self.fw.store.track(m, since) for m in self.fw.tracker.ships}
+        mmsis = [*self.fw.tracker.ships, *self.fw.fleet_tracker.ships]
+        data = {str(m): self.fw.store.track(m, since) for m in mmsis}
         return web.json_response(data)
 
     async def track(self, request: web.Request) -> web.Response:
@@ -119,12 +122,13 @@ class Web:
             # A stretch of history (passage replay); works for removed ships too.
             points = self.fw.store.track(mmsi, since or 0, until)
             return web.json_response({"mmsi": mmsi, "since": since, "until": until, "points": points})
-        if mmsi not in self.fw.tracker.ships:
+        tracker = self.fw.tracker_for(mmsi)
+        if not tracker:
             raise web.HTTPNotFound()
         if since is None:
-            since = self.fw.tracker.voyage_start(mmsi) or 0
+            since = tracker.voyage_start(mmsi) or 0
         points = self.fw.store.track(mmsi, since)
-        last = self.fw.tracker.ships[mmsi].last
+        last = tracker.ships[mmsi].last
         # The latest position may not have been stored yet (thinning); include it.
         if last and (not points or points[-1][2] < last.ts):
             points.append([last.lat, last.lon, last.ts])
@@ -232,6 +236,14 @@ class Web:
     async def stats(self, request: web.Request) -> web.Response:
         return web.json_response(stats.payload(self.fw.store))
 
+    async def set_fleet(self, request: web.Request) -> web.Response:
+        fleet_id = request.match_info["fleet_id"]
+        if fleet_id not in FLEET_IDS:
+            raise web.HTTPNotFound()
+        body = await request.json()
+        await self.fw.set_fleet(fleet_id, bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
     async def test_notification(self, request: web.Request) -> web.Response:
         try:
             message = await self.fw.notifier.send_test()
@@ -259,6 +271,10 @@ class Web:
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if self.sockets:
             self._send({"type": kind, "ship": payload})
+
+    def on_fleet_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if self.sockets:
+            self._send({"type": kind, "ship": self.fw.fleet_summary(payload["mmsi"])})
 
     async def broadcast_ships(self) -> None:
         self._send({"type": "reload"})

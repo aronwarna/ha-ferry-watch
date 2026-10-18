@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- Fleets tab in the menu: Tallink Silja, Viking Line and Finnlines ships on the
+  map as smaller markers with their current voyage, each fleet with its own
+  on/off switch. Tap a fleet ship for its card and track, or add it to your
+  ships to get alerts and stats for it too.
+- Fleet membership is worked out daily from Digitraffic's vessel list by name,
+  so new ships appear by themselves.
+- Fleet ships are stored more sparsely (every minute while moving) and only
+  for 3 days, which is enough for their current voyage.
+
 ## 0.3.0
 
 - Stats tab in the menu: inner-route passages per month as a chart, and per

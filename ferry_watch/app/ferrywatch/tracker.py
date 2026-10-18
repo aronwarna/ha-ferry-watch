@@ -81,14 +81,21 @@ def parse_metadata(data: dict[str, Any]) -> dict[str, Any]:
 
 
 class Tracker:
-    def __init__(self, store: Store):
+    """Follows a set of ships. The main tracker follows the configured ships; a second one
+    follows the fleets, with its own member list and sparser storage."""
+
+    def __init__(self, store: Store, members: Callable[[], set[int]] | None = None,
+                 store_moving: int = STORE_INTERVAL_MOVING, store_stopped: int = STORE_INTERVAL_STOPPED):
         self.store = store
+        self.members = members
+        self.store_moving = store_moving
+        self.store_stopped = store_stopped
         self.ships: dict[int, ShipState] = {}
         self.listeners: list[Listener] = []
 
     def load(self) -> None:
-        """Rebuild in-memory state for the configured ships from the database."""
-        wanted = {s["mmsi"] for s in self.store.ships()}
+        """Rebuild in-memory state for this tracker's ships from the database."""
+        wanted = self.members() if self.members else {s["mmsi"] for s in self.store.ships()}
         for mmsi in list(self.ships):
             if mmsi not in wanted:
                 del self.ships[mmsi]
@@ -168,14 +175,13 @@ class Tracker:
             state.port = None
             state.stopped_since = None
 
-    @staticmethod
-    def _should_store(state: ShipState, pos: Position) -> bool:
+    def _should_store(self, state: ShipState, pos: Position) -> bool:
         prev = state.last_stored
         if prev is None:
             return True
         elapsed = pos.ts - prev.ts
         stopped = pos.sog is not None and pos.sog < STOP_SPEED
-        if elapsed >= (STORE_INTERVAL_STOPPED if stopped else STORE_INTERVAL_MOVING):
+        if elapsed >= (self.store_stopped if stopped else self.store_moving):
             return True
         if (
             not stopped

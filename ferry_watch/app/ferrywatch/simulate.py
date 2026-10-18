@@ -39,6 +39,31 @@ SCENARIOS = [
     (230361000, [HELSINKI_KATAJANOKKA, *OUT_OF_HELSINKI, *OUTER_ROUTE], 60 * 60, -95 * 60, 18.5),
 ]
 
+HELSINKI_WEST = (60.1560, 24.9200)
+TALLINN = [(60.1300, 24.9100), (60.0500, 24.8800), (59.8000, 24.8300), (59.5500, 24.7800), (59.4440, 24.7700)]
+VUOSAARI = (60.2050, 25.1900)
+VUOSAARI_WEST = [(60.1500, 25.2000), (60.0500, 25.1000), (59.8500, 24.7000), (59.7000, 23.8000), (59.5500, 22.5000)]
+
+# Fleet ships for the Fleets tab (made-up MMSIs), plus the four ferries' fleets.
+FLEET_MEMBERS = {
+    276000101: {"fleet": "tallink", "name": "Megastar"},
+    276000102: {"fleet": "tallink", "name": "MyStar"},
+    276000103: {"fleet": "viking", "name": "Viking XPRS"},
+    230000104: {"fleet": "finnlines", "name": "Finnstar"},
+    230000105: {"fleet": "finnlines", "name": "Finnmaid"},
+    230184000: {"fleet": "tallink", "name": "Silja Serenade"},
+    265004000: {"fleet": "tallink", "name": "Silja Symphony"},
+    230713000: {"fleet": "viking", "name": "Viking Cinderella"},
+    230361000: {"fleet": "viking", "name": "Gabriella"},
+}
+FLEET_SCENARIOS = [
+    (276000101, [HELSINKI_WEST, *TALLINN], 60 * 60, -40 * 60, 25.0),
+    (276000102, [*reversed(TALLINN), HELSINKI_WEST], 60 * 60, -70 * 60, 25.0),
+    (276000103, [TALLINN[-1], *reversed(TALLINN[:-1]), HELSINKI_KATAJANOKKA], 45 * 60, -20 * 60, 22.0),
+    (230000104, [VUOSAARI, *VUOSAARI_WEST], 2 * 3600, -180 * 60, 21.0),
+    (230000105, [VUOSAARI], 10**6, 0, 0.0),
+]
+
 
 def _bearing(a: tuple[float, float], b: tuple[float, float]) -> float:
     lat1, lat2 = math.radians(a[0]), math.radians(b[0])
@@ -71,9 +96,13 @@ def _message(path, dock_s: int, depart_ts: float, speed: float, ts: float) -> di
             "heading": int(brg)}
 
 
-async def run_simulation(tracker: Tracker, backfill_hours: float = 4.0, step: float = 3.0) -> None:
+async def run_simulation(tracker: Tracker, fleet_tracker: Tracker | None = None,
+                         backfill_hours: float = 4.0, step: float = 3.0) -> None:
     start = time.time()
-    plans = [(m, p, d, start + rel, s) for m, p, d, rel, s in SCENARIOS]
+    plans = [(tracker, m, p, d, start + rel, s) for m, p, d, rel, s in SCENARIOS]
+    if fleet_tracker:
+        plans += [(fleet_tracker, m, p, d, start + rel, s) for m, p, d, rel, s in FLEET_SCENARIOS
+                  if m in fleet_tracker.ships]
     metas = {
         230184000: "STOCKHOLM", 265004000: "HELSINKI", 230713000: "STOCKHOLM", 230361000: "STOCKHOLM",
     }
@@ -83,14 +112,14 @@ async def run_simulation(tracker: Tracker, backfill_hours: float = 4.0, step: fl
     # Backfill history in 10 s steps (only the docked period before departure counts as port).
     ts = start - backfill_hours * 3600
     while ts < start:
-        for mmsi, path, dock_s, depart, speed in plans:
+        for t, mmsi, path, dock_s, depart, speed in plans:
             if ts >= depart - dock_s or len(path) == 1:
-                tracker.on_location(mmsi, _message(path, dock_s, depart, speed, ts))
+                t.on_location(mmsi, _message(path, dock_s, depart, speed, ts))
         ts += 10
     while True:
         now = time.time()
-        for mmsi, path, dock_s, depart, speed in plans:
-            tracker.on_location(mmsi, _message(path, dock_s, depart, speed, now))
+        for t, mmsi, path, dock_s, depart, speed in plans:
+            t.on_location(mmsi, _message(path, dock_s, depart, speed, now))
         await asyncio.sleep(step)
 
 

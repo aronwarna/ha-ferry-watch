@@ -36,6 +36,20 @@ sidebar.
   **Download all passages (CSV)** gives you the raw list. Tap a passage to
   replay its track on the map.
 
+## Fleets
+
+The **Fleets** tab in the menu shows the Tallink Silja, Viking Line and
+Finnlines fleets. Each fleet has a switch: when it's on, its ships appear on the
+map as smaller markers with a short tail, and tapping one shows its whole
+current voyage. **Add to my ships** on a fleet ship's card makes it one of your
+ships, with alerts, stats and a photo.
+
+Ships are matched by name once a day from Digitraffic's vessel list, so new
+ships join by themselves; a sold ship drops out once it's renamed. Ships that
+haven't reported in Finnish waters for a week are left off the map. Fleet ships
+never trigger alerts or count in the stats unless you add them to your ships.
+Switching a fleet off stops following it entirely.
+
 ## Areas
 
 Open the area editor with the shape button at the top right. The first start
@@ -96,10 +110,11 @@ The notification picture is saved in Home Assistant's media folder
 
 ## Resource use
 
-The add-on keeps one websocket open and stores about one point every 30
-seconds per moving ship (every 5 minutes while in port). Expect well under 1%
-CPU, about 50 MB of memory, and a database of a few tens of MB with the
-default 60 days.
+The add-on keeps one websocket open. Your ships are stored about every 30
+seconds while moving (every 5 minutes in port) and kept for `retention_days`;
+fleet ships every minute (10 minutes in port) and kept for 3 days. Expect well
+under 1% CPU, about 50 MB of memory, and a database of a few tens of MB. Once
+a day the add-on downloads Digitraffic's vessel list to update the fleets.
 
 ## If a ship never shows up
 

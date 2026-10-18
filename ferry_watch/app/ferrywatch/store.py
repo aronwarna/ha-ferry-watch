@@ -193,6 +193,15 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    def prune_untracked(self, older_than_ts: int) -> int:
+        """Remove old history of ships that aren't configured (fleet ships): they only
+        need their current voyage."""
+        untracked = "mmsi NOT IN (SELECT mmsi FROM ships)"
+        cur = self.db.execute(f"DELETE FROM positions WHERE ts < ? AND {untracked}", (older_than_ts,))
+        self.db.execute(f"DELETE FROM voyages WHERE start_ts < ? AND {untracked}", (older_than_ts,))
+        self.db.commit()
+        return cur.rowcount
+
     def position_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
 
