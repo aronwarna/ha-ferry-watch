@@ -198,7 +198,7 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
             if chart.keep_status and not chart.keep_status["running"]:
                 break
         assert chart.keep_status == {"total": 2, "done": 2, "running": False}
-        assert len(asked) == 2 * len(vchart.SOURCES)
+        assert len(asked) == 2 * (len(vchart.PARTS[""]) + len(vchart.PARTS["more"]))  # no key: no MML part
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         assert chart.keep_status is None
@@ -210,3 +210,57 @@ def test_keep_area_size():
     blocks = vchart.keep_blocks()
     assert 200 < len(blocks) < 500
     assert vchart.blocks_for(12, *tile_at(60.0, 24.4, 12)[1:])[0] in blocks
+
+
+def test_rocks_wrecks_names_and_lights(tmp_path):
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+        tile, ok = await chart.tile(*tile_at(60.005, 24.4, 13))
+        assert ok
+        assert tile["rock"] and {r[2] for r in tile["rock"]} <= {1, 2, 3}
+        assert any(n[2] == "Rönnskari" and n[3] == "l" for n in tile["name"])
+        # Finnish names come before Swedish ones, so the Finnish one wins a shared spot.
+        names = [n[2] for n in tile["name"]]
+        assert names.index("Rönnskari") < names.index("Rönnskär")
+        assert ["LFl(2) 15s"] == [t for *_, t in tile["light"] if t.startswith("LFl")]
+        zoomed_out, _ = await chart.tile(*tile_at(60.005, 24.4, 11))
+        assert "rock" not in zoomed_out and all(n[3] == "s" for n in zoomed_out.get("name", []))
+        assert chart.status()["rev"].endswith("mm")
+
+    asyncio.run(run())
+
+
+def test_adding_a_key_fetches_only_the_new_part(tmp_path):
+    asked = []
+
+    async def fetch(key, bbox):
+        asked.append(key)
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fetch)
+        coords = tile_at(60.005, 24.4, 12)
+        tile, ok = await chart.tile(*coords)
+        assert ok and "rock" not in tile
+        asked.clear()
+        chart.set_mml_key("abc")
+        tile, ok = await chart.tile(*coords)
+        assert ok and tile["rock"]
+        assert sorted(set(asked)) == sorted(vchart.PARTS["mml"])
+
+    asyncio.run(run())
+
+
+def test_mml_features_are_converted_to_mercator():
+    page = {"features": [
+        {"geometry": {"type": "Point", "coordinates": [24.4, 60.0]}, "properties": {"teksti": "Rönnskär", "kieli": "swe"}},
+        {"geometry": {"type": "Point", "coordinates": [24.5, 60.1]}, "properties": {"nimi": "Mäkiluoto"}},
+        {"geometry": None, "properties": {}},
+    ]}
+    feats = vchart._mml_features(page)
+    assert len(feats) == 2
+    x, y = feats[0]["geometry"]["coordinates"]
+    assert (round(x), round(y)) == tuple(round(v) for v in lonlat_to_mercator(24.4, 60.0))
+    assert feats[1]["properties"]["teksti"] == "Mäkiluoto"
+    lon, lat = vchart.mercator_to_lonlat(x, y)
+    assert abs(lon - 24.4) < 1e-9 and abs(lat - 60.0) < 1e-9

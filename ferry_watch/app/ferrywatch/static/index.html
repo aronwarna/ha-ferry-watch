@@ -33,6 +33,7 @@
 
   <div id="chart-style" class="chart-style segmented panel" role="group" aria-label="Chart style" hidden>
     <button type="button" data-style="drawn">Drawn</button>
+    <button type="button" data-style="official">Official</button>
     <button type="button" data-style="scanned">Scanned</button>
   </div>
   <div id="chart-loading" class="chart-loading panel" role="status" hidden>Downloading chart data…</div>
@@ -142,6 +143,13 @@
         <input type="checkbox" class="switch" id="chart-keep">
       </label>
       <p class="small muted" id="chart-keep-status"></p>
+      <label class="small strong" for="mml-key">Land Survey API key</label>
+      <p class="small muted" id="mml-status">Adds rocks, wrecks and place names to the drawn chart. Get a free key from <a href="https://omatili.maanmittauslaitos.fi/user/new/avoimet-rajapintapalvelut" target="_blank" rel="noopener">Maanmittauslaitos</a>.</p>
+      <form id="mml-form" class="key-form">
+        <input id="mml-key" type="password" autocomplete="off" placeholder="Paste your API key" spellcheck="false">
+        <button type="submit">Save</button>
+      </form>
+      <p class="small" id="mml-result" role="status"></p>
       <p class="muted small" id="version"></p>
     </div>
     <div data-pane="stats" role="tabpanel" hidden>

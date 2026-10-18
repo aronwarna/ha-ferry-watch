@@ -36,9 +36,12 @@ from .config import USER_AGENT
 _LOGGER = logging.getLogger(__name__)
 
 TRAFICOM_WFS = "https://julkinen.traficom.fi/inspirepalvelu/rajoitettu/wfs"
+TRAFICOM_OPEN_WFS = "https://julkinen.traficom.fi/inspirepalvelu/avoin/wfs"
 VAYLA_WFS = "https://avoinapi.vaylapilvi.fi/vaylatiedot/vesivaylatiedot/wfs"
-ATTRIBUTION = ("Chart data: Traficom (depths), Väylävirasto (fairways, aids). "
-               "Not for navigation.")
+# National Land Survey topographic database (rocks, wrecks, names); needs a free API key.
+MML_API = "https://avoin-paikkatieto.maanmittauslaitos.fi/maastotiedot/features/v1"
+ATTRIBUTION = ("Chart data: Traficom (depths), Väylävirasto (fairways, aids), "
+               "Maanmittauslaitos (rocks, names). Not for navigation.")
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
 MIN_Z = 10  # below this the panel shows Traficom's overview chart
@@ -52,6 +55,7 @@ PAGE = 20000
 MAX_RESPONSE = 20 * 1024 * 1024  # bytes; more than this from one request is refused, to spare RAM
 MEMORY_BLOCKS = 6  # parsed blocks kept in RAM; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
+TILE_REV = 2  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # What to fetch: layer key -> (service, type name, kind, properties to keep)
@@ -65,6 +69,20 @@ SOURCES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "aid": (VAYLA_WFS, "vesivaylatiedot:turvalaitteet_uusi", "point",
             ("turvalaitetyyppifi", "navigointilajikoodi", "valaistu", "nimifi")),
     "sector": (VAYLA_WFS, "vesivaylatiedot:valosektorit_uusi", "point", ("alkukulma", "loppukulma", "vari")),
+    "shore": (TRAFICOM_OPEN_WFS, "avoin:ShorelineConstruction_L", "line", ()),
+    "light": (VAYLA_WFS, "vesivaylatiedot:loistot_uusi", "point", ("viralvalotunnuse",)),
+    "rock": (MML_API, "vesikivi", "point", ("kohdeluokka",)),
+    "rockarea": (MML_API, "vesikivikko", "area", ()),
+    "wreck": (MML_API, "hylky", "point", ("kohdeluokka",)),
+    "name": (MML_API, "paikannimi", "point", ("teksti", "kieli", "kohdeluokka")),
+}
+
+# Each block is stored in parts, one file each, so a part added later (or one that
+# needs an API key) is fetched on its own without downloading the rest again.
+PARTS: dict[str, tuple[str, ...]] = {
+    "": ("depth", "contour", "sounding", "farea", "fline", "lead", "aid", "sector"),
+    "more": ("shore", "light"),
+    "mml": ("rock", "rockarea", "wreck", "name"),
 }
 
 # Navigation aid types, as one letter for the panel.
@@ -74,9 +92,15 @@ AID_TYPES = {
     "apuloisto": "a", "tutkamerkki": "t", "tutkamajakka": "t",
 }
 
+# MML feature classes. Rocks: 1 underwater, 2 awash, 3 above water.
+ROCK_TYPES = {38511: 1, 38512: 2, 38513: 3}
+# Wrecks: 1 depth unknown (dangerous), 2 depth known, 3 hull showing.
+WRECK_TYPES = {16721: 1, 16722: 2, 16712: 3}
+
 # Zoom from which each layer is drawn.
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 13, "farea": 11, "fline": MIN_Z,
-               "lead": 11, "aid": 11, "sector": 12}
+               "lead": 11, "aid": 11, "sector": 12, "shore": 12, "light": 13,
+               "rock": 12, "rockarea": 12, "wreck": 12, "name": 11}
 
 
 # --- geometry ------------------------------------------------------------------------
@@ -472,7 +496,36 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         tile["fline"] = [[_num(draught), line] for draught, line in tile["fline"]]
     if "contour" in tile:
         tile["contour"] = [[_num(v), line] for v, line in tile["contour"]]
+    if "light" in tile:
+        # Light characters as printed next to the light, e.g. "Iso WRG 4s".
+        tile["light"] = [[px, py, str(t).strip()] for px, py, t in tile["light"] if t and str(t).strip() not in ("-", "")]
+    if "rock" in tile:
+        tile["rock"] = [[px, py, ROCK_TYPES.get(_int(code), 1)] for px, py, code in tile["rock"]]
+    if "wreck" in tile:
+        tile["wreck"] = [[px, py, WRECK_TYPES.get(_int(code), 1)] for px, py, code in tile["wreck"]]
+    if "name" in tile:
+        names = []
+        for px, py, text, lang, code in tile["name"]:
+            if not text:
+                continue
+            kind = _name_kind(_int(code))
+            if z < 12 and kind != "s":
+                continue  # only towns and villages when zoomed out
+            names.append([px, py, str(text), kind, 0 if lang in (None, "fin", "fi") else 1])
+        # Finnish first, so where both languages share a spot the panel keeps the Finnish one.
+        tile["name"] = [row[:4] for row in sorted(names, key=lambda r: r[4])]
     return {k: v for k, v in tile.items() if v != []}
+
+
+def _name_kind(code: int | None) -> str:
+    """Name class for the panel: s settlement, w water, l land (islands, capes ...)."""
+    if code is None:
+        return "l"
+    if 48000 <= code < 49000:
+        return "s"
+    if 36000 <= code < 37000:
+        return "w"
+    return "l"
 
 
 def _int(value: Any) -> int | None:
@@ -519,36 +572,96 @@ class _Skipped(Exception):
     pass
 
 
+def mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
+    return x * 180 / HALF, math.degrees(2 * math.atan(math.exp(y * math.pi / HALF)) - math.pi / 2)
+
+
+def _to_mercator(coords: Any) -> Any:
+    """GeoJSON coordinates from lon/lat to web-mercator metres, at any nesting depth."""
+    if coords and isinstance(coords[0], (int, float)):
+        return lonlat_to_mercator(coords[0], coords[1])
+    return [_to_mercator(c) for c in coords]
+
+
+def _mml_features(page: dict) -> list[dict]:
+    """MML features with lon/lat geometry converted, and the name text under one key."""
+    out = []
+    for f in page.get("features") or []:
+        geom = f.get("geometry")
+        if not geom or not geom.get("coordinates"):
+            continue
+        props = f.get("properties") or {}
+        text = props.get("teksti") or props.get("nimi") or props.get("teksti_fin") or props.get("name")
+        if isinstance(text, dict):  # a text with its language
+            text = text.get("teksti") or text.get("text") or next(iter(text.values()), None)
+        out.append({"geometry": {"type": geom["type"], "coordinates": _to_mercator(geom["coordinates"])},
+                    "properties": {**props, "teksti": text}})
+    return out
+
+
 class VectorChart:
     def __init__(self, directory: Path, session: aiohttp.ClientSession | None,
-                 fetch_layer: Callable[[str, tuple[float, float, float, float]], Any] | None = None):
+                 fetch_layer: Callable[[str, tuple[float, float, float, float]], Any] | None = None,
+                 mml_key: str = ""):
         self.dir = directory
         self.session = session
-        self.fetch_layer = fetch_layer or self._fetch_wfs
+        self.fetch_layer = fetch_layer or self._fetch_layer
+        self.mml_key = mml_key
         self._memory: OrderedDict[tuple[int, int], dict] = OrderedDict()
         self._pending: dict[tuple[int, int], asyncio.Task] = {}
         self._wanted: dict[tuple[int, int], float] = {}  # when a block was last asked for
         self._limit = asyncio.Semaphore(1)  # one block at a time: gentle on the services and on RAM
         self._cutting = asyncio.Semaphore(1)
-        self._failed: dict[tuple[int, int], float] = {}
+        self._failed: dict[tuple[int, int, str], float] = {}
+        self._logged_props: set[str] = set()
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
         self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
 
-    def _path(self, bx: int, by: int) -> Path:
-        return self.dir / "blocks" / f"{bx}_{by}.json.gz"
+    def set_mml_key(self, key: str) -> None:
+        """A new Land Survey key: blocks are read again so rocks and names get fetched."""
+        self.mml_key = key.strip()
+        self._memory.clear()
+        self._failed = {k: t for k, t in self._failed.items() if k[2] != "mml"}
+        for layer in PARTS["mml"]:
+            self.errors.pop(layer, None)
+
+    async def check_mml_key(self, key: str) -> str | None:
+        """None if the Land Survey accepts the key, else what went wrong."""
+        if self.session is None:
+            return None
+        try:
+            await self._get_json(f"{MML_API}/collections/vesikivi/items",
+                                 {"bbox": "24.40,59.98,24.42,59.99", "limit": "1", "api-key": key.strip()}, "rock")
+        except aiohttp.ClientError as err:
+            return str(err)
+        except (asyncio.TimeoutError, ValueError) as err:
+            return str(err) or type(err).__name__
+        return None
+
+    def _parts(self) -> list[str]:
+        return [part for part in PARTS if part != "mml" or self.mml_key]
+
+    def _path(self, bx: int, by: int, part: str = "") -> Path:
+        return self.dir / "blocks" / f"{bx}_{by}{'.' + part if part else ''}.json.gz"
 
     def status(self) -> dict[str, Any]:
-        files = list((self.dir / "blocks").glob("*.json.gz")) if (self.dir / "blocks").exists() else []
-        return {"blocks": len(files), "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
-                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "keep": self.keep_status}
+        root = self.dir / "blocks"
+        files = list(root.glob("*.json.gz")) if root.exists() else []
+        return {"blocks": sum(1 for f in files if f.name.count(".") == 2),
+                "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
+                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "keep": self.keep_status,
+                "mml_key": bool(self.mml_key), "rev": f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"}
 
     def _fresh(self, key: tuple[int, int]) -> bool:
-        try:
-            age = time.time() - self._path(*key).stat().st_mtime
-        except FileNotFoundError:
-            return False
-        return age < MAX_AGE
+        for part in self._parts():
+            try:
+                age = time.time() - self._path(*key, part).stat().st_mtime
+            except FileNotFoundError:
+                return False
+            if age >= MAX_AGE:
+                return False
+        return True
 
     async def keep(self, blocks: list[tuple[int, int]] | None = None) -> None:
         """Download every block of KEEP_AREA to disk, one at a time, and keep them fresh.
@@ -569,7 +682,7 @@ class VectorChart:
                     got = await asyncio.shield(self._block_task(key))
                     self.keep_status["done"] = sum(self._fresh(k) for k in blocks)
                     # A failed download backs off, so a service that's down isn't hammered.
-                    await asyncio.sleep(KEEP_PAUSE if got is not None else 60)
+                    await asyncio.sleep(KEEP_PAUSE if got is not None and self._fresh(key) else 60)
                 self.keep_status["running"] = False
                 await asyncio.sleep(KEEP_RECHECK)
         finally:
@@ -598,7 +711,8 @@ class VectorChart:
         blocks = dict(zip(keys, loaded))
         async with self._cutting:  # one tile cut at a time keeps the web server responsive
             tile = await asyncio.to_thread(make_tile, z, x, y, blocks)
-        return tile, all(b is not None for b in loaded)
+        wanted = [key for part in self._parts() for key in PARTS[part]]
+        return tile, all(b is not None and all(k in b for k in wanted) for b in loaded)
 
     async def block(self, bx: int, by: int) -> dict | None:
         self._wanted[(bx, by)] = time.monotonic()
@@ -622,50 +736,61 @@ class VectorChart:
         self._wanted.pop(key, None)
 
     async def _load(self, bx: int, by: int) -> dict | None:
-        path = self._path(bx, by)
-        cached = None
-        try:
-            if time.time() - path.stat().st_mtime < MAX_AGE:
-                cached = await asyncio.to_thread(_read, path)
-            # A block missing some fairway data is tried again sooner.
-            if cached and cached.get("missing") and time.time() - path.stat().st_mtime > FAILED_RETRY:
-                cached = None
-        except FileNotFoundError:
-            pass
-        if cached is None:
-            if time.time() - self._failed.get((bx, by), 0) < FAILED_RETRY:
-                return None
-            try:
-                fresh = await self._fetch_block(bx, by)
-            except _Skipped:
-                return None
-            if fresh is None:
-                self._failed[(bx, by)] = time.time()
-                try:
-                    fresh = await asyncio.to_thread(_read, path)  # an old copy beats none
-                except FileNotFoundError:
-                    return None
-            cached = fresh
-        layers = cached["layers"]
+        layers: dict[str, list] = {}
+        for part in self._parts():
+            got = await self._load_part(bx, by, part)
+            if got is None:
+                if part == "":
+                    return None  # without depths there's no chart to draw
+                continue
+            layers.update(got)
         self._memory[(bx, by)] = layers
         while len(self._memory) > MEMORY_BLOCKS:
             self._memory.popitem(last=False)
         return layers
 
-    async def _fetch_block(self, bx: int, by: int) -> dict | None:
+    async def _load_part(self, bx: int, by: int, part: str) -> dict | None:
+        path = self._path(bx, by, part)
+        cached = None
+        try:
+            if time.time() - path.stat().st_mtime < MAX_AGE:
+                cached = await asyncio.to_thread(_read, path)
+            # A part missing some data is tried again sooner.
+            if cached and cached.get("missing") and time.time() - path.stat().st_mtime > FAILED_RETRY:
+                cached = None
+        except FileNotFoundError:
+            pass
+        if cached is None:
+            if time.time() - self._failed.get((bx, by, part), 0) < FAILED_RETRY:
+                return None
+            try:
+                fresh = await self._fetch_part(bx, by, part)
+            except _Skipped:
+                return None
+            if fresh is None:
+                self._failed[(bx, by, part)] = time.time()
+                try:
+                    fresh = await asyncio.to_thread(_read, path)  # an old copy beats none
+                except FileNotFoundError:
+                    return None
+            cached = fresh
+        return cached["layers"]
+
+    async def _fetch_part(self, bx: int, by: int, part: str) -> dict | None:
         bounds = block_bounds(bx, by)
         size = bounds[2] - bounds[0]
         pad = size * POINT_BUFFER / EXTENT
         bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
+        keys = PARTS[part]
         built: dict[str, list] = {}
         missing: list[str] = []
         if not near_finland(bounds):
-            built = {key: [] for key in SOURCES}  # nothing to fetch out there
+            built = {key: [] for key in keys}  # nothing to fetch out there
         async with self._limit:
             if not built and time.monotonic() - self._wanted.get((bx, by), time.monotonic()) > FORGET_AFTER:
                 raise _Skipped  # the map moved on while this block waited its turn
             started = time.monotonic()
-            for key in SOURCES if not built else ():
+            for key in keys if not built else ():
                 try:
                     features = await self.fetch_layer(key, bbox)
                     self.errors.pop(key, None)
@@ -678,15 +803,42 @@ class VectorChart:
                         return None  # without depths there's no chart to draw
                     features = []
                     missing.append(key)
+                if features and key not in self._logged_props:
+                    # Logged once, to show which fields a service actually returns.
+                    self._logged_props.add(key)
+                    _LOGGER.info("Chart data %s fields: %s", key, ", ".join(sorted(features[0].get("properties") or {})))
                 # One layer at a time, so only one layer's raw data is ever in memory.
                 built.update(await asyncio.to_thread(build_block, bx, by, {key: features}))
                 del features
+            if part and len(missing) == len(keys):
+                return None  # nothing of this part came through; tried again later
         data = {"v": 1, "missing": missing, "layers": built}
-        await asyncio.to_thread(_write, self._path(bx, by), data)
+        await asyncio.to_thread(_write, self._path(bx, by, part), data)
         self.blocks_fetched += 1
-        _LOGGER.info("Chart block %s,%s: %s in %.1f s", bx, by,
+        _LOGGER.info("Chart block %s,%s%s: %s in %.1f s", bx, by, f" ({part})" if part else "",
                      ", ".join(f"{len(v)} {k}" for k, v in built.items()), time.monotonic() - started)
         return data
+
+    async def _fetch_layer(self, key: str, bbox: tuple[float, float, float, float]) -> list[dict]:
+        if SOURCES[key][0] == MML_API:
+            return await self._fetch_mml(key, bbox)
+        return await self._fetch_wfs(key, bbox)
+
+    async def _get_json(self, url: str, params: dict[str, str] | None, what: str) -> dict:
+        async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
+                                    timeout=aiohttp.ClientTimeout(total=120)) as resp:
+            chunks, size = [], 0
+            async for chunk in resp.content.iter_chunked(65536):
+                size += len(chunk)
+                if size > MAX_RESPONSE:
+                    raise ValueError(f"more than {MAX_RESPONSE // 1048576} MB of {what} data for one area")
+                chunks.append(chunk)
+            body = b"".join(chunks)
+            del chunks
+            if resp.status != 200 or not body.lstrip().startswith(b"{"):
+                raise aiohttp.ClientError(
+                    f"HTTP {resp.status}: {body[:200].decode('utf-8', 'replace').strip()}")
+        return await asyncio.to_thread(json.loads, body)  # off the event loop
 
     async def _fetch_wfs(self, key: str, bbox: tuple[float, float, float, float]) -> list[dict]:
         url, type_name, _, props = SOURCES[key]
@@ -701,21 +853,7 @@ class VectorChart:
         start = 0
         while True:
             params["startIndex"] = str(start)
-            async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
-                                        timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                chunks, size = [], 0
-                async for chunk in resp.content.iter_chunked(65536):
-                    size += len(chunk)
-                    if size > MAX_RESPONSE:
-                        raise ValueError(f"more than {MAX_RESPONSE // 1048576} MB of {key} data for one area")
-                    chunks.append(chunk)
-                body = b"".join(chunks)
-                del chunks
-                if resp.status != 200 or not body.lstrip().startswith(b"{"):
-                    raise aiohttp.ClientError(
-                        f"HTTP {resp.status}: {body[:200].decode('utf-8', 'replace').strip()}")
-            page = await asyncio.to_thread(json.loads, body)  # off the event loop
-            del body
+            page = await self._get_json(url, params, key)
             got = page.get("features") or []
             features += got
             total = page.get("numberMatched", page.get("totalFeatures"))
@@ -725,6 +863,27 @@ class VectorChart:
             elif len(got) < min(PAGE, 1000):
                 return features  # a server cap below PAGE still pages on
             start += len(got)
+
+    async def _fetch_mml(self, key: str, bbox: tuple[float, float, float, float]) -> list[dict]:
+        """An MML OGC API Features collection in a bbox, following its next-page links."""
+        _, collection, _, _ = SOURCES[key]
+        lon0, lat0 = mercator_to_lonlat(bbox[0], bbox[1])
+        lon1, lat1 = mercator_to_lonlat(bbox[2], bbox[3])
+        url: str | None = f"{MML_API}/collections/{collection}/items"
+        params: dict[str, str] | None = {"bbox": f"{lon0:.6f},{lat0:.6f},{lon1:.6f},{lat1:.6f}",
+                                         "limit": "10000", "api-key": self.mml_key}
+        features: list[dict] = []
+        for _ in range(50):
+            page = await self._get_json(url, params, key)
+            features += await asyncio.to_thread(_mml_features, page)
+            nxt = next((link.get("href") for link in page.get("links") or []
+                        if link.get("rel") == "next" and link.get("href")), None)
+            if not nxt or not page.get("features"):
+                break
+            url, params = nxt, None
+            if "api-key=" not in url:
+                url += ("&" if "?" in url else "?") + f"api-key={self.mml_key}"
+        return features
 
     def prune(self) -> None:
         """Drop blocks nobody has looked at for two refresh periods."""

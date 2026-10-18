@@ -475,3 +475,7 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 .cal-dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; max-width: 30px; }
 .cal-dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
 .cal-day.selected .cal-dots i { box-shadow: 0 0 0 1px #fff; }
+
+/* Land Survey API key */
+.key-form { display: flex; gap: 8px; margin: 6px 0; }
+.key-form input { flex: 1; min-width: 0; }

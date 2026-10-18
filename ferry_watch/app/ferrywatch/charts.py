@@ -160,6 +160,76 @@ async def chart_layers(session: aiohttp.ClientSession, store: Store) -> dict[str
     return chart
 
 
+# --- Traficom's S-57 view service: the official electronic chart (ENC), drawn by the server.
+
+ENC_WMS = "https://julkinen.traficom.fi/s57/wms"
+ENC_CACHE_KEY = "enc_service"
+ENC_DEFAULT = {"layers": "cells", "crs": "EPSG:3857", "format": "image/png"}
+
+
+def parse_wms_capabilities(xml: str | bytes) -> dict[str, Any]:
+    """Layer names, CRSs and image formats of a WMS 1.3.0 service, namespace-agnostic."""
+    root = ET.fromstring(xml)
+
+    def local(el: ET.Element) -> str:
+        return el.tag.rsplit("}", 1)[-1]
+
+    layers, crs, formats = [], [], []
+    for el in root.iter():
+        tag = local(el)
+        if tag == "Layer":
+            name = next((c.text for c in el if local(c) == "Name"), None)
+            title = next((c.text for c in el if local(c) == "Title"), None)
+            if name:
+                layers.append({"name": name, "title": title or name})
+        elif tag in ("CRS", "SRS") and el.text and el.text not in crs:
+            crs.append(el.text.strip())
+        elif tag == "Format" and el.text and el.text.startswith("image/") and el.text not in formats:
+            formats.append(el.text.strip())
+    return {"layers": layers, "crs": crs, "formats": formats}
+
+
+def choose_enc(caps: dict[str, Any]) -> dict[str, str]:
+    names = [layer["name"] for layer in caps["layers"]]
+    layer = "cells" if "cells" in names else next(
+        (n for n in names if re.search(r"enc|cell|chart", n, re.I) and "coverage" not in n.lower()), "cells")
+    crs = next((c for c in ("EPSG:3857", "EPSG:900913", "EPSG:3785") if c in caps["crs"]), "EPSG:3857")
+    fmt = "image/png" if "image/png" in caps["formats"] or not caps["formats"] else caps["formats"][0]
+    return {"layers": layer, "crs": crs, "format": fmt}
+
+
+async def enc_service(session: aiohttp.ClientSession, store: Store) -> dict[str, str]:
+    """How to ask the S-57 view service for map images (read from its capabilities weekly)."""
+    cached = store.kv_get(ENC_CACHE_KEY)
+    if cached and time.time() - cached["ts"] < CACHE_TTL:
+        return cached["enc"]
+    enc = dict(ENC_DEFAULT)
+    try:
+        async with session.get(ENC_WMS, params={"request": "GetCapabilities", "service": "WMS", "version": "1.3.0"},
+                               headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp.raise_for_status()
+            caps = parse_wms_capabilities(await resp.read())
+        enc = choose_enc(caps)
+        _LOGGER.info("S-57 chart service: layers %s; CRS %s; formats %s; using %s",
+                     ", ".join(f"{l['name']} ({l['title']})" for l in caps["layers"]),
+                     ", ".join(caps["crs"][:12]), ", ".join(caps["formats"]), enc)
+        store.kv_set(ENC_CACHE_KEY, {"ts": time.time(), "enc": enc})
+    except (aiohttp.ClientError, asyncio.TimeoutError, ET.ParseError) as err:
+        _LOGGER.warning("Could not read Traficom's S-57 chart service: %s", err)
+    return enc
+
+
+def enc_tile_url(enc: dict[str, str], z: int, x: int, y: int, size: int = 512) -> str:
+    """A GetMap request for one map tile, at size x size pixels."""
+    half = 20037508.342789244
+    span = 2 * half / 2**z
+    minx, maxy = -half + x * span, half - y * span
+    bbox = f"{minx:.2f},{maxy - span:.2f},{minx + span:.2f},{maxy:.2f}"
+    return (f"{ENC_WMS}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS={quote(enc['layers'])}&STYLES="
+            f"&CRS={enc['crs']}&BBOX={bbox}&WIDTH={size}&HEIGHT={size}"
+            f"&FORMAT={quote(enc['format'])}&TRANSPARENT=TRUE")
+
+
 # Roughly where Traficom's charts are drawn: Finnish sea areas (kept a little inside the
 # boundaries with Sweden, Estonia and Russia) plus Finland itself. The charts already show
 # their own buoys and lights, so OpenSeaMap's sea marks are left out where a map tile lies

@@ -79,10 +79,23 @@
   let activeLayer = null;
 
   // "drawn": the add-on's own seamless chart (vchart.js), with Traficom's overview chart
-  // when zoomed far out. "scanned": Traficom's scanned chart sheets.
-  let chartStyle = store.get("fw-chart-style") === "scanned" ? "scanned" : "drawn";
+  // when zoomed far out. "official": Traficom's electronic chart (S-57 view service), drawn
+  // by Traficom's server. "scanned": Traficom's scanned chart sheets.
+  const CHART_STYLES = ["drawn", "official", "scanned"];
+  let chartStyle = CHART_STYLES.includes(store.get("fw-chart-style")) ? store.get("fw-chart-style") : "drawn";
 
   function buildChartLayer(info) {
+    if (chartStyle === "official") {
+      return L.layerGroup([
+        oceanBase(),
+        // 512-pixel images one zoom out: the same scale on screen, a quarter of the requests.
+        L.tileLayer("api/tiles/enc/{z}/{x}/{y}.png", {
+          tileSize: 512, zoomOffset: -1, minZoom: 6, maxZoom: 19, maxNativeZoom: 18, zIndex: 3,
+          attribution: "Electronic chart © Traficom (S-57 view service) · not for navigation",
+        }),
+        seamarksAbroad(),
+      ]);
+    }
     if (chartStyle === "drawn") {
       const overview = info?.layers?.find((l) => /250k/i.test(l.title || l.layer || ""));
       return L.layerGroup([
@@ -539,8 +552,8 @@
       const kn = best[3];
       L.popup({ className: "speed-popup", closeButton: false, offset: [0, -4] })
         .setLatLng([best[0], best[1]])
-        .setContent(`<strong>${kn != null ? `${kn.toFixed(1)} kn` : "Speed unknown"}</strong>`
-          + `${kn != null ? ` · ${Math.round(kn * 1.852)} km/h` : ""}<br><span class="muted">${clock(best[2])}</span>`)
+        .setContent(`<strong>${kn != null ? `${kn.toFixed(1)} knots` : "Speed unknown"}</strong>`
+          + `<br><span class="muted">${clock(best[2])}</span>`)
         .openOn(map);
     });
     group.addLayer(outline);
@@ -850,6 +863,7 @@
     renderZones(state.zones || []);
     renderNotifyStatus();
     renderChartKeep();
+    FerryChart.setRev(state.vchart?.rev);
     if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
     const chartSource = state.chart?.layers?.length
       ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
@@ -1238,7 +1252,27 @@
       text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
     }
     $("chart-keep-status").textContent = text;
+    $("mml-key").placeholder = vc?.mml_key ? "Key saved · paste a new one to replace it" : "Paste your API key";
   }
+
+  $("mml-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const key = $("mml-key").value.trim();
+    if (!key) return;
+    $("mml-result").textContent = "Checking the key…";
+    try {
+      const res = await api("api/vchart/key", { method: "POST", body: { key } });
+      if (res.ok) {
+        $("mml-key").value = "";
+        $("mml-result").textContent = "Key works. Rocks, wrecks and names are added as each area is downloaded.";
+        await loadState();
+      } else {
+        $("mml-result").textContent = `The Land Survey didn't accept the key: ${res.error}`;
+      }
+    } catch (err) {
+      $("mml-result").textContent = String(err);
+    }
+  });
 
   $("chart-keep").addEventListener("change", async (e) => {
     e.target.disabled = true;

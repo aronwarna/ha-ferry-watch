@@ -104,7 +104,7 @@
   function lightFlare(ctx, x, y, s) {
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(Math.PI * 0.75);
+    ctx.rotate(-Math.PI / 4); // pointing south-east, as on charts
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.bezierCurveTo(-4 * s, 5 * s, -3 * s, 13 * s, 0, 14 * s);
@@ -199,13 +199,21 @@
       const half = type === "v" ? 1.5 * s : 3.4 * s;
       ctx.translate(x, y);
       ctx.rotate(0.3);
+      // A starboard spar buoy ends in a point, a port one is cut square, as on Finnish charts.
+      const pointed = type === "v" && cat === 2;
       bandedShape(ctx, () => {
         ctx.moveTo(-half, 0);
-        ctx.lineTo(-half * (type === "p" ? 0.55 : 1), -tall);
-        ctx.lineTo(half * (type === "p" ? 0.55 : 1), -tall);
+        if (pointed) {
+          ctx.lineTo(-half, -tall + 3.5 * s);
+          ctx.lineTo(0, -tall - 1 * s);
+          ctx.lineTo(half, -tall + 3.5 * s);
+        } else {
+          ctx.lineTo(-half * (type === "p" ? 0.55 : 1), -tall);
+          ctx.lineTo(half * (type === "p" ? 0.55 : 1), -tall);
+        }
         ctx.lineTo(half, 0);
         ctx.closePath();
-      }, bands, { x: -half, y: -tall, w: 2 * half, h: tall });
+      }, bands, { x: -half, y: -tall - 1 * s, w: 2 * half, h: tall + 1 * s });
       ctx.rotate(-0.3);
       if (top && s >= 0.8) {
         ctx.rotate(0.3);
@@ -253,16 +261,18 @@
         ctx.lineTo(r * Math.cos(a), r * Math.sin(a));
       }
       ctx.closePath();
-      ctx.fillStyle = "#fff"; ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = C.black; ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, 1.4 * s, 0, 7); ctx.fillStyle = C.black; ctx.fill();
+      ctx.fillStyle = C.black; ctx.fill();
     } else if (type === "t") {
       ctx.translate(x, y);
       ctx.beginPath(); ctx.arc(0, 0, 5 * s, 0, 7);
       ctx.lineWidth = 1.2; ctx.strokeStyle = C.magenta; ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, 1.4 * s, 0, 7); ctx.fillStyle = C.black; ctx.fill();
+    } else if (type === "s" || type === "d" || type === "a") {
+      // Lights: the light's position as a black dot (the flare shows it is a light).
+      ctx.translate(x, y);
+      ctx.beginPath(); ctx.arc(0, 0, 1.8 * s, 0, 7); ctx.fillStyle = C.black; ctx.fill();
     } else {
-      // Lights and other marks: a dot in a ring.
+      // Other marks: a dot in a ring.
       ctx.translate(x, y);
       ctx.beginPath(); ctx.arc(0, 0, 2.6 * s, 0, 7);
       ctx.fillStyle = "#fff"; ctx.fill();
@@ -275,6 +285,72 @@
       ctx.textBaseline = "middle";
       haloText(ctx, name, x + 7 * s, y + 2 * s, `italic ${9.5 * s}px system-ui, sans-serif`, "#333");
     }
+  }
+
+  // --- rocks, wrecks and labels -----------------------------------------------------
+
+  // Rocks as on charts: + underwater, + with four dots awash, a black dot above water.
+  function drawRock(ctx, x, y, kind, s) {
+    ctx.strokeStyle = C.black;
+    ctx.fillStyle = C.black;
+    if (kind === 3) {
+      ctx.beginPath(); ctx.arc(x, y, 1.5 * s, 0, 7); ctx.fill();
+      return;
+    }
+    const a = 3 * s;
+    ctx.lineWidth = 0.9 * s;
+    ctx.beginPath();
+    ctx.moveTo(x - a, y); ctx.lineTo(x + a, y);
+    ctx.moveTo(x, y - a); ctx.lineTo(x, y + a);
+    ctx.stroke();
+    if (kind === 2) {
+      const d = 1.8 * s;
+      for (const [dx, dy] of [[-d, -d], [d, -d], [-d, d], [d, d]]) {
+        ctx.beginPath(); ctx.arc(x + dx, y + dy, 0.6 * s, 0, 7); ctx.fill();
+      }
+    }
+  }
+
+  // Wrecks: hull showing as a black hull; others as the wreck sign, dangerous ones ringed.
+  function drawWreck(ctx, x, y, kind, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = C.black;
+    ctx.fillStyle = C.black;
+    if (kind === 3) {
+      ctx.beginPath();
+      ctx.moveTo(-6 * s, -1 * s); ctx.lineTo(6 * s, -1 * s); ctx.lineTo(4 * s, 2.5 * s); ctx.lineTo(-4 * s, 2.5 * s);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(0, -1 * s); ctx.lineTo(0, -5 * s); ctx.lineWidth = 1 * s; ctx.stroke();
+    } else {
+      ctx.lineWidth = 1 * s;
+      ctx.beginPath();
+      ctx.moveTo(-6 * s, 0); ctx.lineTo(6 * s, 0);
+      for (const dx of [-3, 0, 3]) { ctx.moveTo(dx * s, -2.2 * s); ctx.lineTo(dx * s, 2.2 * s); }
+      ctx.stroke();
+      if (kind === 1) {
+        ctx.beginPath(); ctx.ellipse(0, 0, 9 * s, 5 * s, 0, 0, 7);
+        ctx.lineWidth = 0.7 * s; ctx.setLineDash([1.2 * s, 1.6 * s]); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Labels that don't overlap each other within a tile.
+  function labeller(ctx) {
+    const boxes = [];
+    return (text, x, y, font, color, align = "center") => {
+      ctx.font = font;
+      const w = ctx.measureText(text).width, h = parseFloat(font.match(/([\d.]+)px/)[1]);
+      const x0 = align === "left" ? x : x - w / 2;
+      const box = [x0 - 2, y - h / 2 - 1, x0 + w + 2, y + h / 2 + 1];
+      if (boxes.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) return false;
+      boxes.push(box);
+      ctx.textAlign = align;
+      ctx.textBaseline = "middle";
+      haloText(ctx, text, x, y, font, color);
+      return true;
+    };
   }
 
   // --- a tile -------------------------------------------------------------------------
@@ -328,6 +404,23 @@
 
     for (const line of data.lead || []) strokeLine(ctx, line, C.fairway, 0.8 * unit);
 
+    // Rock clusters: a dotted outline with rocks inside.
+    for (const rings of data.rockarea || []) {
+      for (const ring of rings) strokeLine(ctx, ring, C.black, 0.7 * unit, [1.2 * unit, 1.8 * unit]);
+      ctx.save();
+      ctx.beginPath();
+      for (const ring of rings) path(ctx, ring, true);
+      ctx.clip("evenodd");
+      const step = data.e / 16; // divides the tile, so the pattern lines up across tiles
+      for (let gx = 0; gx < data.e; gx += step) {
+        for (let gy = (gx / step) % 2 ? step / 2 : 0; gy < data.e; gy += step) drawRock(ctx, gx, gy, 1, unit * 0.8);
+      }
+      ctx.restore();
+    }
+
+    // Piers, quays and breakwaters.
+    for (const line of data.shore || []) strokeLine(ctx, line, C.black, 1.4 * unit);
+
     for (const [draught, line] of data.fline || []) {
       if (draught == null) strokeLine(ctx, line, C.fairway, 0.9 * unit, [5 * unit, 3.5 * unit]);
       else strokeLine(ctx, line, C.fairway, (zoom >= 12 ? 1.3 : 1) * unit);
@@ -350,6 +443,9 @@
     }
 
     if (zoom >= 13) for (const [x, y, depth] of data.sounding || []) sounding(ctx, x, y, depth, unit);
+
+    for (const [x, y, kind] of data.rock || []) drawRock(ctx, x, y, kind, s);
+    for (const [x, y, kind] of data.wreck || []) drawWreck(ctx, x, y, kind, s);
 
     // Light sectors: coloured arcs round the light. A sector "from 200° to 238°" is seen
     // from ships bearing 200-238° towards the light, so it lies on the opposite side.
@@ -381,7 +477,26 @@
     // Floating marks before fixed ones, lights last so their flares stay visible.
     const order = { v: 0, p: 0, k: 1, l: 1, r: 2, o: 2, t: 2, a: 3, d: 3, s: 3, m: 4 };
     const aids = (data.aid || []).slice().sort((a, b) => (order[a[2]] ?? 2) - (order[b[2]] ?? 2));
-    for (const aid of aids) drawAid(ctx, aid, s, zoom >= 14);
+    for (const aid of aids) drawAid(ctx, aid, s, false);
+
+    // Labels last, each only where it doesn't overlap one already drawn.
+    const label = labeller(ctx);
+    const nameFont = {
+      s: `600 ${12 * s}px system-ui, sans-serif`,
+      l: `${11 * s}px system-ui, sans-serif`,
+      w: `italic ${11.5 * s}px system-ui, sans-serif`,
+    };
+    for (const [x, y, text] of data.light || []) {
+      label(text, x + 8 * s, y + 9 * s, `${9 * s}px system-ui, sans-serif`, C.black, "left");
+    }
+    for (const [x, y, text, kind] of data.name || []) {
+      label(text, x, y, nameFont[kind] || nameFont.l, kind === "w" ? "#2a5a85" : "#222");
+    }
+    if (zoom >= 14) {
+      for (const [x, y, , , , name] of aids) {
+        if (name) label(name, x + 7 * s, y + 2 * s, `italic ${9.5 * s}px system-ui, sans-serif`, "#333", "left");
+      }
+    }
   }
 
   // --- the Leaflet layer -------------------------------------------------------------
@@ -390,6 +505,8 @@
   const RETRY_MS = 2500;
   let waitingTiles = 0; // tiles whose data is still downloading
   let waitingChanged = null;
+  let rev = ""; // changes when the server's tiles do (e.g. rocks added), so cached tiles are dropped
+  const layers = new Set();
 
   const ChartLayer = L.GridLayer.extend({
     options: { minZoom: 10, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
@@ -410,7 +527,7 @@
       controller.signal.addEventListener("abort", () => setWaiting(false));
       // The server answers 202 while an area's data is still downloading; ask again shortly.
       const load = () => {
-        fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}`, { signal: controller.signal })
+        fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}?r=${rev}`, { signal: controller.signal })
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((data) => {
             if (data.pending) {
@@ -443,7 +560,13 @@
       tileAids.set(this._tileCoordsToKey(coords), list);
     },
 
+    onRemove(map) {
+      layers.delete(this);
+      L.GridLayer.prototype.onRemove.call(this, map);
+    },
+
     onAdd(map) {
+      layers.add(this);
       L.GridLayer.prototype.onAdd.call(this, map);
       this.on("tileunload", (e) => {
         clearTimeout(e.tile._retry);
@@ -479,5 +602,11 @@
     aidAt,
     colors: C,
     onWaiting: (fn) => { waitingChanged = fn; },
+    setRev: (r) => {
+      if (!r || r === rev) return;
+      const first = rev === "";
+      rev = r;
+      if (!first) for (const layer of layers) layer.redraw();
+    },
   };
 })();

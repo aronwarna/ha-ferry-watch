@@ -92,3 +92,24 @@ def test_finnish_waters_mask():
         assert not in_finnish_waters(*tile(lat, lon, 12))
     # A tile big enough to cross the boundary keeps its marks.
     assert not in_finnish_waters(*tile(59.98, 24.4, 5))
+
+
+def test_s57_service_capabilities():
+    from ferrywatch.charts import choose_enc, enc_tile_url, parse_wms_capabilities
+    xml = b"""<?xml version="1.0"?>
+<WMS_Capabilities xmlns="http://www.opengis.net/wms" version="1.3.0">
+ <Capability>
+  <Request><GetMap><Format>image/png</Format><Format>image/jpeg</Format></GetMap></Request>
+  <Layer><Title>S-57</Title><CRS>EPSG:3067</CRS><CRS>EPSG:3857</CRS>
+   <Layer><Name>background</Name><Title>Background</Title></Layer>
+   <Layer><Name>coverage.1</Name><Title>Overview</Title></Layer>
+   <Layer><Name>cells</Name><Title>ENC Layer</Title></Layer>
+  </Layer>
+ </Capability>
+</WMS_Capabilities>"""
+    caps = parse_wms_capabilities(xml)
+    assert [l["name"] for l in caps["layers"]] == ["background", "coverage.1", "cells"]
+    enc = choose_enc(caps)
+    assert enc == {"layers": "cells", "crs": "EPSG:3857", "format": "image/png"}
+    url = enc_tile_url(enc, 1, 0, 0)
+    assert "BBOX=-20037508.34,0.00,0.00,20037508.34" in url and "LAYERS=cells" in url and "WIDTH=512" in url

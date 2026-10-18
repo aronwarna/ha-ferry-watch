@@ -15,7 +15,7 @@ from aiohttp import web
 from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
-from .charts import chart_layers
+from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .fleets import FleetManager, match_fleets
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
@@ -61,6 +61,7 @@ class FerryWatch:
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
         self.chart: dict[str, Any] | None = None
+        self.enc: dict[str, str] = dict(ENC_DEFAULT)
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
         self.vchart: VectorChart | None = None
@@ -94,7 +95,8 @@ class FerryWatch:
         fake_chart = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
-        self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart)
+        mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
+        self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
         self.tracker.subscribe(self.web.on_event)
@@ -148,6 +150,7 @@ class FerryWatch:
         self.store.close()
 
     async def _load_chart(self) -> None:
+        self.enc = await enc_service(self.session, self.store)
         self.chart = await chart_layers(self.session, self.store)
         if self.chart:
             await self.web.broadcast_ships()
@@ -204,6 +207,14 @@ class FerryWatch:
         elif self._keep_task:
             self._keep_task.cancel()
             self._keep_task = None
+
+    def set_mml_key(self, key: str) -> None:
+        self.store.kv_set("mml_api_key", key.strip())
+        self.vchart.set_mml_key(key)
+        if self._keep_task:  # start a new pass now, to fetch the new part everywhere
+            self._keep_task.cancel()
+            self._keep_task = None
+            self._start_keeping()
 
     async def set_aircraft(self, on: bool) -> None:
         self.aircraft_enabled = on
@@ -295,6 +306,8 @@ class FerryWatch:
         """Upstream address of a chart or sea mark tile the panel asks for."""
         if source == "seamark":
             return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "enc":  # the panel asks for these as 512-pixel tiles one zoom out
+            return enc_tile_url(self.enc, z, x, y) if 5 <= z <= 18 else None
         layer = next((l for l in (self.chart or {}).get("layers", []) if f"chart-{l['id']}" == source), None)
         if layer:
             ids = layer["matrix_ids"]

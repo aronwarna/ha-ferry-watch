@@ -315,4 +315,41 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
             feats.append({"geometry": {"type": "MultiPoint", "coordinates": [list(lonlat_to_mercator(lon, lat))]},
                           "properties": {"turvalaitetyyppifi": kind, "navigointilajikoodi": cat,
                                          "valaistu": lit, "nimifi": name}})
+    elif key == "light":
+        from .vchart import lonlat_to_mercator
+        for lon, lat, text in ((24.40, 60.005, "LFl(2) 15s"), (24.62, 59.975, "Iso WRG 4s"),
+                               (24.66, 59.99, "Q"), (24.80, 60.020, "Fl G 3s")):
+            feats.append({"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))},
+                          "properties": {"viralvalotunnuse": text}})
+    elif key == "shore":
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line([(24.3905, 60.0115), (24.388, 60.016)])},
+                      "properties": {}})
+    elif key == "rock":
+        import math
+        from .vchart import lonlat_to_mercator
+        rnd = random.Random(int(minx) ^ int(miny) ^ 7)
+        for lon, lat, r in SIM_ISLANDS:
+            cx, cy = lonlat_to_mercator(lon, lat)
+            for _ in range(int(r / 60)):
+                a = rnd.uniform(0, 2 * math.pi)
+                d = 2 * r * rnd.uniform(SIM_BANDS[0] * 1.05, SIM_BANDS[2])
+                feats.append({"geometry": {"type": "Point", "coordinates": [cx + d * math.cos(a), cy + d * math.sin(a)]},
+                              "properties": {"kohdeluokka": rnd.choice((38511, 38511, 38512, 38513))}})
+    elif key == "rockarea":
+        feats.append({"geometry": {"type": "Polygon", "coordinates": [_sim_ring(24.505, 60.005, 250, 1.0)]},
+                      "properties": {}})
+    elif key == "wreck":
+        from .vchart import lonlat_to_mercator
+        for lon, lat, code in ((24.58, 60.0, 16721), (24.35, 60.0, 16722), (24.49, 59.995, 16712)):
+            feats.append({"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))},
+                          "properties": {"kohdeluokka": code}})
+    elif key == "name":
+        from .vchart import lonlat_to_mercator
+        names = [(24.40, 60.005, "Rönnskär", "swe", 35070), (24.40, 60.003, "Rönnskari", "fin", 35070),
+                 (24.47, 60.02, "Stora Fågelskär", "swe", 35070), (24.33, 60.03, "Långholmen", "swe", 35070),
+                 (24.60, 60.03, "Porkkala", "fin", 48120), (24.50, 59.94, "Porkkalanselkä", "fin", 36490),
+                 (24.25, 59.995, "Kallbådan", "swe", 35070), (24.70, 60.00, "Mäkiluoto", "fin", 35070)]
+        for lon, lat, text, lang, code in names:
+            feats.append({"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))},
+                          "properties": {"teksti": text, "kieli": lang, "kohdeluokka": code}})
     return feats

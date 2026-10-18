@@ -95,6 +95,7 @@ class Web:
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
+        r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
         r.add_static("/static/", STATIC, append_version=False)
@@ -329,6 +330,17 @@ class Web:
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()
         await self.fw.set_vchart_keep(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
+    async def set_mml_key(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        key = str(body.get("key") or "").strip()
+        if len(key) > 200:
+            raise web.HTTPBadRequest(text="That doesn't look like an API key.")
+        error = await self.fw.vchart.check_mml_key(key) if key else None
+        if error:
+            return web.json_response({"ok": False, "error": error})
+        self.fw.set_mml_key(key)
         return web.json_response({"ok": True})
 
     async def test_notification(self, request: web.Request) -> web.Response:

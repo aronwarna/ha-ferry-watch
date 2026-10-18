@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0
+
+- New **Official** chart style: Traficom's electronic chart from its S-57 view
+  service, with everything the official chart has (rocks, wrecks, names,
+  cables, light descriptions), seamless and free (CC BY 4.0).
+- Drawn chart: rocks (underwater +, awash, above water), rock clusters and
+  wrecks, and island, place and water names, once you paste a free Land
+  Survey API key into menu → Ships → Chart. Light descriptions (e.g.
+  "Iso WRG 4s") next to lights, and piers and breakwaters.
+- Drawn chart symbols closer to Traficom's charts: starboard spar buoys end in
+  a point, light flares point south-east, lighthouses are black stars and
+  lights black dots.
+- Tapping a ship's track shows the speed in knots only.
+
 ## 0.10.0
 
 - **Keep chart on the NAS** (menu → Ships → Chart, on by default): downloads the

@@ -12,17 +12,24 @@ sidebar.
   call. Each ship's track starts when it leaves port. Tap a ship to see its
   whole current voyage.
 - **Map, satellite or nautical chart.** Switch with the buttons at the top.
-  The chart has two styles, switched under the buttons:
+  The chart has three styles, switched under the buttons:
   - **Drawn** (the default) is drawn by the add-on from Finland's open chart
     data, like the Luotsi app: Traficom's depth areas, contours and soundings,
     and Väylävirasto's fairways, buoys, beacons, lights and light sectors, in
     the colours and symbols of Finnish paper charts. It is seamless, with no
     sheet edges. Tap a buoy, beacon or light to see what it is. Zoomed far
     out it shows Traficom's overview chart. The first time you look at an
-    area the add-on downloads its data, so it takes a moment to appear.
+    area the add-on downloads its data, so it takes a moment to appear;
+    **Keep chart on the NAS** (menu → Ships → Chart) downloads the whole Gulf
+    of Finland ahead. With a free Land Survey (Maanmittauslaitos) API key,
+    pasted in the same place, it also shows rocks, rock clusters, wrecks and
+    place names.
+  - **Official** is Traficom's electronic chart (the S-57 data official ENCs
+    are made from), drawn by Traficom's own S-57 view service: everything on
+    the official chart, seamless.
   - **Scanned** is Traficom's scanned paper chart sheets.
 
-  Beyond Finnish waters (Sweden and Estonia have no free charts) both show
+  Beyond Finnish waters (Sweden and Estonia have no free charts) all show
   Esri's ocean map with OpenSeaMap sea marks. Not for navigation.
 - **Ship photos.** Each ship's photo comes from its Wikipedia article. Use
   **Change photo** on a ship's card to upload your own.
