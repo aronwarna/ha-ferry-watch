@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ferry Watch</title>
+  <link rel="stylesheet" href="static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+  <div id="map" aria-label="Map of tracked ships"></div>
+
+  <header class="topbar">
+    <div class="brand panel">
+      <span class="brand-name">Ferry Watch</span>
+      <span id="status" class="status" data-state="connecting"><i></i><span>Connecting</span></span>
+    </div>
+    <div class="tools">
+      <div class="segmented panel" role="group" aria-label="Map type">
+        <button type="button" data-layer="map">Map</button>
+        <button type="button" data-layer="satellite">Satellite</button>
+        <button type="button" data-layer="chart">Chart</button>
+      </div>
+      <button type="button" id="ships-button" class="panel icon-button" aria-label="Manage ships" title="Manage ships">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav id="strip" class="strip" aria-label="Ships"></nav>
+
+  <section id="card" class="card panel" hidden aria-live="polite">
+    <div class="card-photo" id="card-photo">
+      <img id="card-img" alt="">
+      <a id="card-credit" class="credit" target="_blank" rel="noopener" hidden>Photo: Wikipedia</a>
+    </div>
+    <div class="card-body">
+      <div class="card-head">
+        <span class="dot" id="card-dot"></span>
+        <h2 id="card-name"></h2>
+        <button type="button" class="icon-button plain" id="card-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <p class="card-line strong" id="card-motion"></p>
+      <p class="card-line" id="card-voyage"></p>
+      <p class="card-line muted" id="card-seen"></p>
+      <div class="card-actions">
+        <button type="button" id="card-zoom">Show whole track</button>
+        <label class="link-button">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="ships-dialog">
+    <form method="dialog" class="dialog-head">
+      <h2>Ships</h2>
+      <button class="icon-button plain" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </form>
+    <ul id="ships-list" class="ships-list"></ul>
+    <h3>Add a ship</h3>
+    <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
+    <ul id="search-results" class="ships-list results"></ul>
+    <p class="muted small" id="version"></p>
+  </dialog>
+
+  <script src="static/vendor/leaflet/leaflet.js"></script>
+  <script src="static/app.js"></script>
+</body>
+</html>
