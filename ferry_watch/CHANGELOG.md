@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0
+
+- **Keep chart on the NAS** (menu → Ships → Chart, on by default): downloads the
+  drawn chart of the whole Gulf of Finland once in the background, one area at a
+  time (385 areas, Hanko to the eastern border), with progress shown in the
+  menu. After that every area opens without waiting for a download, and the data
+  is refreshed monthly. Switch it off to download only what you look at.
+
 ## 0.9.2
 
 - Fixes the panel (and sometimes Home Assistant itself) spinning forever on the

@@ -65,6 +65,8 @@ class FerryWatch:
         self.tiles: TileCache | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
+        self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
+        self._keep_task: asyncio.Task | None = None
         self.tasks: list[asyncio.Task] = []
 
     def _fleet_members(self) -> set[int]:
@@ -133,6 +135,8 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        if self.vchart_keep:
+            self._start_keeping()
 
     async def stop(self) -> None:
         for task in self.tasks:
@@ -185,6 +189,21 @@ class FerryWatch:
                 changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"]})
         if changed:
             await self.web.broadcast_ships()
+
+    def _start_keeping(self) -> None:
+        if self._keep_task is None or self._keep_task.done():
+            self._keep_task = asyncio.create_task(self.vchart.keep())
+            self.tasks.append(self._keep_task)
+
+    async def set_vchart_keep(self, on: bool) -> None:
+        """Keep the drawn chart of the whole Gulf of Finland on disk, or only what's been looked at."""
+        self.vchart_keep = on
+        self.store.kv_set("vchart_keep", on)
+        if on:
+            self._start_keeping()
+        elif self._keep_task:
+            self._keep_task.cancel()
+            self._keep_task = None
 
     async def set_aircraft(self, on: bool) -> None:
         self.aircraft_enabled = on

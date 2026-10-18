@@ -178,3 +178,35 @@ def test_queued_block_nobody_wants_is_skipped(tmp_path, monkeypatch):
         assert asked == [] and not chart._pending and key not in chart._failed
 
     asyncio.run(run())
+
+
+def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "KEEP_PAUSE", 0)
+    asked = []
+
+    async def fetch(key, bbox):
+        asked.append(key)
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fetch)
+        _, bx, by = tile_at(60.0, 24.4, 11)
+        blocks = [(bx, by), (bx + 1, by)]
+        task = asyncio.create_task(chart.keep(blocks))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if chart.keep_status and not chart.keep_status["running"]:
+                break
+        assert chart.keep_status == {"total": 2, "done": 2, "running": False}
+        assert len(asked) == 2 * len(vchart.SOURCES)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert chart.keep_status is None
+
+    asyncio.run(run())
+
+
+def test_keep_area_size():
+    blocks = vchart.keep_blocks()
+    assert 200 < len(blocks) < 500
+    assert vchart.blocks_for(12, *tile_at(60.0, 24.4, 12)[1:])[0] in blocks

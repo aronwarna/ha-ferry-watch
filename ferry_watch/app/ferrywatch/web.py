@@ -94,6 +94,7 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
+        r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
         r.add_static("/static/", STATIC, append_version=False)
@@ -323,6 +324,11 @@ class Web:
     async def set_aircraft(self, request: web.Request) -> web.Response:
         body = await request.json()
         await self.fw.set_aircraft(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
+    async def set_vchart_keep(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        await self.fw.set_vchart_keep(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
     async def test_notification(self, request: web.Request) -> web.Response:

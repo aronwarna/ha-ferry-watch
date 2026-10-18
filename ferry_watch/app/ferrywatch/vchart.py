@@ -253,6 +253,24 @@ def near_finland(bounds: tuple[float, float, float, float]) -> bool:
     return False
 
 
+# Kept on the NAS when "Keep chart on NAS" is on: the Gulf of Finland, Hanko to the
+# eastern border (lon/lat). Blocks in it with no Finnish waters nearby are left out.
+KEEP_AREA = (22.7, 59.45, 28.2, 60.75)
+KEEP_PAUSE = 1.0  # s between downloads, to be gentle on Traficom and Väylävirasto
+KEEP_RECHECK = 6 * 3600  # s between passes that refresh blocks older than MAX_AGE
+
+
+def keep_blocks(area: tuple[float, float, float, float] = KEEP_AREA) -> list[tuple[int, int]]:
+    """Blocks to keep on disk for an area, nearest the middle of the gulf first."""
+    n = 2**BLOCK_Z
+    (x0, y1), (x1, y0) = lonlat_to_mercator(area[0], area[1]), lonlat_to_mercator(area[2], area[3])
+    size = 2 * HALF / n
+    bx0, bx1 = int((x0 + HALF) // size), int((x1 + HALF) // size)
+    by0, by1 = int((HALF - y0) // size), int((HALF - y1) // size)
+    return [(bx, by) for by in range(by0, by1 + 1) for bx in range(bx0, bx1 + 1)
+            if near_finland(block_bounds(bx, by))]
+
+
 def _num(value: Any) -> float | None:
     try:
         return float(value)
@@ -515,6 +533,7 @@ class VectorChart:
         self._failed: dict[tuple[int, int], float] = {}
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
+        self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
 
     def _path(self, bx: int, by: int) -> Path:
         return self.dir / "blocks" / f"{bx}_{by}.json.gz"
@@ -522,7 +541,39 @@ class VectorChart:
     def status(self) -> dict[str, Any]:
         files = list((self.dir / "blocks").glob("*.json.gz")) if (self.dir / "blocks").exists() else []
         return {"blocks": len(files), "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
-                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z}
+                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "keep": self.keep_status}
+
+    def _fresh(self, key: tuple[int, int]) -> bool:
+        try:
+            age = time.time() - self._path(*key).stat().st_mtime
+        except FileNotFoundError:
+            return False
+        return age < MAX_AGE
+
+    async def keep(self, blocks: list[tuple[int, int]] | None = None) -> None:
+        """Download every block of KEEP_AREA to disk, one at a time, and keep them fresh.
+
+        Runs until cancelled. Panel requests still go first: they queue for the same
+        one-download-at-a-time lock, and this only asks for its next block after the
+        previous one is done.
+        """
+        blocks = keep_blocks() if blocks is None else blocks
+        try:
+            while True:
+                done = sum(self._fresh(key) for key in blocks)
+                self.keep_status = {"total": len(blocks), "done": done, "running": done < len(blocks)}
+                for key in blocks:
+                    if self._fresh(key):
+                        continue
+                    self._wanted[key] = math.inf  # never skipped as "the map moved on"
+                    got = await asyncio.shield(self._block_task(key))
+                    self.keep_status["done"] = sum(self._fresh(k) for k in blocks)
+                    # A failed download backs off, so a service that's down isn't hammered.
+                    await asyncio.sleep(KEEP_PAUSE if got is not None else 60)
+                self.keep_status["running"] = False
+                await asyncio.sleep(KEEP_RECHECK)
+        finally:
+            self.keep_status = None
 
     async def tile(self, z: int, x: int, y: int,
                    wait: float | None = None) -> tuple[dict[str, Any], bool] | None:

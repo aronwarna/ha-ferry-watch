@@ -849,6 +849,7 @@
     renderShipsList();
     renderZones(state.zones || []);
     renderNotifyStatus();
+    renderChartKeep();
     if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
     const chartSource = state.chart?.layers?.length
       ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
@@ -1225,6 +1226,34 @@
       : "Not connected to Home Assistant, so no alerts can be sent.";
     $("notify-test").disabled = !lastState?.ha_connected;
   }
+
+  function renderChartKeep() {
+    const vc = lastState?.vchart;
+    const keep = vc?.keep;
+    $("chart-keep").checked = Boolean(keep);
+    let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
+    if (keep && keep.running) {
+      text = `Downloading the Gulf of Finland: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.`;
+    } else if (keep) {
+      text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
+    }
+    $("chart-keep-status").textContent = text;
+  }
+
+  $("chart-keep").addEventListener("change", async (e) => {
+    e.target.disabled = true;
+    try {
+      await api("api/vchart/keep", { method: "POST", body: { enabled: e.target.checked } });
+      await loadState();
+    } finally {
+      e.target.disabled = false;
+    }
+  });
+
+  // While the chart downloads, keep its progress current while the menu is open.
+  setInterval(() => {
+    if ($("ships-dialog").open && lastState?.vchart?.keep?.running) loadState().catch(() => {});
+  }, 5000);
 
   $("notify-test").addEventListener("click", async () => {
     $("notify-result").textContent = "Sending…";
