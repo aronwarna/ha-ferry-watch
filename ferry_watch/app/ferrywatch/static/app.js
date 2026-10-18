@@ -759,7 +759,7 @@
   }
 
   const DRAW_HINTS = {
-    line: "Tap the map to place the line's points across the fairway. Tap Finish when done.",
+    line: "Tap the map to place the line's points across the inner fairway at one end. Tap Finish when done.",
     polygon: "Tap the map to place the corners of the area. Tap Finish (or the first point) when done.",
   };
 

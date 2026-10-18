@@ -32,7 +32,7 @@ sidebar.
 - **Stats.** The **Stats** tab in the menu (top right) counts inner-route
   passages per month, per ship and per direction (towards Helsinki or towards
   Stockholm), with each ship's usual time of day. If you also draw
-  outer-route lines, it shows how often each ship chooses the inner route.
+  (Outer-route lines from earlier versions still count for the inner-route share.)
   **Download all passages (CSV)** gives you the raw list. Tap a passage to
   replay its track on the map.
 
@@ -56,14 +56,11 @@ Open the area editor with the shape button at the top right. The first start
 copies two shapes from the old YAML setup: the inner-route box and your
 coastal area. You can keep, change or delete them.
 
-- **Inner route line** (recommended). Draw a short line across the inner
-  fairway where the outer route doesn't go. A ship counts as taking the inner
-  route the moment its track crosses the line, so it fires once, not for the
-  whole hour the ship spends in the archipelago. Two or three lines along the
-  route make a missed position harmless; the alert is sent once per ship per
-  two hours.
-- **Outer route line.** Optional. Lets the passage list and stats record
-  outer-route trips too. These never notify.
+- **Inner route line.** Draw one short line across the inner fairway at each
+  end of the inner route, where it leaves the outer route. Whichever line a
+  ship crosses first sends the alert, so it works in both directions; the
+  second line is ignored for the next two hours. Ships that don't cross a line
+  took the outer route.
 - **My area.** Draw the area where you want alerts, e.g. the coast near home.
   If you have none, alerts go out wherever your phone is.
 - **Inner route area.** The old style: a ship counts once it has two positions

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Area editor: draw an inner-route line at each end of the inner route; the
+  outer-route line is gone (no line crossed means the outer route).
+
 ## 0.4.0
 
 - Fleets tab in the menu: Tallink Silja, Viking Line and Finnlines ships on the
