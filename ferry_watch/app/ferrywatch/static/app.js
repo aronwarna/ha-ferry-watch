@@ -254,7 +254,7 @@
 
   async function focusShip(mmsi, { fit = true } = {}) {
     const entry = ships.get(mmsi);
-    if (!entry) return;
+    if (!entry || editing) return;
     if (focused) focused.line.remove();
     focused = { mmsi, line: null, points: [] };
     applyDimming();
@@ -313,7 +313,7 @@
     focused = null;
     applyDimming();
     $("card").hidden = true;
-    $("strip").hidden = false;
+    $("strip").hidden = editing;
     history.replaceState(null, "", location.pathname + location.search);
     renderStrip();
   }
@@ -446,6 +446,8 @@
     renderCard();
     renderStatus();
     renderShipsList();
+    renderZones(state.zones || []);
+    renderNotifyStatus();
     $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored`;
   }
 
@@ -574,15 +576,284 @@
 
   $("ships-button").addEventListener("click", () => {
     renderShipsList();
+    $("notify-result").textContent = "";
+    loadPassages().catch(console.error);
     $("ships-dialog").showModal();
   });
+
+
+  // --- areas (zones) ------------------------------------------------------------
+
+  const ZONE_STYLE = {
+    inner: { color: "#f97316", label: "Inner route" },
+    outer: { color: "#8b5cf6", label: "Outer route" },
+    phone: { color: "#16a34a", label: "My area" },
+  };
+  const zoneLayers = new Map(); // id -> { zone, layer }
+  let editing = false;
+  let drawing = null; // { role, shape }
+  let zonesKey = "";
+
+  map.pm.setGlobalOptions({ snappable: false, allowSelfIntersection: false, continueDrawing: false });
+  map.pm.setLang("en");
+
+  function zoneStyle(zone) {
+    const color = ZONE_STYLE[zone.role]?.color || "#64748b";
+    return editing
+      ? { color, weight: zone.shape === "line" ? 5 : 3, opacity: 0.95, fillOpacity: 0.15, dashArray: null }
+      : { color, weight: zone.shape === "line" ? 3 : 1.5, opacity: 0.55, fillOpacity: 0.05, dashArray: "6 6" };
+  }
+
+  function zoneLatLngs(layer, shape) {
+    const ll = layer.getLatLngs();
+    const ring = shape === "polygon" ? ll[0] : ll;
+    return ring.map((p) => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
+  }
+
+  function renderZones(zones) {
+    const key = JSON.stringify(zones);
+    if (key === zonesKey) return;
+    zonesKey = key;
+    for (const { layer } of zoneLayers.values()) layer.remove();
+    zoneLayers.clear();
+    for (const zone of zones) {
+      const make = zone.shape === "line" ? L.polyline : L.polygon;
+      const layer = make(zone.points, { ...zoneStyle(zone), interactive: editing, pmIgnore: false }).addTo(map);
+      layer.bindTooltip(zone.name, { sticky: true });
+      layer.on("pm:edit", () => saveZoneShape(zone.id));
+      zoneLayers.set(zone.id, { zone, layer });
+      if (editing) layer.pm.enable({ allowSelfIntersection: false, snappable: false });
+      layer.bringToBack();
+    }
+    renderZonesList();
+  }
+
+  const saveTimers = new Map();
+  function saveZoneShape(id) {
+    clearTimeout(saveTimers.get(id));
+    saveTimers.set(id, setTimeout(async () => {
+      const entry = zoneLayers.get(id);
+      if (!entry) return;
+      const points = zoneLatLngs(entry.layer, entry.zone.shape);
+      entry.zone.points = points;
+      zonesKey = ""; // the server's echo will redraw it
+      await api(`api/zones/${id}`, { method: "PUT", body: { points } });
+    }, 500));
+  }
+
+  async function api(url, { method = "GET", body } = {}) {
+    const res = await fetch(url, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  function renderZonesList() {
+    const list = $("zones-list");
+    const zones = [...zoneLayers.values()].map((e) => e.zone);
+    if (!zones.length) {
+      const li = document.createElement("li");
+      li.className = "muted small";
+      li.textContent = "No areas yet. Add an inner route line and your area below.";
+      list.replaceChildren(li);
+      return;
+    }
+    list.replaceChildren(...zones.map((zone) => {
+      const li = document.createElement("li");
+      const sw = document.createElement("span");
+      sw.className = `swatch ${zone.shape}`;
+      sw.style.background = ZONE_STYLE[zone.role]?.color;
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const name = document.createElement("span");
+      name.textContent = zone.name;
+      const sub = document.createElement("span");
+      sub.className = "muted small";
+      sub.textContent = `${ZONE_STYLE[zone.role]?.label || zone.role} · ${zone.shape === "line" ? "line" : "area"}`;
+      grow.append(name, sub);
+      grow.style.cursor = "pointer";
+      grow.addEventListener("click", () => {
+        const layer = zoneLayers.get(zone.id)?.layer;
+        if (layer) map.fitBounds(layer.getBounds(), { ...cardPadding(), maxZoom: 13 });
+      });
+      const actions = document.createElement("div");
+      actions.className = "zone-actions";
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.textContent = "Rename";
+      rename.addEventListener("click", async () => {
+        const value = prompt("Name", zone.name);
+        if (!value || value === zone.name) return;
+        await api(`api/zones/${zone.id}`, { method: "PUT", body: { name: value } });
+        await loadState();
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete "${zone.name}"?`)) return;
+        await api(`api/zones/${zone.id}`, { method: "DELETE" });
+        await loadState();
+      });
+      actions.append(rename, del);
+      li.append(sw, grow, actions);
+      return li;
+    }));
+  }
+
+  async function setEditing(on) {
+    editing = on;
+    if (!on) cancelDrawing();
+    if (on && focused) unfocus();
+    $("areas").hidden = !on;
+    $("strip").hidden = on || Boolean(focused);
+    $("areas-button").setAttribute("aria-pressed", String(on));
+    zonesKey = "";
+    renderZones(lastState?.zones || []);
+    // Longer tracks while editing, so lines can be placed on real routes.
+    const minutes = on ? 24 * 60 : TAIL_MINUTES;
+    try {
+      const tails = await (await fetch(`api/tails?minutes=${minutes}`)).json();
+      for (const [mmsi, points] of Object.entries(tails)) {
+        const entry = ships.get(Number(mmsi));
+        if (entry) setTail(entry, points);
+      }
+    } catch (err) { console.error(err); }
+  }
+
+  const DRAW_HINTS = {
+    line: "Tap the map to place the line's points across the fairway. Tap Finish when done.",
+    polygon: "Tap the map to place the corners of the area. Tap Finish (or the first point) when done.",
+  };
+
+  function startDrawing(role, shape) {
+    cancelDrawing();
+    drawing = { role, shape };
+    const color = ZONE_STYLE[role].color;
+    map.pm.enableDraw(shape === "line" ? "Line" : "Polygon", {
+      templineStyle: { color }, hintlineStyle: { color, dashArray: "5 5" }, pathOptions: { color },
+      finishOn: null, tooltips: false,
+    });
+    $("areas").classList.add("is-drawing");
+    $("drawing").hidden = false;
+    $("drawing-text").textContent = `${ZONE_STYLE[role].label}: ${DRAW_HINTS[shape]}`;
+  }
+
+  function cancelDrawing() {
+    drawing = null;
+    map.pm.disableDraw();
+    $("areas").classList.remove("is-drawing");
+    $("drawing").hidden = true;
+  }
+
+  map.on("pm:create", async (ev) => {
+    const current = drawing;
+    ev.layer.remove();
+    cancelDrawing();
+    if (!current) return;
+    const points = zoneLatLngs(ev.layer, current.shape);
+    try {
+      await api("api/zones", {
+        method: "POST",
+        body: { role: current.role, shape: current.shape, points, name: ZONE_STYLE[current.role].label },
+      });
+    } catch (err) {
+      alert(err.message);
+    }
+    await loadState();
+  });
+
+  $("draw-finish").addEventListener("click", () => {
+    const shape = drawing?.shape === "line" ? "Line" : "Polygon";
+    const handler = map.pm.Draw[shape];
+    const needed = shape === "Line" ? 2 : 3;
+    if (handler?._layer && handler._layer.getLatLngs().length >= needed) handler._finishShape();
+    else alert(`Place at least ${needed} points first.`);
+  });
+  $("draw-cancel").addEventListener("click", cancelDrawing);
+  document.querySelectorAll("[data-add]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const [role, shape] = b.dataset.add.split(":");
+      startDrawing(role, shape);
+    });
+  });
+  $("areas-button").addEventListener("click", () => setEditing(!editing));
+  $("areas-done").addEventListener("click", () => setEditing(false));
+
+  // --- notifications and passages ---------------------------------------------
+
+  const DIRECTIONS = { east: "towards Helsinki", west: "towards Stockholm" };
+
+  function renderNotifyStatus() {
+    $("notify-status").textContent = lastState?.ha_connected
+      ? "Alerts go to your phone when a ship takes the inner route while you're in your area."
+      : "Not connected to Home Assistant, so no alerts can be sent.";
+    $("notify-test").disabled = !lastState?.ha_connected;
+  }
+
+  $("notify-test").addEventListener("click", async () => {
+    $("notify-result").textContent = "Sending…";
+    try {
+      const res = await fetch("api/notify/test", { method: "POST" });
+      $("notify-result").textContent = res.ok ? (await res.json()).message : await res.text();
+    } catch (err) {
+      $("notify-result").textContent = String(err);
+    }
+  });
+
+  async function loadPassages() {
+    const rows = await (await fetch("api/passages?limit=15")).json();
+    const list = $("passages-list");
+    if (!rows.length) {
+      const li = document.createElement("li");
+      li.className = "muted small";
+      li.textContent = "None yet.";
+      list.replaceChildren(li);
+      return;
+    }
+    list.replaceChildren(...rows.map((p) => {
+      const li = document.createElement("li");
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const top = document.createElement("span");
+      top.textContent = `${p.name}: ${p.route} route, ${DIRECTIONS[p.direction] || p.direction}`;
+      const sub = document.createElement("span");
+      sub.className = "muted small";
+      const when = new Date(p.ts * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short", hour12: false });
+      sub.textContent = p.notified ? when : `${when} · ${p.note || "not sent"}`;
+      grow.append(top, sub);
+      li.append(grow);
+      if (p.notified) {
+        const badge = document.createElement("span");
+        badge.className = "badge sent";
+        badge.textContent = "Alert sent";
+        li.append(badge);
+      }
+      return li;
+    }));
+  }
+
+  function focusFromNotification() {
+    // Opening the panel from an alert: show that ship (once per alert).
+    const n = lastState?.last_notification;
+    if (!n || now() - n.ts > 15 * 60) return false;
+    const key = `${n.mmsi}:${Math.round(n.ts)}`;
+    if (store.get("fw-alert-seen") === key || !ships.has(n.mmsi)) return false;
+    store.set("fw-alert-seen", key);
+    focusShip(n.mmsi);
+    return true;
+  }
 
   // --- start --------------------------------------------------------------------
 
   function shipFromUrl() {
     const params = new URLSearchParams(location.search);
     const hash = new URLSearchParams(location.hash.slice(1));
-    const value = hash.get("ship") || params.get("ship");
+    const path = location.pathname.match(/\/ship\/(\d+)\/?$/);
+    const value = hash.get("ship") || params.get("ship") || (path && path[1]);
     return value ? Number(value) : null;
   }
 
@@ -595,7 +866,7 @@
     }
     const target = shipFromUrl();
     if (target && ships.has(target)) focusShip(target);
-    else fitAllShips();
+    else if (!focusFromNotification()) fitAllShips();
     connectSocket();
   })();
 })();

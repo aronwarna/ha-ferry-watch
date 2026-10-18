@@ -1,7 +1,8 @@
 # Ferry Watch for Home Assistant
 
 A Home Assistant app (add-on) that follows the ferries using the Porkkala inner
-route live on a map, with each ship's track since it left port.
+route live on a map, with each ship's track since it left port, and notifies
+your phone when one of them takes the inner route.
 
 ## Install
 
@@ -24,7 +25,9 @@ FW_DEV=1 FW_SIMULATE=1 FW_DATA_DIR=/tmp/fw python -m ferrywatch
 # open http://localhost:8099
 ```
 
-Leave out `FW_SIMULATE=1` to use the live Digitraffic feed. Tests:
+Add `FW_FAKE_HA=1` to try notifications without Home Assistant (calls are
+logged instead of sent). Leave out `FW_SIMULATE=1` to use the live Digitraffic
+feed. Tests:
 
 ```sh
 pip install pytest

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Ferry Watch</title>
   <link rel="stylesheet" href="static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="static/vendor/geoman/leaflet-geoman.css">
   <link rel="stylesheet" href="static/app.css">
 </head>
 <body>
@@ -21,7 +22,10 @@
         <button type="button" data-layer="satellite">Satellite</button>
         <button type="button" data-layer="chart">Chart</button>
       </div>
-      <button type="button" id="ships-button" class="panel icon-button" aria-label="Manage ships" title="Manage ships">
+      <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
+      </button>
+      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships and notifications" title="Ships and notifications">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
       </button>
     </div>
@@ -52,6 +56,29 @@
     </div>
   </section>
 
+  <section id="areas" class="sheet panel" hidden aria-label="Areas">
+    <div class="sheet-head">
+      <h2>Areas</h2>
+      <button type="button" id="areas-done" class="primary">Done</button>
+    </div>
+    <p class="muted small" id="areas-hint">An alert goes out when a ship crosses an inner-route line (or spends a moment inside an inner-route area) while your phone is inside one of your areas. Drag the points on the map to adjust a shape.</p>
+    <ul id="zones-list" class="ships-list"></ul>
+    <div class="add-zone">
+      <span class="small strong">Add</span>
+      <button type="button" data-add="inner:line">Inner route line</button>
+      <button type="button" data-add="outer:line">Outer route line</button>
+      <button type="button" data-add="phone:polygon">My area</button>
+      <button type="button" data-add="inner:polygon">Inner route area</button>
+    </div>
+    <div id="drawing" class="drawing" hidden>
+      <p class="small" id="drawing-text"></p>
+      <div class="row">
+        <button type="button" id="draw-finish" class="primary">Finish</button>
+        <button type="button" id="draw-cancel">Cancel</button>
+      </div>
+    </div>
+  </section>
+
   <dialog id="ships-dialog">
     <form method="dialog" class="dialog-head">
       <h2>Ships</h2>
@@ -63,10 +90,17 @@
     <h3>Add a ship</h3>
     <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
     <ul id="search-results" class="ships-list results"></ul>
+    <h3>Notifications</h3>
+    <p class="small muted" id="notify-status"></p>
+    <button type="button" id="notify-test">Send a test notification</button>
+    <p class="small" id="notify-result" role="status"></p>
+    <h3>Recent passages</h3>
+    <ul id="passages-list" class="ships-list passages"></ul>
     <p class="muted small" id="version"></p>
   </dialog>
 
   <script src="static/vendor/leaflet/leaflet.js"></script>
+  <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/app.js"></script>
 </body>
 </html>

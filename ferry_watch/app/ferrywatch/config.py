@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 from . import __version__
@@ -16,6 +16,9 @@ PORT = int(os.environ.get("FW_PORT", "8099"))
 DEV = os.environ.get("FW_DEV") == "1"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API = "http://supervisor/core/api"
+SUPERVISOR_API = "http://supervisor"
+# Notification pictures go to HA's media folder, which the companion app can load.
+MEDIA_DIR = Path(os.environ.get("FW_MEDIA_DIR", "/media")) / "ferry_watch"
 
 USER_AGENT = f"ha-ferry-watch/{__version__} (+https://github.com/aronwarna/ha-ferry-watch)"
 
@@ -28,6 +31,23 @@ DEFAULT_SHIPS = [
     {"mmsi": 230361000, "name": "Viking Gabriella", "color": "#ea580c", "wiki": "MS Gabriella"},
 ]
 
+# First drafts of the zones, copied from the original YAML setup so detection
+# works out of the box. Points are [lat, lon]. Replace them in the area editor.
+DEFAULT_ZONES = [
+    {
+        "name": "Inner route (from old setup)", "role": "inner", "shape": "polygon",
+        "points": [[60.095422, 24.923673], [59.869197, 24.303396], [59.796673, 23.608556],
+                   [60.123167, 24.434314], [60.104759, 24.918643]],
+    },
+    {
+        "name": "My area (from old setup)", "role": "phone", "shape": "polygon",
+        "points": [[60.1700215, 24.9587688], [60.1598556, 24.8765052], [60.1699175, 24.8186078],
+                   [60.1455416, 24.6693898], [60.1305485, 24.4288562], [60.0799264, 24.1265156],
+                   [60.0430448, 23.8854389], [59.8100256, 23.5815561], [59.8322057, 24.4000159],
+                   [60.095708, 25.1552299]],
+    },
+]
+
 # Colours handed out to ships added later, in order.
 EXTRA_COLORS = ["#7c3aed", "#65a30d", "#0891b2", "#b45309", "#be123c", "#4338ca"]
 
@@ -38,6 +58,11 @@ class Options:
     ha_entities: bool = True
     log_level: str = "info"
     ha_update_interval: int = 60
+    notify_service: str = "notify.mobile_app_samsung_galaxy_s22"
+    phone_entity: str = "device_tracker.samsung_galaxy_s22"
+    phone_max_age_minutes: int = 15
+    require_phone_area: bool = True
+    notify_feed_problems: bool = True
 
 
 def load_options() -> Options:
@@ -50,7 +75,7 @@ def load_options() -> Options:
     except (OSError, ValueError) as err:
         logging.getLogger(__name__).warning("Could not read %s: %s", path, err)
         return opts
-    for key in ("retention_days", "ha_entities", "log_level", "ha_update_interval"):
-        if key in raw:
-            setattr(opts, key, raw[key])
+    for f in fields(Options):
+        if f.name in raw:
+            setattr(opts, f.name, raw[f.name])
     return opts

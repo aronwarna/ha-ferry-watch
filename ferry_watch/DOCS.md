@@ -22,7 +22,51 @@ sidebar.
   `device_tracker.ferry_watch_<name>`, updated about once a minute, so the
   ships also show on the normal HA map.
 
-Notifications, the area editor and stats come in the next versions.
+- **Inner-route alerts.** When one of the ships crosses an inner-route line
+  while your phone is inside one of your areas, your phone gets a
+  notification with a small map of the ship and its track. Tapping it opens
+  the panel on that ship. Outer-route passages are only logged.
+- **Feed warning.** If no ship positions arrive for 30 minutes, you get one
+  notification, and another when they're back.
+
+Stats come in the next version.
+
+## Areas
+
+Open the area editor with the shape button at the top right. The first start
+copies two shapes from the old YAML setup: the inner-route box and your
+coastal area. You can keep, change or delete them.
+
+- **Inner route line** (recommended). Draw a short line across the inner
+  fairway where the outer route doesn't go. A ship counts as taking the inner
+  route the moment its track crosses the line, so it fires once, not for the
+  whole hour the ship spends in the archipelago. Two or three lines along the
+  route make a missed position harmless; the alert is sent once per ship per
+  two hours.
+- **Outer route line.** Optional. Lets the passage list and stats record
+  outer-route trips too. These never notify.
+- **My area.** Draw the area where you want alerts, e.g. the coast near home.
+  If you have none, alerts go out wherever your phone is.
+- **Inner route area.** The old style: a ship counts once it has two positions
+  in a row inside the area.
+
+Drag the points of any shape to adjust it. Changes are saved straight away.
+A ship only counts when it is moving at 5 kn or more, and a gap of more than 20
+minutes between two positions is not treated as a crossing.
+
+## Notifications
+
+The **Send a test notification** button in the ships list (top right) sends a
+sample alert for the ship that moved most recently, and tells you whether a
+real alert would go out where your phone is now.
+
+Before an alert, Ferry Watch reads your phone's location from Home Assistant.
+If it is older than `phone_max_age_minutes`, it asks the companion app for a
+fresh one and waits up to a minute. Alerts about positions more than 10
+minutes old (for example after a restart) are logged but not sent.
+
+The notification picture is saved in Home Assistant's media folder
+(`/media/ferry_watch`) and removed after 14 days.
 
 ## Options
 
@@ -30,6 +74,11 @@ Notifications, the area editor and stats come in the next versions.
 | --- | --- | --- |
 | `retention_days` | 60 | How long ship positions are kept for tracks. |
 | `ha_entities` | true | Publish each ship as a `device_tracker`. |
+| `notify_service` | `notify.mobile_app_samsung_galaxy_s22` | The companion app service that receives alerts. |
+| `phone_entity` | `device_tracker.samsung_galaxy_s22` | The phone's location, for the area check. |
+| `phone_max_age_minutes` | 15 | How old the phone's location may be before Ferry Watch asks for a new one. |
+| `require_phone_area` | true | Only alert while the phone is inside one of your areas. |
+| `notify_feed_problems` | true | Warn when ship data stops arriving. |
 | `log_level` | info | How much the add-on logs. |
 
 ## Resource use

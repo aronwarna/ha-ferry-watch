@@ -48,6 +48,29 @@ CREATE TABLE IF NOT EXISTS meta (
     ship_type INTEGER,
     updated_ts INTEGER
 );
+CREATE TABLE IF NOT EXISTS zones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    shape TEXT NOT NULL,
+    points TEXT NOT NULL,
+    created_ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS passages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mmsi INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    route TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    zone_id INTEGER,
+    lat REAL,
+    lon REAL,
+    sog REAL,
+    notified INTEGER NOT NULL DEFAULT 0,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS passages_mmsi_route_ts ON passages (mmsi, route, ts);
+CREATE INDEX IF NOT EXISTS passages_ts ON passages (ts);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -206,6 +229,77 @@ class Store:
     def meta(self, mmsi: int) -> dict[str, Any] | None:
         row = self.db.execute("SELECT * FROM meta WHERE mmsi = ?", (mmsi,)).fetchone()
         return dict(row) if row else None
+
+    # --- zones -----------------------------------------------------------
+
+    @staticmethod
+    def _zone(row: sqlite3.Row) -> dict[str, Any]:
+        zone = dict(row)
+        zone["points"] = json.loads(zone["points"])
+        return zone
+
+    def zones(self) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT * FROM zones ORDER BY id").fetchall()
+        return [self._zone(r) for r in rows]
+
+    def zone(self, zone_id: int) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT * FROM zones WHERE id = ?", (zone_id,)).fetchone()
+        return self._zone(row) if row else None
+
+    def add_zone(self, name: str, role: str, shape: str, points: list[list[float]]) -> int:
+        cur = self.db.execute(
+            "INSERT INTO zones (name, role, shape, points, created_ts) VALUES (?, ?, ?, ?, ?)",
+            (name, role, shape, json.dumps(points), int(time.time())),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def update_zone(self, zone_id: int, name: str, points: list[list[float]]) -> None:
+        self.db.execute("UPDATE zones SET name = ?, points = ? WHERE id = ?",
+                        (name, json.dumps(points), zone_id))
+        self.db.commit()
+
+    def delete_zone(self, zone_id: int) -> None:
+        self.db.execute("DELETE FROM zones WHERE id = ?", (zone_id,))
+        self.db.commit()
+
+    # --- passages --------------------------------------------------------
+
+    def add_passage(self, p: dict[str, Any]) -> int:
+        cur = self.db.execute(
+            "INSERT INTO passages (mmsi, ts, route, direction, zone_id, lat, lon, sog) "
+            "VALUES (:mmsi, :ts, :route, :direction, :zone_id, :lat, :lon, :sog)",
+            p,
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def set_passage_result(self, passage_id: int, notified: bool, note: str) -> None:
+        self.db.execute("UPDATE passages SET notified = ?, note = ? WHERE id = ?",
+                        (int(notified), note, passage_id))
+        self.db.commit()
+
+    def last_passage(self, mmsi: int, route: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT * FROM passages WHERE mmsi = ? AND route = ? ORDER BY ts DESC LIMIT 1", (mmsi, route)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def passages(self, limit: int = 50, route: str | None = None,
+                 direction: str | None = None, before_ts: int | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM passages WHERE 1=1", []
+        if route:
+            sql += " AND route = ?"
+            args.append(route)
+        if direction:
+            sql += " AND direction = ?"
+            args.append(direction)
+        if before_ts is not None:
+            sql += " AND ts < ?"
+            args.append(before_ts)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(limit)
+        return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     # --- key/value -------------------------------------------------------
 

@@ -15,9 +15,11 @@ from aiohttp import web
 from . import __version__
 from .ais import DigitrafficFeed
 from .charts import chart_layer
-from .config import (DATA_DIR, DEFAULT_SHIPS, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
+from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
-from .ha import HAPublisher
+from .ha import HAClient, HAPublisher
+from .notify import Notifier
+from .passages import Detector
 from .photos import PhotoCache
 from .store import Store
 from .tracker import Tracker
@@ -34,13 +36,17 @@ class FerryWatch:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.store = Store(DATA_DIR / "ferrywatch.db")
         self._seed_ships()
+        self._seed_zones()
         self.tracker = Tracker(self.store)
         self.tracker.load()
+        self.notifier = Notifier(self)
+        self.detector = Detector(self.store, self.notifier.on_passage)
         self.session: aiohttp.ClientSession | None = None
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
         self.web = Web(self)
-        self.ha: HAPublisher | None = None
+        self.ha: HAClient | None = None
+        self.publisher: HAPublisher | None = None
         self.chart: dict[str, Any] | None = None
         self.tasks: list[asyncio.Task] = []
 
@@ -51,17 +57,31 @@ class FerryWatch:
             self.store.add_ship(ship["mmsi"], ship["name"], ship["color"], ship["wiki"], auto_resolve=True)
         self.store.kv_set("seeded", True)
 
+    def _seed_zones(self) -> None:
+        if self.store.kv_get("zones_seeded"):
+            return
+        for zone in DEFAULT_ZONES:
+            self.store.add_zone(zone["name"], zone["role"], zone["shape"], zone["points"])
+        self.store.kv_set("zones_seeded", True)
+
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.tracker.subscribe(self.web.on_event)
+        self.tracker.subscribe(self.detector.on_event)
 
-        if self.options.ha_entities and SUPERVISOR_TOKEN and not DEV:
-            self.ha = HAPublisher(self.session, SUPERVISOR_TOKEN, self.options.ha_update_interval, self)
-            self.tracker.subscribe(self.ha.on_event)
-            self.tasks.append(asyncio.create_task(self.ha.run()))
+        if os.environ.get("FW_FAKE_HA") == "1":
+            from .simulate import FakeHA
+            self.ha = FakeHA()
+        elif SUPERVISOR_TOKEN and not DEV:
+            self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
+            self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
+            if self.options.ha_entities:
+                self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
+                self.tracker.subscribe(self.publisher.on_event)
+                self.tasks.append(asyncio.create_task(self.publisher.run()))
 
         runner = web.AppRunner(self.web.app, access_log=None)
         await runner.setup()
@@ -96,6 +116,7 @@ class FerryWatch:
             removed = self.store.prune(cutoff)
             if removed:
                 _LOGGER.info("Removed %s positions older than %s days", removed, self.options.retention_days)
+            self.notifier.cleanup_pictures()
             for ship in self.store.ships():
                 await self.photos.ensure(ship)
             await self.web.broadcast_ships()
@@ -116,6 +137,9 @@ class FerryWatch:
             })
         feed = self.feed.status() if self.feed else {}
         return {
+            "zones": self.store.zones(),
+            "last_notification": self.store.kv_get("last_notification"),
+            "ha_connected": self.ha is not None,
             "version": __version__,
             "now": time.time(),
             "ships": ships,
@@ -142,6 +166,13 @@ class FerryWatch:
         if ship:
             await self.photos.ensure(ship)
             await self.web.broadcast_ships()
+
+    def zones_changed(self) -> None:
+        self.detector.reload_zones()
+        self._send_reload()
+
+    def _send_reload(self) -> None:
+        asyncio.create_task(self.web.broadcast_ships())
 
     async def remove_ship(self, mmsi: int) -> None:
         self.store.remove_ship(mmsi)

@@ -186,6 +186,43 @@ button { font: inherit; color: inherit; }
 .leaflet-tooltip.ship-label::before { display: none; }
 .leaflet-tooltip.ship-label.dimmed { display: none; }
 
+/* Areas editor */
+.sheet {
+  position: fixed;
+  z-index: 1001;
+  left: 10px;
+  top: 64px;
+  width: min(360px, calc(100vw - 20px));
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+.sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet-head h2 { margin: 0; font-size: 17px; }
+.sheet .ships-list li { padding: 6px 0; }
+.swatch { width: 14px; height: 4px; border-radius: 2px; flex: 0 0 auto; }
+.swatch.polygon { height: 12px; opacity: 0.8; }
+.add-zone { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+button.primary, .add-zone button, .drawing button, #notify-test, .zone-actions button {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.drawing { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.drawing .row { display: flex; gap: 8px; }
+/* While drawing, the sheet shrinks to the hint and buttons so the map stays visible. */
+.sheet.is-drawing #areas-hint, .sheet.is-drawing #zones-list, .sheet.is-drawing .add-zone,
+.sheet.is-drawing #areas-done { display: none; }
+.sheet.is-drawing .drawing { margin-top: 4px; padding-top: 0; border-top: 0; }
+.zone-actions { display: flex; gap: 6px; }
+.zone-actions button { padding: 3px 8px; font-size: 12px; }
+.passages li { font-size: 13px; }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
+.badge.sent { background: var(--ok); color: #fff; border-color: var(--ok); }
+
 /* Ships dialog */
 dialog {
   width: min(440px, calc(100vw - 24px));
@@ -234,6 +271,7 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
   .segmented button { padding: 5px 8px; }
   .card { left: 8px; right: 8px; width: auto; }
   .card-photo { aspect-ratio: 21 / 9; }
+  .sheet { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); left: 8px; right: 8px; width: auto; max-height: 48vh; }
 }
 
 /* Touch screens pinch to zoom; the buttons would sit under the ship chips. */

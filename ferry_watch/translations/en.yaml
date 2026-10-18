@@ -5,5 +5,20 @@ configuration:
   ha_entities:
     name: Ship trackers in Home Assistant
     description: Show each ship as a device_tracker entity, updated about once a minute.
+  notify_service:
+    name: Notify service
+    description: The companion app service that receives the alerts, e.g. notify.mobile_app_samsung_galaxy_s22.
+  phone_entity:
+    name: Phone location
+    description: The phone's device_tracker, used to check that you're inside one of your areas.
+  phone_max_age_minutes:
+    name: Phone location max age (minutes)
+    description: If the phone's location is older than this, Ferry Watch asks the phone for a fresh one before deciding.
+  require_phone_area:
+    name: Only alert when I'm in my area
+    description: Skip inner-route alerts while the phone is outside all of your areas. Has no effect until you have drawn an area.
+  notify_feed_problems:
+    name: Warn when ship data stops
+    description: Send a notification when no ship positions have arrived for 30 minutes, and another when they're back.
   log_level:
     name: Log level

@@ -8,11 +8,15 @@ Never used in a normal install.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
+from typing import Any
 
 from .geo import distance_m
 from .tracker import Tracker
+
+_LOGGER = logging.getLogger(__name__)
 
 KNOTS = 0.514444
 
@@ -86,3 +90,22 @@ async def run_simulation(tracker: Tracker, backfill_hours: float = 4.0, step: fl
         for mmsi, path, dock_s, depart, speed in plans:
             tracker.on_location(mmsi, _message(path, dock_s, depart, speed, now))
         await asyncio.sleep(step)
+
+
+class FakeHA:
+    """Stands in for Home Assistant during development (FW_FAKE_HA=1): the phone sits
+    on the coast at Porkkala and notifications are written to the log."""
+
+    def __init__(self, phone: tuple[float, float] = (60.115, 24.45)):
+        self.phone = phone
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def phone_location(self, entity: str, notify_service: str, max_age: float):
+        return self.phone[0], self.phone[1], 30.0
+
+    async def call_service(self, service: str, data: dict[str, Any]) -> None:
+        self.calls.append((service, data))
+        _LOGGER.info("FAKE %s: %s", service, data)
+
+    async def set_state(self, entity: str, state: str, attributes: dict[str, Any]) -> None:
+        pass
