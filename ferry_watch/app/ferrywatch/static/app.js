@@ -36,17 +36,9 @@
     maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
     attribution: "© Esri, HERE, Garmin, OpenStreetMap",
   });
-  const seamarks = () => L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
-    maxZoom: 18, referrerPolicy: REFERRER, zIndex: 3, attribution: "Sea marks © OpenSeaMap",
-  });
-
-  // Traficom's WMTS uses its own matrix ids per zoom level.
-  const MatrixTileLayer = L.TileLayer.extend({
-    getTileUrl(coords) {
-      const id = this.options.matrixIds[coords.z];
-      return this._url.replace("{TileMatrix}", encodeURIComponent(id))
-        .replace("{x}", coords.x).replace("{y}", coords.y);
-    },
+  // Chart and sea mark tiles come through the add-on, which keeps a copy of each on the NAS.
+  const seamarks = () => L.tileLayer("api/tiles/seamark/{z}/{x}/{y}.png", {
+    maxZoom: 19, maxNativeZoom: 18, zIndex: 3, attribution: "Sea marks © OpenSeaMap",
   });
 
   const layers = {
@@ -67,13 +59,11 @@
     if (!info) return L.layerGroup([streets(), seamarks()]);
     return L.layerGroup([
       streets(),
-      new MatrixTileLayer(info.url, {
-        matrixIds: info.matrix_ids,
+      L.tileLayer("api/tiles/chart/{z}/{x}/{y}.png", {
         minZoom: 0,
         minNativeZoom: info.min_zoom,
         maxNativeZoom: info.max_zoom,
         maxZoom: 19,
-        referrerPolicy: REFERRER,
         zIndex: 2,
         attribution: info.attribution,
       }),

@@ -123,7 +123,7 @@ The add-on keeps one websocket open. Your ships are stored about every 30
 seconds while moving (every 5 minutes in port) and kept for `retention_days`;
 fleet ships every minute (10 minutes in port) and kept for 3 days. Expect well
 under 1% CPU, about 50 MB of memory, and a database of a few tens of MB. Once
-a day the add-on downloads Digitraffic's vessel list to update the fleets. Rescue aircraft add one small request every 10 seconds, only while the panel is open.
+a day the add-on downloads Digitraffic's vessel list to update the fleets. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB.
 
 ## If a ship never shows up
 

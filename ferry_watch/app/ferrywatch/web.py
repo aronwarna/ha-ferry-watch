@@ -86,6 +86,7 @@ class Web:
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
+        r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_post("/api/aircraft", self.set_aircraft)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
@@ -140,6 +141,21 @@ class Web:
         if last and (not points or points[-1][2] < last.ts):
             points.append([last.lat, last.lon, last.ts])
         return web.json_response({"mmsi": mmsi, "since": since, "points": points})
+
+    async def tile(self, request: web.Request) -> web.StreamResponse:
+        try:
+            z, x = int(request.match_info["z"]), int(request.match_info["x"])
+            y = int(request.match_info["y"].split(".")[0])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        source = request.match_info["source"]
+        url = self.fw.tile_url(source, z, x, y)
+        if not url or not (0 <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
+            raise web.HTTPNotFound()
+        path = await self.fw.tiles.get(source, z, x, y, url)
+        if not path:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": "image/png"})
 
     async def photo(self, request: web.Request) -> web.StreamResponse:
         path = self.fw.photos.path(_mmsi(request))

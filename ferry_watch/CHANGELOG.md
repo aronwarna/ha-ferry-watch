@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.4
+
+- Faster chart: nautical chart and sea mark tiles now come through the add-on,
+  which keeps a copy on the NAS (up to 300 MB, refreshed monthly). The first
+  view of an area is as slow as before; after that it loads quickly on every
+  device.
+
 ## 0.6.3
 
 - Ships moored in port no longer show as "Last seen 4 h ago": moored ships

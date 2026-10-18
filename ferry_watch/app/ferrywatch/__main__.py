@@ -24,6 +24,7 @@ from .notify import Notifier
 from .passages import Detector
 from .photos import PhotoCache
 from .store import Store
+from .tilecache import TileCache
 from .tracker import Tracker
 from .web import Web
 
@@ -33,6 +34,7 @@ HOUSEKEEPING_INTERVAL = 6 * 3600
 HA_SENSOR_INTERVAL = 30 * 60
 FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
 FLEET_REFRESH = 24 * 3600
+SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
 FLEET_STORE_MOVING, FLEET_STORE_STOPPED = 60, 600  # sparser tracks than the main ships
 
 
@@ -59,6 +61,7 @@ class FerryWatch:
         self.publisher: HAPublisher | None = None
         self.chart: dict[str, Any] | None = None
         self.aircraft: AircraftWatcher | None = None
+        self.tiles: TileCache | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
         self.tasks: list[asyncio.Task] = []
 
@@ -83,6 +86,7 @@ class FerryWatch:
         loop = asyncio.get_running_loop()
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
+        self.tiles = TileCache(DATA_DIR / "tiles", self.session)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
         self.tracker.subscribe(self.web.on_event)
@@ -213,6 +217,7 @@ class FerryWatch:
                 _LOGGER.info("Removed %s positions older than %s days", removed, self.options.retention_days)
             self.store.prune_untracked(int(time.time()) - FLEET_KEEP)
             self.notifier.cleanup_pictures()
+            await asyncio.to_thread(self.tiles.prune)
             for ship in self.store.ships():
                 await self.photos.ensure(ship)
             await self._fleet_photos()
@@ -257,6 +262,18 @@ class FerryWatch:
                 "list": self.aircraft.snapshot() if self.aircraft and self.aircraft_enabled else [],
             },
         }
+
+    def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
+        """Upstream address of a chart or sea mark tile the panel asks for."""
+        if source == "seamark":
+            return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "chart" and self.chart:
+            ids = self.chart["matrix_ids"]
+            if not self.chart["min_zoom"] <= z < len(ids) or not ids[z]:
+                return None
+            return (self.chart["url"].replace("{TileMatrix}", ids[z])
+                    .replace("{x}", str(x)).replace("{y}", str(y)))
+        return None
 
     def fleet_summary(self, mmsi: int, info: dict[str, Any] | None = None) -> dict[str, Any]:
         info = info or self.fleets.members.get(mmsi, {})
