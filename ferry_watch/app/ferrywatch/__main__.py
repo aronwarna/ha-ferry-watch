@@ -28,6 +28,7 @@ from .web import Web
 _LOGGER = logging.getLogger("ferrywatch")
 
 HOUSEKEEPING_INTERVAL = 6 * 3600
+HA_SENSOR_INTERVAL = 30 * 60
 
 
 class FerryWatch:
@@ -78,6 +79,7 @@ class FerryWatch:
         elif SUPERVISOR_TOKEN and not DEV:
             self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
+            self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
             if self.options.ha_entities:
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
@@ -111,6 +113,15 @@ class FerryWatch:
         self.chart = await chart_layer(self.session, self.store)
         if self.chart:
             await self.web.broadcast_ships()
+
+    async def _keep_ha_sensor(self) -> None:
+        # States set through the API are lost when Home Assistant restarts; re-send now and then.
+        while True:
+            try:
+                await self.notifier.publish_last_inner()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                _LOGGER.debug("Could not update the last passage sensor: %s", err)
+            await asyncio.sleep(HA_SENSOR_INTERVAL)
 
     async def _housekeeping(self) -> None:
         while True:
@@ -149,6 +160,7 @@ class FerryWatch:
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
             "positions_stored": self.store.position_count(),
+            "retention_days": self.options.retention_days,
         }
 
     async def add_ship(self, mmsi: int, name: str) -> None:

@@ -6,7 +6,11 @@
   ship the count towards Helsinki and towards Stockholm, the usual time of
   day, and the inner-route share when outer-route lines are drawn. Tap a month
   to see it on its own; pick another year once there is one.
-- Recent passages moved to the Stats tab; tap one to show that ship.
+- Recent passages moved to the Stats tab; tap one to replay its track on the
+  map (an hour either side, with a dot every 10 minutes).
+- New `sensor.ferry_watch_last_inner_passage` and a `ferry_watch_passage`
+  event for every passage, for your own automations.
+- The "no ship data" warning is only sent between 06:00 and 21:00.
 - Download all passages as a CSV file.
 - Passages of a removed ship stay in the stats, and move with a ship whose
   MMSI changes.

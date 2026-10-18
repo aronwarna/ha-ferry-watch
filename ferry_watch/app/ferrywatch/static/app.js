@@ -255,6 +255,7 @@
   async function focusShip(mmsi, { fit = true } = {}) {
     const entry = ships.get(mmsi);
     if (!entry || editing) return;
+    clearReplay();
     if (focused) focused.line.remove();
     focused = { mmsi, line: null, points: [] };
     applyDimming();
@@ -708,6 +709,7 @@
     editing = on;
     if (!on) cancelDrawing();
     if (on && focused) unfocus();
+    if (on) clearReplay();
     $("areas").hidden = !on;
     $("strip").hidden = on || Boolean(focused);
     $("areas-button").setAttribute("aria-pressed", String(on));
@@ -826,14 +828,12 @@
       sub.textContent = p.notified ? when : `${when} · ${p.note || "not sent"}`;
       grow.append(top, sub);
       li.append(grow);
-      if (ships.has(p.mmsi)) {
-        li.classList.add("clickable");
-        li.title = "Show on the map";
-        li.addEventListener("click", () => {
-          $("ships-dialog").close();
-          focusShip(p.mmsi);
-        });
-      }
+      li.classList.add("clickable");
+      li.title = "Show this passage on the map";
+      li.addEventListener("click", () => {
+        $("ships-dialog").close();
+        showPassage(p).catch(console.error);
+      });
       if (p.notified) {
         const badge = document.createElement("span");
         badge.className = "badge sent";
@@ -854,6 +854,75 @@
     focusShip(n.mmsi);
     return true;
   }
+
+  // --- passage replay -------------------------------------------------------------
+  // The track an hour either side of a recorded passage, with a dot every 10 minutes.
+
+  const REPLAY_WINDOW = 3600;
+  let replayLayer = null;
+
+  function clearReplay() {
+    if (!replayLayer) return;
+    replayLayer.remove();
+    replayLayer = null;
+    $("replay").hidden = true;
+    $("strip").hidden = Boolean(focused) || editing;
+  }
+
+  async function showPassage(p) {
+    if (editing) setEditing(false);
+    if (focused) unfocus();
+    clearReplay();
+    const data = await api(`api/track/${p.mmsi}?since=${p.ts - REPLAY_WINDOW}&until=${p.ts + REPLAY_WINDOW}`);
+    const color = p.color || ships.get(p.mmsi)?.info.color || "#64748b";
+    const pts = data.points.map((q) => [q[0], q[1]]);
+    replayLayer = L.layerGroup().addTo(map);
+    if (pts.length > 1) {
+      L.polyline(pts, { color: "#fff", weight: 8, opacity: 0.8, interactive: false }).addTo(replayLayer);
+      L.polyline(pts, { color, weight: 4, opacity: 1, interactive: false }).addTo(replayLayer);
+      let next = 0;
+      for (const [lat, lon, ts] of data.points) {
+        if (ts < next) continue;
+        next = ts - (ts % 600) + 600;
+        L.circleMarker([lat, lon], { radius: 4, color: "#fff", weight: 1.5, fillColor: color, fillOpacity: 1 })
+          .bindTooltip(clock(ts), { direction: "top" })
+          .addTo(replayLayer);
+      }
+      const first = data.points[0], last = data.points[data.points.length - 1];
+      L.tooltip({ permanent: true, direction: "left", className: "replay-time" })
+        .setLatLng([first[0], first[1]]).setContent(clock(first[2])).addTo(replayLayer);
+      L.tooltip({ permanent: true, direction: "right", className: "replay-time" })
+        .setLatLng([last[0], last[1]]).setContent(clock(last[2])).addTo(replayLayer);
+    }
+    if (p.lat != null && p.lon != null) {
+      L.circleMarker([p.lat, p.lon], { radius: 8, color, weight: 3, fillColor: "#fff", fillOpacity: 1 })
+        .bindTooltip(`Counted here at ${clock(p.ts)}`, { direction: "top" })
+        .addTo(replayLayer);
+      if (pts.length < 2) pts.push([p.lat, p.lon]);
+    }
+
+    $("replay-dot").style.background = color;
+    $("replay-title").textContent = `${p.name}: ${p.route} route, ${DIRECTIONS[p.direction] || p.direction}`;
+    const when = new Date(p.ts * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+    $("replay-when").textContent = p.sog ? `${when} · ${p.sog.toFixed(0)} kn` : when;
+    const keepDays = lastState?.retention_days ?? 60;
+    $("replay-note").textContent = data.points.length > 1
+      ? "Dots every 10 minutes. Tap one for the time."
+      : now() - p.ts > keepDays * 86400
+        ? `The track isn't stored any more (positions are kept for ${keepDays} days).`
+        : "No track was stored for this passage.";
+    $("replay").hidden = false;
+    $("strip").hidden = true;
+
+    const panel = $("replay").getBoundingClientRect();
+    if (pts.length > 1) {
+      map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
+    } else if (pts.length) {
+      map.setView(pts[0], 11);
+    }
+  }
+
+  $("replay-close").addEventListener("click", clearReplay);
 
   // --- stats --------------------------------------------------------------------
   // Counted here rather than on the server so months and clock times follow this

@@ -109,13 +109,20 @@ class Web:
 
     async def track(self, request: web.Request) -> web.Response:
         mmsi = _mmsi(request)
+        since_q = request.query.get("since", "voyage")
+        try:
+            until = int(request.query["until"]) if "until" in request.query else None
+            since = None if since_q == "voyage" else int(since_q)
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid time") from None
+        if until is not None:
+            # A stretch of history (passage replay); works for removed ships too.
+            points = self.fw.store.track(mmsi, since or 0, until)
+            return web.json_response({"mmsi": mmsi, "since": since, "until": until, "points": points})
         if mmsi not in self.fw.tracker.ships:
             raise web.HTTPNotFound()
-        since_q = request.query.get("since", "voyage")
-        if since_q == "voyage":
+        if since is None:
             since = self.fw.tracker.voyage_start(mmsi) or 0
-        else:
-            since = int(since_q)
         points = self.fw.store.track(mmsi, since)
         last = self.fw.tracker.ships[mmsi].last
         # The latest position may not have been stored yet (thinning); include it.
@@ -211,7 +218,9 @@ class Web:
         names = stats.ship_names(self.fw.store)
         rows = self.fw.store.passages(limit=limit, route=request.query.get("route"))
         for row in rows:
-            row["name"] = names.get(row["mmsi"], {}).get("name", f"MMSI {row['mmsi']}")
+            info = names.get(row["mmsi"], {})
+            row["name"] = info.get("name", f"MMSI {row['mmsi']}")
+            row["color"] = info.get("color", "#64748b")
         return web.json_response(rows)
 
     async def passages_csv(self, request: web.Request) -> web.Response:

@@ -27,13 +27,14 @@ sidebar.
   notification with a small map of the ship and its track. Tapping it opens
   the panel on that ship. Outer-route passages are only logged.
 - **Feed warning.** If no ship positions arrive for 30 minutes, you get one
-  notification, and another when they're back.
+  notification (only between 06:00 and 21:00), and another when they're back.
 
 - **Stats.** The **Stats** tab in the menu (top right) counts inner-route
   passages per month, per ship and per direction (towards Helsinki or towards
   Stockholm), with each ship's usual time of day. If you also draw
   outer-route lines, it shows how often each ship chooses the inner route.
-  **Download all passages (CSV)** gives you the raw list.
+  **Download all passages (CSV)** gives you the raw list. Tap a passage to
+  replay its track on the map.
 
 ## Areas
 
@@ -71,6 +72,14 @@ minutes old (for example after a restart) are logged but not sent.
 
 The notification picture is saved in Home Assistant's media folder
 (`/media/ferry_watch`) and removed after 14 days.
+
+## For your own automations
+
+- `sensor.ferry_watch_last_inner_passage`: the time of the latest inner-route
+  passage, with the ship, direction, speed and whether an alert was sent.
+- Event `ferry_watch_passage`: fired for every passage, inner or outer, with
+  `ship`, `mmsi`, `route`, `direction`, `time`, `speed_kn`, `latitude`,
+  `longitude`, `alert_sent` and `alert_note`.
 
 ## Options
 

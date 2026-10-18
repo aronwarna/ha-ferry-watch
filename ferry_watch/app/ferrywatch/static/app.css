@@ -274,6 +274,23 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
   .sheet { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); left: 8px; right: 8px; width: auto; max-height: 48vh; }
 }
 
+/* Passage replay */
+.replay {
+  position: fixed;
+  z-index: 1001;
+  left: 10px;
+  bottom: max(22px, env(safe-area-inset-bottom));
+  width: min(420px, calc(100vw - 20px));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 8px 12px 14px;
+}
+.replay .dot { margin-top: 5px; }
+.replay .grow { flex: 1; min-width: 0; }
+.replay .grow > * { display: block; }
+.leaflet-tooltip.replay-time { font-size: 11px; font-weight: 600; padding: 1px 5px; }
+
 /* Stats */
 .tabs { padding: 3px; background: rgba(127, 127, 127, 0.14); border-radius: 11px; }
 .tabs button { font: inherit; font-weight: 600; padding: 5px 14px; color: inherit; }

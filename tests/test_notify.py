@@ -114,3 +114,34 @@ def test_render_map_picture():
     img = Image.open(io.BytesIO(png))
     assert img.size == (800, 400)
     assert 9 <= choose_zoom(pts + [(60.1, 24.4)], 800, 400, 50) <= 13
+
+
+def test_passage_event_and_last_inner_sensor(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch, phone=(60.4, 25.5))  # outside the area: no alert
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    event, data = fw.ha.events[-1]
+    assert event == "ferry_watch_passage"
+    assert data["ship"] == "Silja Serenade" and data["route"] == "inner"
+    assert data["direction"] == "towards Stockholm"
+    assert data["alert_sent"] is False and data["alert_note"] == "phone outside your area"
+    state, attrs = fw.ha.states[notify.LAST_INNER_ENTITY]
+    assert state == data["time"] and attrs["device_class"] == "timestamp"
+
+    outer = passage(fw.store, route="outer", direction="east")
+    asyncio.run(n.handle(outer))
+    assert fw.ha.events[-1][1]["route"] == "outer"
+    assert fw.ha.states[notify.LAST_INNER_ENTITY][0] == state  # unchanged by outer passages
+
+    # After a Home Assistant restart the sensor is rebuilt from the database.
+    fw.ha.states.clear()
+    asyncio.run(n.publish_last_inner())
+    assert fw.ha.states[notify.LAST_INNER_ENTITY][1]["ship"] == "Silja Serenade"
+
+
+def test_feed_warnings_only_by_day():
+    import datetime as dt
+    day = dt.datetime(2026, 10, 18, 9, 0).timestamp()
+    night = dt.datetime(2026, 10, 18, 3, 0).timestamp()
+    assert notify.feed_warning_hours(day)
+    assert not notify.feed_warning_hours(night)

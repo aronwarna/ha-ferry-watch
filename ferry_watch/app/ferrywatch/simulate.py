@@ -125,6 +125,8 @@ class FakeHA:
     def __init__(self, phone: tuple[float, float] = (60.115, 24.45)):
         self.phone = phone
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.events: list[tuple[str, dict[str, Any]]] = []
+        self.states: dict[str, tuple[str, dict[str, Any]]] = {}
 
     async def phone_location(self, entity: str, notify_service: str, max_age: float):
         return self.phone[0], self.phone[1], 30.0
@@ -134,4 +136,8 @@ class FakeHA:
         _LOGGER.info("FAKE %s: %s", service, data)
 
     async def set_state(self, entity: str, state: str, attributes: dict[str, Any]) -> None:
-        pass
+        self.states[entity] = (state, attributes)
+
+    async def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
+        self.events.append((event_type, data))
+        _LOGGER.info("FAKE event %s: %s", event_type, data)
