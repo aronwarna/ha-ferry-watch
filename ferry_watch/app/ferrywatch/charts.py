@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from urllib.parse import quote
@@ -157,3 +158,47 @@ async def chart_layers(session: aiohttp.ClientSession, store: Store) -> dict[str
         _LOGGER.info("No web-mercator Traficom chart layer found; using OpenSeaMap")
     store.kv_set(CACHE_KEY, {"ts": time.time(), "chart": chart})
     return chart
+
+
+# Roughly where Traficom's charts are drawn: Finnish sea areas (kept a little inside the
+# boundaries with Sweden, Estonia and Russia) plus Finland itself. The charts already show
+# their own buoys and lights, so OpenSeaMap's sea marks are left out where a map tile lies
+# wholly inside this; tiles on or beyond the boundary still get them. (longitude, latitude)
+FINNISH_WATERS = (
+    (24.15, 65.85), (24.0, 65.55), (23.3, 65.0), (22.6, 64.5), (21.6, 63.9), (20.95, 63.5),
+    (20.6, 63.1), (19.9, 62.4), (19.7, 61.5), (19.6, 60.8), (19.25, 60.35), (19.35, 60.0),
+    (19.9, 59.7), (21.0, 59.45), (22.3, 59.5), (23.4, 59.6), (24.4, 59.72), (25.3, 59.85),
+    (26.2, 59.92), (26.7, 60.05), (27.2, 60.25), (27.8, 60.55),
+    # The land border, then back down the Tornio river.
+    (29.5, 61.2), (31.6, 62.9), (30.0, 67.5), (28.5, 69.4), (25.5, 69.4), (20.6, 69.0),
+    (23.6, 67.9), (23.9, 66.8),
+)
+
+
+def _inside(lon: float, lat: float, polygon=FINNISH_WATERS) -> bool:
+    inside = False
+    j = len(polygon) - 1
+    for i, (xi, yi) in enumerate(polygon):
+        xj, yj = polygon[j]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _tile_lon(x: float, z: int) -> float:
+    return x / 2**z * 360 - 180
+
+
+def _tile_lat(y: float, z: int) -> float:
+    return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / 2**z))))
+
+
+def in_finnish_waters(z: int, x: int, y: int) -> bool:
+    """True if the whole web-mercator tile lies inside FINNISH_WATERS."""
+    west, east = _tile_lon(x, z), _tile_lon(x + 1, z)
+    north, south = _tile_lat(y, z), _tile_lat(y + 1, z)
+    if not all(_inside(lon, lat) for lon in (west, east) for lat in (north, south)):
+        return False
+    # A corner of the boundary poking into the tile would leave part of it outside.
+    return not any(west < lon < east and south < lat < north for lon, lat in FINNISH_WATERS)

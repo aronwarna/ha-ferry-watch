@@ -168,6 +168,9 @@ button { font: inherit; color: inherit; }
   font-weight: 600;
 }
 
+/* Chart view beyond Finnish waters: paler, closer to Traficom's chart colours */
+.chart-under { filter: saturate(0.55) brightness(1.08); }
+
 /* Map markers */
 .ship-icon { transition: opacity 0.2s; }
 .ship-icon svg { display: block; overflow: visible; }

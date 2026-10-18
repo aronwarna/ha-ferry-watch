@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import WSMsgType, web
 
 from . import __version__, stats
+from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
 
@@ -150,6 +151,10 @@ class Web:
         except ValueError:
             raise web.HTTPBadRequest() from None
         source = request.match_info["source"]
+        if source == "seamark-abroad":  # chart view: the Finnish charts draw their own marks
+            if in_finnish_waters(z, x, y):
+                raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800"})
+            source = "seamark"
         url = self.fw.tile_url(source, z, x, y)
         if not url or not (0 <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()

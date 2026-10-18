@@ -13,7 +13,9 @@ sidebar.
   whole current voyage.
 - **Map, satellite or nautical chart.** Switch with the buttons at the top.
   The chart is Traficom's open nautical chart when the add-on can find it,
-  otherwise a street map with OpenSeaMap sea marks. Not for navigation.
+  otherwise a street map with OpenSeaMap sea marks. Beyond Finnish waters
+  (Sweden and Estonia have no free charts) it shows Esri's ocean map with
+  OpenSeaMap sea marks. Not for navigation.
 - **Ship photos.** Each ship's photo comes from its Wikipedia article. Use
   **Change photo** on a ship's card to upload your own.
 - **Other ships.** Add or remove ships from the list button (top right) by name
@@ -142,6 +144,6 @@ by name.
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
-- Maps and imagery © Esri, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
+- Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart © Traficom.
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

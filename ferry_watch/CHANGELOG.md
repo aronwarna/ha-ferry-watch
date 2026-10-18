@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+- Chart view no longer shows two sets of buoys in Finnish waters: OpenSeaMap's
+  sea marks now appear only beyond them, where Traficom's chart doesn't reach.
+- Beyond Finnish waters the chart view shows Esri's ocean map with depth
+  shading, toned to sit next to Traficom's chart. Sweden and Estonia don't
+  publish free charts.
+
 ## 0.7.0
 
 - Stats can be grouped by years, months, weeks, weekdays or hours, with the

@@ -74,3 +74,21 @@ def test_stacks_overview_charts_and_all_series():
     chart = parse_capabilities(caps)
     assert [l["id"] for l in chart["layers"]] == ["yleiskartat-250k-public", "merikarttasarjat-public"]
     assert "LAYER=Traficom%3AMerikarttasarjat%20public" in chart["layers"][1]["url"]
+
+
+def test_finnish_waters_mask():
+    import math
+    from ferrywatch.charts import in_finnish_waters
+
+    def tile(lat, lon, z):
+        n = 2**z
+        return z, int((lon + 180) / 360 * n), int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+
+    # Traficom's chart draws these marks itself...
+    for lat, lon in [(59.98, 24.4), (60.1, 19.93), (63.1, 21.5), (59.82, 22.95)]:
+        assert in_finnish_waters(*tile(lat, lon, 12))
+    # ...but not Swedish, Estonian or Russian waters.
+    for lat, lon in [(59.4, 18.8), (59.5, 24.75), (60.05, 27.0), (63.8, 20.3)]:
+        assert not in_finnish_waters(*tile(lat, lon, 12))
+    # A tile big enough to cross the boundary keeps its marks.
+    assert not in_finnish_waters(*tile(59.98, 24.4, 5))

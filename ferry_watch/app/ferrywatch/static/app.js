@@ -41,6 +41,28 @@
     maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
   });
 
+  // Sweden and Estonia don't publish free charts, so the chart view fills in beyond
+  // Finnish waters with Esri's ocean map (depth shading, toned to sit next to Traficom's
+  // charts) and OpenSeaMap's sea marks, which the add-on leaves out where Traficom's
+  // charts already draw their own.
+  const oceanBase = () => L.layerGroup([
+    L.tileLayer(`${ESRI}/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 13, referrerPolicy: REFERRER, zIndex: 1, className: "chart-under",
+      attribution: "Ocean © Esri, GEBCO, NOAA, Garmin",
+    }),
+    L.tileLayer(`${ESRI}/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 13, referrerPolicy: REFERRER, zIndex: 2,
+    }),
+    // The ocean map stops at zoom 13; closer in, the ordinary map takes over.
+    L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
+      minZoom: 14, maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
+      className: "chart-under", attribution: "© Esri, HERE, Garmin, OpenStreetMap",
+    }),
+  ]);
+  const seamarksAbroad = () => L.tileLayer("api/tiles/seamark-abroad/{z}/{x}/{y}.png", {
+    maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
+  });
+
   const layers = {
     map: streets(),
     satellite: L.layerGroup([
@@ -63,10 +85,10 @@
       minNativeZoom: layer.min_zoom,
       maxNativeZoom: layer.max_zoom,
       maxZoom: 19,
-      zIndex: 2 + i,
+      zIndex: 3 + i,
       attribution: i === 0 ? info.attribution : undefined,
     }));
-    return L.layerGroup([streets(), ...charts, seamarks()]);
+    return L.layerGroup([oceanBase(), ...charts, seamarksAbroad()]);
   }
 
   function setLayer(name) {
