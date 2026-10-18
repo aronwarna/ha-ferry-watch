@@ -29,7 +29,11 @@ sidebar.
 - **Feed warning.** If no ship positions arrive for 30 minutes, you get one
   notification, and another when they're back.
 
-Stats come in the next version.
+- **Stats.** The **Stats** tab in the menu (top right) counts inner-route
+  passages per month, per ship and per direction (towards Helsinki or towards
+  Stockholm), with each ship's usual time of day. If you also draw
+  outer-route lines, it shows how often each ship chooses the inner route.
+  **Download all passages (CSV)** gives you the raw list.
 
 ## Areas
 
@@ -56,7 +60,7 @@ minutes between two positions is not treated as a crossing.
 
 ## Notifications
 
-The **Send a test notification** button in the ships list (top right) sends a
+The **Send a test notification** button in the menu's Ships tab (top right) sends a
 sample alert for the ship that moved most recently, and tells you whether a
 real alert would go out where your phone is now.
 

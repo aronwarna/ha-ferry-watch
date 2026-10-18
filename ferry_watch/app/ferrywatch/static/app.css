@@ -274,6 +274,33 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
   .sheet { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); left: 8px; right: 8px; width: auto; max-height: 48vh; }
 }
 
+/* Stats */
+.tabs { padding: 3px; background: rgba(127, 127, 127, 0.14); border-radius: 11px; }
+.tabs button { font: inherit; font-weight: 600; padding: 5px 14px; color: inherit; }
+.stats-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; }
+.stats-head h3 { margin: 0; }
+#stats-summary { margin: 2px 0 0; }
+#stats-year {
+  font: inherit;
+  padding: 3px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.stats-chart svg { display: block; width: 100%; height: auto; margin-top: 8px; }
+.stats-chart .hit { fill: transparent; cursor: pointer; }
+.stats-chart .dim rect:not(.hit) { opacity: 0.3; }
+.stats-chart text { font-size: 10px; fill: var(--muted); text-anchor: middle; }
+.stats-chart .count { fill: var(--text); font-weight: 600; }
+.stats-chart .selected .label { fill: var(--text); font-weight: 700; }
+.stats-chart .future .label { opacity: 0.45; }
+.stats-chart .axis { stroke: var(--border); }
+#stats-scope { margin: 4px 0 0; min-height: 1.4em; }
+.stats-ships .stat-count { font-size: 20px; font-weight: 600; min-width: 2ch; text-align: right; }
+.passages li.clickable { cursor: pointer; }
+.passages li.clickable:hover { background: rgba(127, 127, 127, 0.08); }
+
 /* Touch screens pinch to zoom; the buttons would sit under the ship chips. */
 @media (pointer: coarse) {
   .leaflet-control-zoom { display: none; }

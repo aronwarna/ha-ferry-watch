@@ -89,7 +89,9 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import run_simulation
+            from .simulate import run_simulation, seed_history
+            if os.environ.get("FW_SIM_HISTORY") == "1":
+                seed_history(self.store)
             self.tasks.append(asyncio.create_task(run_simulation(self.tracker)))
         else:
             self.tasks.append(asyncio.create_task(self.feed.start()))

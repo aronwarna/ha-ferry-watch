@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import random
 import time
 from typing import Any
 
 from .geo import distance_m
+from .store import Store
 from .tracker import Tracker
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,6 +92,30 @@ async def run_simulation(tracker: Tracker, backfill_hours: float = 4.0, step: fl
         for mmsi, path, dock_s, depart, speed in plans:
             tracker.on_location(mmsi, _message(path, dock_s, depart, speed, now))
         await asyncio.sleep(step)
+
+
+def seed_history(store: Store, days: int = 290) -> None:
+    """Made-up passages for trying the stats view (FW_SIM_HISTORY=1). Each night one Silja
+    and one Viking ship leaves Helsinki and the other comes back in the morning; about
+    half the trips use the inner route."""
+    if store.passages(limit=1):
+        return
+    rng = random.Random(7)
+    pairs = [(230184000, 265004000), (230361000, 230713000)]
+    start = time.time() - days * 86400
+    for day in range(days):
+        midnight = start - start % 86400 + day * 86400 - 3 * 3600  # roughly local midnight in Finland
+        for out_ship, in_ship in pairs:
+            if day % 2:
+                out_ship, in_ship = in_ship, out_ship
+            for mmsi, direction, hour in ((in_ship, "east", 8.6), (out_ship, "west", 17.4)):
+                ts = int(midnight + (hour + rng.uniform(-0.6, 0.6)) * 3600)
+                if ts > time.time() - 3600:
+                    continue
+                route = "inner" if rng.random() < 0.55 else "outer"
+                pid = store.add_passage({"mmsi": mmsi, "ts": ts, "route": route, "direction": direction,
+                                         "zone_id": None, "lat": 59.98, "lon": 24.4, "sog": 17.0})
+                store.set_passage_result(pid, False, "made-up history")
 
 
 class FakeHA:

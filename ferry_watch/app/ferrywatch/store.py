@@ -133,13 +133,19 @@ class Store:
         self.db.commit()
 
     def remove_ship(self, mmsi: int) -> None:
+        ship = self.ship(mmsi)
+        if ship:
+            # Keep the name and colour so its passages still show up in the stats.
+            former = self.kv_get("former_ships", {})
+            former[str(mmsi)] = {"name": ship["name"], "color": ship["color"]}
+            self.kv_set("former_ships", former)
         self.db.execute("DELETE FROM ships WHERE mmsi = ?", (mmsi,))
         self.db.commit()
 
     def change_mmsi(self, old: int, new: int) -> None:
         """Move a ship and its history to a new MMSI (after a re-flag)."""
         with self.db:
-            for table in ("ships", "positions", "voyages"):
+            for table in ("ships", "positions", "voyages", "passages"):
                 self.db.execute(f"UPDATE {table} SET mmsi = ? WHERE mmsi = ?", (new, old))
             self.db.execute("UPDATE ships SET auto_resolve = 0 WHERE mmsi = ?", (new,))
 
@@ -300,6 +306,11 @@ class Store:
         sql += " ORDER BY ts DESC LIMIT ?"
         args.append(limit)
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def passage_rows(self) -> list[tuple[int, int, str, str]]:
+        """Every passage as (ts, mmsi, route, direction), oldest first, for the stats."""
+        return [tuple(r) for r in self.db.execute(
+            "SELECT ts, mmsi, route, direction FROM passages ORDER BY ts").fetchall()]
 
     # --- key/value -------------------------------------------------------
 

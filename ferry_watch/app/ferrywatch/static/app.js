@@ -577,7 +577,7 @@
   $("ships-button").addEventListener("click", () => {
     renderShipsList();
     $("notify-result").textContent = "";
-    loadPassages().catch(console.error);
+    setTab(store.get("fw-tab") === "stats" ? "stats" : "ships");
     $("ships-dialog").showModal();
   });
 
@@ -826,6 +826,14 @@
       sub.textContent = p.notified ? when : `${when} · ${p.note || "not sent"}`;
       grow.append(top, sub);
       li.append(grow);
+      if (ships.has(p.mmsi)) {
+        li.classList.add("clickable");
+        li.title = "Show on the map";
+        li.addEventListener("click", () => {
+          $("ships-dialog").close();
+          focusShip(p.mmsi);
+        });
+      }
       if (p.notified) {
         const badge = document.createElement("span");
         badge.className = "badge sent";
@@ -845,6 +853,156 @@
     store.set("fw-alert-seen", key);
     focusShip(n.mmsi);
     return true;
+  }
+
+  // --- stats --------------------------------------------------------------------
+  // Counted here rather than on the server so months and clock times follow this
+  // device's time zone.
+
+  const MONTHS = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "short" }));
+  const MONTHS_LONG = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "long" }));
+  let statsData = null;
+  let statsYear = new Date().getFullYear();
+  let statsMonth = null; // 0-11, or null for the whole year
+
+  const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const hhmm = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+
+  function median(values) {
+    const v = [...values].sort((a, b) => a - b);
+    const mid = v.length >> 1;
+    return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2);
+  }
+
+  function setTab(name) {
+    document.querySelectorAll("[data-tab]").forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.tab === name));
+      b.setAttribute("aria-selected", String(b.dataset.tab === name));
+    });
+    document.querySelectorAll("[data-pane]").forEach((pane) => { pane.hidden = pane.dataset.pane !== name; });
+    store.set("fw-tab", name);
+    if (name === "stats") loadStats().catch(console.error);
+  }
+  document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+  async function loadStats() {
+    const [data] = await Promise.all([api("api/stats"), loadPassages()]);
+    statsData = data;
+    const years = new Set(data.passages.map(([ts]) => new Date(ts * 1000).getFullYear()));
+    years.add(new Date().getFullYear());
+    const sorted = [...years].sort((a, b) => b - a);
+    if (!years.has(statsYear)) statsYear = sorted[0];
+    const select = $("stats-year");
+    select.replaceChildren(...sorted.map((y) => new Option(String(y), String(y), false, y === statsYear)));
+    select.hidden = sorted.length < 2;
+    renderStats();
+  }
+
+  $("stats-year").addEventListener("change", (ev) => {
+    statsYear = Number(ev.target.value);
+    statsMonth = null;
+    renderStats();
+  });
+
+  function renderStats() {
+    const rows = statsData.passages.map(([ts, mmsi, route, direction]) => {
+      const d = new Date(ts * 1000);
+      return { mmsi, route, direction, year: d.getFullYear(), month: d.getMonth(), minute: d.getHours() * 60 + d.getMinutes() };
+    }).filter((p) => p.year === statsYear);
+    const inner = rows.filter((p) => p.route === "inner");
+    const today = new Date();
+    const isThisYear = statsYear === today.getFullYear();
+
+    if (!statsData.passages.length) {
+      $("stats-summary").textContent = "None yet. Passages are counted from when an inner-route line is in place.";
+    } else {
+      const parts = [`${inner.length} in ${statsYear}`];
+      if (isThisYear) parts.push(`${inner.filter((p) => p.month === today.getMonth()).length} in ${MONTHS_LONG[today.getMonth()]}`);
+      $("stats-summary").textContent = parts.join(" · ");
+    }
+    renderStatsChart(inner, isThisYear ? today.getMonth() : 11);
+    $("stats-scope").textContent = statsMonth === null
+      ? (inner.length ? "Tap a month to see it on its own." : "")
+      : `${MONTHS_LONG[statsMonth]} ${statsYear}. Tap it again for the whole year.`;
+    renderStatsShips(statsMonth === null ? rows : rows.filter((p) => p.month === statsMonth));
+  }
+
+  function renderStatsChart(inner, lastMonth) {
+    const W = 360, H = 140, TOP = 16, BOTTOM = 20, GAP = 6;
+    const col = W / 12;
+    const counts = Array.from({ length: 12 }, () => new Map());
+    for (const p of inner) counts[p.month].set(p.mmsi, (counts[p.month].get(p.mmsi) || 0) + 1);
+    const totals = counts.map((m) => [...m.values()].reduce((a, b) => a + b, 0));
+    const unit = (H - TOP - BOTTOM) / Math.max(1, ...totals);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Inner route passages per month">`;
+    for (let m = 0; m < 12; m++) {
+      const x = m * col + GAP / 2, w = col - GAP, cx = x + w / 2;
+      const cls = ["month", statsMonth === m ? "selected" : "", statsMonth !== null && statsMonth !== m ? "dim" : "",
+        m > lastMonth ? "future" : ""].join(" ");
+      let y = H - BOTTOM;
+      svg += `<g class="${cls}" data-month="${m}"><rect class="hit" x="${m * col}" y="0" width="${col}" height="${H}"/>`;
+      for (const ship of statsData.ships) {
+        const n = counts[m].get(ship.mmsi);
+        if (!n) continue;
+        y -= n * unit;
+        svg += `<rect x="${x}" y="${y}" width="${w}" height="${n * unit}" fill="${esc(ship.color)}"><title>${esc(ship.name)}: ${n}</title></rect>`;
+      }
+      if (totals[m]) svg += `<text class="count" x="${cx}" y="${y - 4}">${totals[m]}</text>`;
+      svg += `<text class="label" x="${cx}" y="${H - 6}">${MONTHS[m]}</text></g>`;
+    }
+    svg += `<line class="axis" x1="0" x2="${W}" y1="${H - BOTTOM}" y2="${H - BOTTOM}"/></svg>`;
+    $("stats-chart").innerHTML = svg;
+  }
+
+  $("stats-chart").addEventListener("click", (ev) => {
+    const month = ev.target.closest("[data-month]");
+    if (!month) return;
+    const m = Number(month.dataset.month);
+    statsMonth = statsMonth === m ? null : m;
+    renderStats();
+  });
+
+  function renderStatsShips(rows) {
+    const byShip = new Map();
+    for (const p of rows) {
+      if (!byShip.has(p.mmsi)) byShip.set(p.mmsi, []);
+      byShip.get(p.mmsi).push(p);
+    }
+    const innerOf = (mmsi) => (byShip.get(mmsi) || []).filter((p) => p.route === "inner");
+    const shown = statsData.ships.filter((s) => s.current || byShip.has(s.mmsi))
+      .sort((a, b) => innerOf(b.mmsi).length - innerOf(a.mmsi).length || a.name.localeCompare(b.name));
+    $("stats-ships").replaceChildren(...shown.map((ship) => {
+      const all = byShip.get(ship.mmsi) || [];
+      const inner = innerOf(ship.mmsi);
+      const east = inner.filter((p) => p.direction === "east");
+      const west = inner.filter((p) => p.direction === "west");
+      const li = document.createElement("li");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = ship.color;
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const line = (text, cls) => {
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text;
+        grow.append(span);
+      };
+      line(ship.current ? ship.name : `${ship.name} (removed)`, "");
+      line(inner.length ? `${east.length} towards Helsinki · ${west.length} towards Stockholm` : "No inner-route passages", "small muted");
+      const usual = [];
+      if (east.length >= 3) usual.push(`${hhmm(median(east.map((p) => p.minute)))} towards Helsinki`);
+      if (west.length >= 3) usual.push(`${hhmm(median(west.map((p) => p.minute)))} towards Stockholm`);
+      if (usual.length) line(`Usually ${usual.join(", ")}`, "small muted");
+      if (all.length > inner.length) {
+        line(`Inner route on ${inner.length} of ${all.length} recorded trips (${Math.round((100 * inner.length) / all.length)}%)`, "small muted");
+      }
+      const count = document.createElement("span");
+      count.className = "stat-count";
+      count.textContent = String(inner.length);
+      li.append(dot, grow, count);
+      return li;
+    }));
   }
 
   // --- start --------------------------------------------------------------------
