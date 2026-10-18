@@ -38,7 +38,7 @@
   });
   // Chart and sea mark tiles come through the add-on, which keeps a copy of each on the NAS.
   const seamarks = () => L.tileLayer("api/tiles/seamark/{z}/{x}/{y}.png", {
-    maxZoom: 19, maxNativeZoom: 18, zIndex: 3, attribution: "Sea marks © OpenSeaMap",
+    maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
   });
 
   const layers = {
@@ -56,19 +56,17 @@
   let activeLayer = null;
 
   function buildChartLayer(info) {
-    if (!info) return L.layerGroup([streets(), seamarks()]);
-    return L.layerGroup([
-      streets(),
-      L.tileLayer("api/tiles/chart/{z}/{x}/{y}.png", {
-        minZoom: 0,
-        minNativeZoom: info.min_zoom,
-        maxNativeZoom: info.max_zoom,
-        maxZoom: 19,
-        zIndex: 2,
-        attribution: info.attribution,
-      }),
-      seamarks(),
-    ]);
+    if (!info?.layers?.length) return L.layerGroup([streets(), seamarks()]);
+    // Overview charts first, then the detailed chart series on top of them.
+    const charts = info.layers.map((layer, i) => L.tileLayer(`api/tiles/chart-${layer.id}/{z}/{x}/{y}.png`, {
+      minZoom: 0,
+      minNativeZoom: layer.min_zoom,
+      maxNativeZoom: layer.max_zoom,
+      maxZoom: 19,
+      zIndex: 2 + i,
+      attribution: i === 0 ? info.attribution : undefined,
+    }));
+    return L.layerGroup([streets(), ...charts, seamarks()]);
   }
 
   function setLayer(name) {
@@ -255,6 +253,7 @@
       entry.trail.remove();
       aircraft.delete(hex);
     }
+    renderAirBadge(list || []);
     const on = Boolean(lastState?.aircraft?.enabled);
     if (on !== aircraftCredit) {
       if (on) map.attributionControl.addAttribution(AIRCRAFT_CREDIT);
@@ -262,6 +261,30 @@
       aircraftCredit = on;
     }
   }
+
+  // A badge under the top bar whenever a rescue aircraft is up; tap it to see them.
+  function renderAirBadge(list) {
+    const badge = $("air-badge");
+    const flying = list.filter((ac) => ac.alt_ft !== 0);
+    badge.hidden = !flying.length;
+    if (!flying.length) return;
+    const heli = flying.every((ac) => ac.helicopter);
+    badge.classList.toggle("plane", !heli);
+    $("air-badge-text").textContent = flying.length === 1
+      ? `${aircraftLabel(flying[0])} in the air`
+      : `${flying.length} ${heli ? "helicopters" : "aircraft"} in the air`;
+  }
+
+  $("air-badge").addEventListener("click", () => {
+    const entries = [...aircraft.values()];
+    if (!entries.length) return;
+    if (entries.length === 1) {
+      map.setView(entries[0].marker.getLatLng(), Math.max(map.getZoom(), 10));
+      entries[0].marker.openPopup();
+    } else {
+      map.fitBounds(L.latLngBounds(entries.map((e) => e.marker.getLatLng())).pad(0.3), { maxZoom: 11 });
+    }
+  });
 
   function upsertShip(info) {
     let entry = ships.get(info.mmsi);
@@ -618,7 +641,8 @@
     renderZones(state.zones || []);
     renderNotifyStatus();
     if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
-    const chartSource = state.chart ? "Traficom chart" : "OpenSeaMap sea marks";
+    const chartSource = state.chart?.layers?.length
+      ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
     $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored · Chart layer: ${chartSource}`;
   }
 

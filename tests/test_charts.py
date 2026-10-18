@@ -39,8 +39,9 @@ CAPS = """<?xml version="1.0"?>
 
 
 def test_picks_chart_layer_in_web_mercator():
-    layer = parse_capabilities(CAPS)
-    assert layer["layer"] == "merikartta"
+    chart = parse_capabilities(CAPS)
+    [layer] = chart["layers"]
+    assert layer["layer"] == "merikartta" and layer["id"] == "merikartta"
     assert layer["url"] == "https://example.test/wmts/default/WGS84_Pseudo-Mercator/{TileMatrix}/{y}/{x}.png"
     assert layer["matrix_ids"] == ["", "", "WGS84_Pseudo-Mercator:2", "WGS84_Pseudo-Mercator:3",
                                    "WGS84_Pseudo-Mercator:4"]
@@ -49,7 +50,7 @@ def test_picks_chart_layer_in_web_mercator():
 
 def test_falls_back_to_kvp_get_tile():
     caps = CAPS.replace('<ResourceURL format="image/png" resourceType="tile"', '<Ignored')
-    layer = parse_capabilities(caps)
+    [layer] = parse_capabilities(caps)["layers"]
     assert layer["url"].startswith("https://example.test/wmts?SERVICE=WMTS&REQUEST=GetTile")
     assert "LAYER=merikartta" in layer["url"] and "TILEROW={y}" in layer["url"]
 
@@ -57,3 +58,19 @@ def test_falls_back_to_kvp_get_tile():
 def test_no_mercator_set_returns_none():
     caps = CAPS.replace("EPSG::3857", "EPSG::4326")
     assert parse_capabilities(caps) is None
+
+
+def test_stacks_overview_charts_and_all_series():
+    def layer(ident, title):
+        return f"""<Layer><ows:Title>{title}</ows:Title><ows:Identifier>{ident}</ows:Identifier>
+          <Format>image/png</Format>
+          <TileMatrixSetLink><TileMatrixSet>WGS84_Pseudo-Mercator</TileMatrixSet></TileMatrixSetLink></Layer>"""
+    extra = "".join([
+        layer("Traficom:Merikarttasarja A public", "Merikarttasarja A"),
+        layer("Traficom:Merikarttasarjat public", "Merikarttasarjat"),
+        layer("Traficom:Yleiskartat 250k public", "Yleiskartat 250k public"),
+    ])
+    caps = CAPS.replace("<Contents>", "<Contents>" + extra)
+    chart = parse_capabilities(caps)
+    assert [l["id"] for l in chart["layers"]] == ["yleiskartat-250k-public", "merikarttasarjat-public"]
+    assert "LAYER=Traficom%3AMerikarttasarjat%20public" in chart["layers"][1]["url"]

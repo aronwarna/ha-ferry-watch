@@ -15,7 +15,7 @@ from aiohttp import web
 from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
-from .charts import chart_layer
+from .charts import chart_layers
 from .fleets import FleetManager, match_fleets
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
@@ -138,7 +138,7 @@ class FerryWatch:
         self.store.close()
 
     async def _load_chart(self) -> None:
-        self.chart = await chart_layer(self.session, self.store)
+        self.chart = await chart_layers(self.session, self.store)
         if self.chart:
             await self.web.broadcast_ships()
 
@@ -267,11 +267,12 @@ class FerryWatch:
         """Upstream address of a chart or sea mark tile the panel asks for."""
         if source == "seamark":
             return SEAMARK_URL.format(z=z, x=x, y=y)
-        if source == "chart" and self.chart:
-            ids = self.chart["matrix_ids"]
-            if not self.chart["min_zoom"] <= z < len(ids) or not ids[z]:
+        layer = next((l for l in (self.chart or {}).get("layers", []) if f"chart-{l['id']}" == source), None)
+        if layer:
+            ids = layer["matrix_ids"]
+            if not layer["min_zoom"] <= z < len(ids) or not ids[z]:
                 return None
-            return (self.chart["url"].replace("{TileMatrix}", ids[z])
+            return (layer["url"].replace("{TileMatrix}", ids[z])
                     .replace("{x}", str(x)).replace("{y}", str(y)))
         return None
 

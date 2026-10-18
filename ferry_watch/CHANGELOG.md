@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.5
+
+- Chart showed only chart series A (east of Helsinki). It now stacks
+  Traficom's overview charts with all chart series, so the whole coast is
+  covered. The chart tiles are fetched again once after this update.
+- A badge under the top bar shows when rescue aircraft are in the air ("FinnHEMS
+  10 in the air", "2 helicopters in the air"); tap it to zoom to them.
+
 ## 0.6.4
 
 - Faster chart: nautical chart and sea mark tiles now come through the add-on,

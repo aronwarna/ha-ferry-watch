@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -22,7 +24,7 @@ from .store import Store
 _LOGGER = logging.getLogger(__name__)
 
 CAPABILITIES_URL = "https://julkinen.traficom.fi/rasteripalvelu/wmts?request=GetCapabilities&service=WMTS"
-CACHE_KEY = "chart_layer"
+CACHE_KEY = "chart_layers"
 CACHE_TTL = 7 * 24 * 3600
 FAILED_TTL = 6 * 3600
 ATTRIBUTION = "Nautical chart © Traficom, not for navigation"
@@ -33,6 +35,13 @@ NS = {
 }
 MERCATOR_CRS = ("3857", "900913", "3785")
 CHART_WORDS = ("merikartta", "nautical", "chart", "sjökort", "rannikko", "coastal")
+# Traficom splits its charts into series (A east of Helsinki, B west of it, and so on).
+# These are stacked bottom to top: overview charts for open water, then all the series.
+PREFERRED = ("yleiskartat 250k public", "yleiskartat 100k public", "merikarttasarjat public")
+
+
+def _plain(ident: str) -> str:
+    return ident.split(":", 1)[-1].strip().lower()
 
 
 def _text(el: ET.Element | None) -> str:
@@ -98,7 +107,7 @@ def parse_capabilities(xml: str | bytes) -> dict[str, Any] | None:
                     break
         if not template and get_tile:
             sep = "" if get_tile.endswith(("?", "&")) else ("&" if "?" in get_tile else "?")
-            template = (f"{get_tile}{sep}SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER={ident}"
+            template = (f"{get_tile}{sep}SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER={quote(ident)}"
                         f"&STYLE={{Style}}&FORMAT={fmt}&TILEMATRIXSET={{TileMatrixSet}}"
                         f"&TILEMATRIX={{TileMatrix}}&TILEROW={{TileRow}}&TILECOL={{TileCol}}")
         if not template:
@@ -109,37 +118,42 @@ def parse_capabilities(xml: str | bytes) -> dict[str, Any] | None:
 
     if not candidates:
         return None
-    candidates.sort(key=lambda c: -c[0])
-    score, ident, title, tms_id, template, style = candidates[0]
-    matrix_ids = mercator[tms_id]
-    url = (template.replace("{TileMatrixSet}", tms_id).replace("{Style}", style)
-           .replace("{TileRow}", "{y}").replace("{TileCol}", "{x}"))
-    return {
-        "layer": ident,
-        "title": title,
-        "url": url,  # {TileMatrix} is filled in per zoom by the panel
-        "matrix_ids": matrix_ids,
-        "min_zoom": next((z for z, m in enumerate(matrix_ids) if m), 0),
-        "max_zoom": len(matrix_ids) - 1,
-        "attribution": ATTRIBUTION,
-    }
+    by_name = {_plain(c[1]): c for c in candidates}
+    chosen = [by_name[name] for name in PREFERRED if name in by_name]
+    if not chosen:
+        chosen = [max(candidates, key=lambda c: c[0])]
+    layers = []
+    for _, ident, title, tms_id, template, style in chosen:
+        matrix_ids = mercator[tms_id]
+        url = (template.replace("{TileMatrixSet}", tms_id).replace("{Style}", style)
+               .replace("{TileRow}", "{y}").replace("{TileCol}", "{x}"))
+        layers.append({
+            "layer": ident,
+            "title": title,
+            "id": re.sub(r"[^a-z0-9]+", "-", _plain(ident)).strip("-"),  # also the cache folder
+            "url": url,  # {TileMatrix} is filled in per zoom
+            "matrix_ids": matrix_ids,
+            "min_zoom": next((z for z, m in enumerate(matrix_ids) if m), 0),
+            "max_zoom": len(matrix_ids) - 1,
+        })
+    return {"layers": layers, "attribution": ATTRIBUTION}
 
 
-async def chart_layer(session: aiohttp.ClientSession, store: Store) -> dict[str, Any] | None:
+async def chart_layers(session: aiohttp.ClientSession, store: Store) -> dict[str, Any] | None:
     cached = store.kv_get(CACHE_KEY)
-    if cached and time.time() - cached["ts"] < (CACHE_TTL if cached["layer"] else FAILED_TTL):
-        return cached["layer"]
-    layer = None
+    if cached and time.time() - cached["ts"] < (CACHE_TTL if cached["chart"] else FAILED_TTL):
+        return cached["chart"]
+    chart = None
     try:
         async with session.get(CAPABILITIES_URL, headers={"User-Agent": USER_AGENT},
                                timeout=aiohttp.ClientTimeout(total=30)) as resp:
             resp.raise_for_status()
-            layer = parse_capabilities(await resp.read())
+            chart = parse_capabilities(await resp.read())
     except (aiohttp.ClientError, asyncio.TimeoutError, ET.ParseError) as err:
         _LOGGER.warning("Could not read Traficom chart service: %s", err)
-    if layer:
-        _LOGGER.info("Using Traficom chart layer %s (%s)", layer["layer"], layer["title"])
+    if chart:
+        _LOGGER.info("Using Traficom chart layers: %s", ", ".join(l["title"] for l in chart["layers"]))
     else:
         _LOGGER.info("No web-mercator Traficom chart layer found; using OpenSeaMap")
-    store.kv_set(CACHE_KEY, {"ts": time.time(), "layer": layer})
-    return layer
+    store.kv_set(CACHE_KEY, {"ts": time.time(), "chart": chart})
+    return chart

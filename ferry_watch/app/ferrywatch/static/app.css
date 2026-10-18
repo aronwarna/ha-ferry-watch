@@ -381,3 +381,28 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 .aircraft-icon svg { display: block; overflow: visible; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35)); }
 .leaflet-tooltip.aircraft-label { font-weight: 500; font-size: 11px; }
 .fleet a, .card a:not(.credit), dialog a { color: var(--accent); }
+
+/* Rescue aircraft badge */
+.air-badge {
+  position: fixed;
+  z-index: 1000;
+  top: calc(max(10px, env(safe-area-inset-top)) + 54px);
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  animation: air-pulse 2.4s ease-in-out infinite;
+}
+.air-badge svg { width: 20px; height: 20px; fill: #dc2626; stroke: #dc2626; stroke-width: 2.2; stroke-linecap: round; }
+.air-badge.plane svg ellipse { rx: 3; }
+@keyframes air-pulse {
+  0%, 100% { box-shadow: var(--shadow); }
+  50% { box-shadow: var(--shadow), 0 0 0 4px rgba(220, 38, 38, 0.25); }
+}
+@media (prefers-reduced-motion: reduce) { .air-badge { animation: none; } }

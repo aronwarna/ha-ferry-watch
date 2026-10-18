@@ -66,8 +66,8 @@ class TileCache:
             async with self._limit, self.session.get(
                 url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
-                if resp.status == 404:
-                    body = b""  # remembered as "no tile here" so it isn't asked for again
+                if resp.status in (400, 404):
+                    body = b""  # outside the chart: remembered so it isn't asked for again
                 else:
                     resp.raise_for_status()
                     if not resp.content_type.startswith("image/"):
