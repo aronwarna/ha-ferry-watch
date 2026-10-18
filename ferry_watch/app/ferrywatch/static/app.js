@@ -24,6 +24,7 @@
   const map = L.map("map", { zoomControl: false, attributionControl: true, worldCopyJump: true })
     .setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   L.control.zoom({ position: "bottomright" }).addTo(map);
+  window.ferryMap = map; // handy from the browser console
   map.attributionControl.setPrefix(false);
 
   // HA serves the panel with a no-referrer policy; tile servers want to see where requests come from.
@@ -50,15 +51,15 @@
       maxZoom: 13, referrerPolicy: REFERRER, zIndex: 1, className: "chart-under",
       attribution: "Ocean © Esri, GEBCO, NOAA, Garmin",
     }),
-    L.tileLayer(`${ESRI}/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}`, {
-      maxZoom: 13, referrerPolicy: REFERRER, zIndex: 2,
-    }),
     // The ocean map stops at zoom 13; closer in, the ordinary map takes over.
     L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
       minZoom: 14, maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
       className: "chart-under", attribution: "© Esri, HERE, Garmin, OpenStreetMap",
     }),
   ]);
+  const oceanLabels = (zIndex) => L.tileLayer(`${ESRI}/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 13, referrerPolicy: REFERRER, zIndex,
+  });
   const seamarksAbroad = () => L.tileLayer("api/tiles/seamark-abroad/{z}/{x}/{y}.png", {
     maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
   });
@@ -73,11 +74,27 @@
         maxZoom: 19, referrerPolicy: REFERRER, zIndex: 2,
       }),
     ]),
-    chart: L.layerGroup([streets(), seamarks()]),
+    chart: null, // built by buildChartLayer below
   };
   let activeLayer = null;
 
+  // "drawn": the add-on's own seamless chart (vchart.js), with Traficom's overview chart
+  // when zoomed far out. "scanned": Traficom's scanned chart sheets.
+  let chartStyle = store.get("fw-chart-style") === "scanned" ? "scanned" : "drawn";
+
   function buildChartLayer(info) {
+    if (chartStyle === "drawn") {
+      const overview = info?.layers?.find((l) => /250k/i.test(l.title || l.layer || ""));
+      return L.layerGroup([
+        oceanBase(),
+        ...(overview ? [L.tileLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
+          minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 8, zIndex: 2,
+        })] : []),
+        FerryChart.layer({ attribution: "Depths © Traficom · Fairways © Väylävirasto · not for navigation", zIndex: 3 }),
+        oceanLabels(6),
+        seamarksAbroad(),
+      ]);
+    }
     if (!info?.layers?.length) return L.layerGroup([streets(), seamarks()]);
     // Overview charts first, then the detailed chart series on top of them.
     const charts = info.layers.map((layer, i) => L.tileLayer(`api/tiles/chart-${layer.id}/{z}/{x}/{y}.png`, {
@@ -88,8 +105,37 @@
       zIndex: 3 + i,
       attribution: i === 0 ? info.attribution : undefined,
     }));
-    return L.layerGroup([oceanBase(), ...charts, seamarksAbroad()]);
+    return L.layerGroup([oceanBase(), oceanLabels(2), ...charts, seamarksAbroad()]);
   }
+
+  layers.chart = buildChartLayer(null);
+
+  function setChartStyle(style) {
+    chartStyle = style;
+    store.set("fw-chart-style", style);
+    const wasActive = activeLayer === layers.chart;
+    if (wasActive) map.removeLayer(layers.chart);
+    layers.chart = buildChartLayer(chartInfo);
+    if (wasActive) setLayer("chart");
+    renderChartStyle();
+  }
+
+  function renderChartStyle() {
+    const box = $("chart-style");
+    box.hidden = activeLayer !== layers.chart;
+    box.querySelectorAll("[data-style]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === chartStyle)));
+  }
+
+  // Tap a buoy, beacon or light on the drawn chart to see what it is.
+  map.on("click", (e) => {
+    if (activeLayer !== layers.chart || chartStyle !== "drawn" || map.getZoom() < 11) return;
+    const hit = FerryChart.aidAt(map, e.latlng);
+    if (!hit) return;
+    L.popup({ className: "aid-popup", offset: [0, -6] })
+      .setLatLng(hit.latlng)
+      .setContent(`${hit.name ? `<strong>${esc(hit.name)}</strong><br>` : ""}${esc(hit.description)}`)
+      .openOn(map);
+  });
 
   function setLayer(name) {
     if (!layers[name]) name = "map";
@@ -100,10 +146,14 @@
       b.setAttribute("aria-pressed", String(b.dataset.layer === name));
     });
     store.set("fw-layer", name);
+    renderChartStyle();
   }
 
   document.querySelectorAll("[data-layer]").forEach((b) => {
     b.addEventListener("click", () => setLayer(b.dataset.layer));
+  });
+  document.querySelectorAll("#chart-style [data-style]").forEach((b) => {
+    b.addEventListener("click", () => setChartStyle(b.dataset.style));
   });
   setLayer(store.get("fw-layer") || "map");
 
@@ -798,7 +848,10 @@
     if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
     const chartSource = state.chart?.layers?.length
       ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
-    $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored · Chart layer: ${chartSource}`;
+    const vc = state.vchart;
+    const drawn = vc ? ` · Drawn chart: ${vc.blocks} areas downloaded (${vc.mb} MB)${
+      Object.keys(vc.errors || {}).length ? `, problems with ${Object.entries(vc.errors).map(([k, e]) => `${k} (${e})`).join(", ")}` : ""}` : "";
+    $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored · Scanned chart: ${chartSource}${drawn}`;
   }
 
   async function loadTails() {

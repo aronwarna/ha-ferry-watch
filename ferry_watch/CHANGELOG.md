@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+- New drawn chart, like the Luotsi app: the add-on draws the chart itself from
+  Traficom's depth data and Väylävirasto's fairway data, so it looks the same
+  everywhere, with no scanned sheet edges or inset boxes. Land is pale yellow,
+  shallow water in three blues (0–3, 3–6, 6–10 m), deeper water white, with
+  depth contours, soundings, fairway lines with their draught, fairway areas,
+  leading lines, buoys and beacons in their IALA colours with topmarks, lights
+  with their magenta flare, and coloured light sectors.
+- Tap a buoy, beacon or light on the drawn chart to see its name and type.
+- **Drawn / Scanned** under the map buttons switches between the new chart and
+  Traficom's scanned chart.
+
 ## 0.8.0
 
 - Tap a ship and its voyage track is coloured by speed, from purple (stopped)

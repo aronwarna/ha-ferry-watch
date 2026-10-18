@@ -430,6 +430,16 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 @media (prefers-reduced-motion: reduce) { .air-badge { animation: none; } }
 .alert-switch { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; color: var(--muted); margin-right: 8px; }
 
+/* Chart style switch, under the map type buttons while the chart is shown */
+.chart-style {
+  position: fixed;
+  z-index: 1000;
+  top: calc(max(10px, env(safe-area-inset-top)) + 54px);
+  right: 10px;
+}
+.chart-style button { font-size: 12px; padding: 4px 9px; }
+.aid-popup .leaflet-popup-content { margin: 8px 12px; font-size: 13px; line-height: 1.4; }
+
 /* Stats: grouping buttons and the month calendar */
 .stats-views { display: flex; flex-wrap: wrap; margin-top: 8px; width: fit-content; max-width: 100%; }
 .stats-views button { font-size: 12px; padding: 4px 9px; }

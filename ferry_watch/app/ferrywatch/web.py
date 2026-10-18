@@ -20,6 +20,7 @@ from . import __version__, stats
 from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
+from .vchart import MIN_Z
 
 if TYPE_CHECKING:
     from .__main__ import FerryWatch
@@ -89,6 +90,7 @@ class Web:
         r.add_post("/api/notify/test", self.test_notification)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
+        r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
@@ -100,7 +102,7 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/app.js", "static/app.css"):
+        for name in ("static/vchart.js", "static/app.js", "static/app.css"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -162,6 +164,20 @@ class Web:
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
         return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": "image/png"})
+
+    async def vchart_tile(self, request: web.Request) -> web.Response:
+        try:
+            z, x = int(request.match_info["z"]), int(request.match_info["x"])
+            y = int(request.match_info["y"].split(".")[0])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        if not (MIN_Z <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
+            raise web.HTTPNotFound()
+        tile, complete = await self.fw.vchart.tile(z, x, y)
+        # A tile missing a block that couldn't be fetched is asked for again next time.
+        cache = "max-age=86400" if complete else "no-store"
+        return web.Response(body=json.dumps(tile, separators=(",", ":")), content_type="application/json",
+                            headers={"Cache-Control": cache})
 
     async def photo(self, request: web.Request) -> web.StreamResponse:
         path = self.fw.photos.path(_mmsi(request))

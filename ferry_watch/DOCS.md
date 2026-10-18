@@ -12,10 +12,18 @@ sidebar.
   call. Each ship's track starts when it leaves port. Tap a ship to see its
   whole current voyage.
 - **Map, satellite or nautical chart.** Switch with the buttons at the top.
-  The chart is Traficom's open nautical chart when the add-on can find it,
-  otherwise a street map with OpenSeaMap sea marks. Beyond Finnish waters
-  (Sweden and Estonia have no free charts) it shows Esri's ocean map with
-  OpenSeaMap sea marks. Not for navigation.
+  The chart has two styles, switched under the buttons:
+  - **Drawn** (the default) is drawn by the add-on from Finland's open chart
+    data, like the Luotsi app: Traficom's depth areas, contours and soundings,
+    and Väylävirasto's fairways, buoys, beacons, lights and light sectors, in
+    the colours and symbols of Finnish paper charts. It is seamless, with no
+    sheet edges. Tap a buoy, beacon or light to see what it is. Zoomed far
+    out it shows Traficom's overview chart. The first time you look at an
+    area the add-on downloads its data, so it takes a moment to appear.
+  - **Scanned** is Traficom's scanned paper chart sheets.
+
+  Beyond Finnish waters (Sweden and Estonia have no free charts) both show
+  Esri's ocean map with OpenSeaMap sea marks. Not for navigation.
 - **Ship photos.** Each ship's photo comes from its Wikipedia article. Use
   **Change photo** on a ship's card to upload your own.
 - **Other ships.** Add or remove ships from the list button (top right) by name
@@ -131,7 +139,7 @@ The add-on keeps one websocket open. Your ships are stored about every 30
 seconds while moving (every 5 minutes in port) and kept for `retention_days`;
 fleet ships every minute (10 minutes in port) and kept for 3 days. Expect well
 under 1% CPU, about 50 MB of memory, and a database of a few tens of MB. Once
-a day the add-on downloads Digitraffic's vessel list to update the fleets. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB.
+a day the add-on downloads Digitraffic's vessel list to update the fleets. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
 
 ## If a ship never shows up
 
@@ -145,6 +153,8 @@ by name.
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
-  nautical chart © Traficom; aircraft photos © their photographers via
+  nautical chart and depth data © Traficom (Traficom hydrographic data
+  licence, not for navigation, does not meet the requirements of an official
+  nautical chart); fairway and navigation aid data © Väylävirasto (CC BY 4.0); aircraft photos © their photographers via
   Planespotters.net (loaded by your browser, never stored by the add-on).
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

@@ -26,6 +26,7 @@ from .photos import PhotoCache
 from .store import Store
 from .tilecache import TileCache
 from .tracker import Tracker
+from .vchart import VectorChart
 from .web import Web
 
 _LOGGER = logging.getLogger("ferrywatch")
@@ -62,6 +63,7 @@ class FerryWatch:
         self.chart: dict[str, Any] | None = None
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
+        self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
         self.tasks: list[asyncio.Task] = []
 
@@ -87,6 +89,10 @@ class FerryWatch:
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
+        fake_chart = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simulate import fake_chart_layer as fake_chart
+        self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
         self.tracker.subscribe(self.web.on_event)
@@ -218,6 +224,7 @@ class FerryWatch:
             self.store.prune_untracked(int(time.time()) - FLEET_KEEP)
             self.notifier.cleanup_pictures()
             await asyncio.to_thread(self.tiles.prune)
+            await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
                 await self.photos.ensure(ship)
             await self._fleet_photos()
@@ -255,6 +262,7 @@ class FerryWatch:
             "feed": feed,
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
+            "vchart": self.vchart.status() if self.vchart else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
             "aircraft": {

@@ -201,3 +201,118 @@ async def simulate_aircraft(watcher, step: float = 5.0) -> None:
             watcher.update(rows, time.time())
             watcher.publish(watcher.snapshot())
         await asyncio.sleep(step)
+
+
+# --- a made-up archipelago for the vector chart ----------------------------------------
+
+SIM_ISLANDS = [  # lon, lat, radius in metres
+    (24.40, 60.005, 1400), (24.47, 60.02, 900), (24.33, 60.03, 1100), (24.55, 59.99, 600),
+    (24.25, 59.995, 800), (24.60, 60.03, 1300), (24.43, 59.965, 450), (24.70, 60.00, 700),
+    (24.36, 59.975, 350), (24.52, 60.045, 500),
+]
+# Depth bands as multiples of an island's radius: shore, 3 m, 6 m, 10 m.
+SIM_BANDS = (1.0, 1.25, 1.5, 1.8)
+
+
+def _spread_islands(islands):
+    """Drop islands whose depth bands would overlap a bigger one's (the made-up depth
+    areas must not overlap, like real ones)."""
+    from .vchart import lonlat_to_mercator
+    kept = []
+    for lon, lat, r in sorted(islands, key=lambda i: -i[2]):
+        x, y = lonlat_to_mercator(lon, lat)
+        if all(math.hypot(x - kx, y - ky) > (r + kr) * 2 * SIM_BANDS[-1] * 1.4 for kx, ky, kr in kept):
+            kept.append((x, y, r))
+            yield lon, lat, r
+
+
+SIM_ISLANDS = list(_spread_islands(SIM_ISLANDS))
+SIM_FAIRWAY = [(24.95, 60.05), (24.62, 59.975), (24.38, 59.945), (24.0, 59.935)]
+SIM_BOAT_ROUTE = [(24.37, 60.06), (24.395, 60.032), (24.445, 60.0), (24.5, 59.98)]
+
+
+def _sim_ring(lon: float, lat: float, radius: float, scale: float, wobble: float = 0.22):
+    from .vchart import lonlat_to_mercator
+    cx, cy = lonlat_to_mercator(lon, lat)
+    r = radius * 2  # metres -> web-mercator metres at 60°N
+    seed = lon * 97 + lat * 31
+    pts = []
+    for i in range(48):
+        a = 2 * math.pi * i / 48
+        f = 1 + wobble * math.sin(3 * a + seed) + 0.5 * wobble * math.sin(7 * a + 2 * seed)
+        pts.append([cx + r * scale * f * math.cos(a), cy + r * scale * f * math.sin(a)])
+    pts.append(pts[0])
+    return pts
+
+
+def _sim_line(points):
+    from .vchart import lonlat_to_mercator
+    return [list(lonlat_to_mercator(lon, lat)) for lon, lat in points]
+
+
+async def fake_chart_layer(key: str, bbox) -> list[dict]:
+    """Stand-in for the WFS services: islands with depth bands, contours, soundings,
+    a fairway with buoys and a boat route."""
+    import random
+    minx, miny, maxx, maxy = bbox
+    b = SIM_BANDS
+    bands = [(0, 3, b[0], b[1]), (3, 6, b[1], b[2]), (6, 10, b[2], b[3])]
+    feats: list[dict] = []
+    if key == "depth":
+        outer = [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
+        feats.append({"geometry": {"type": "Polygon", "coordinates": [outer] + [
+            _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS]},
+            "properties": {"DRVAL1": 10, "DRVAL2": 50}})
+        for d1, d2, inner, outer_s in bands:
+            for lon, lat, r in SIM_ISLANDS:
+                feats.append({"geometry": {"type": "Polygon", "coordinates": [
+                    _sim_ring(lon, lat, r, outer_s), _sim_ring(lon, lat, r, inner)]},
+                    "properties": {"DRVAL1": d1, "DRVAL2": d2}})
+    elif key == "contour":
+        for depth, s in ((3, SIM_BANDS[1]), (6, SIM_BANDS[2]), (10, SIM_BANDS[3])):
+            for lon, lat, r in SIM_ISLANDS:
+                feats.append({"geometry": {"type": "LineString", "coordinates": _sim_ring(lon, lat, r, s)},
+                              "properties": {"VALDCO": depth}})
+    elif key == "sounding":
+        rnd = random.Random(int(minx) ^ int(miny))
+        for _ in range(400):
+            x, y = rnd.uniform(minx, maxx), rnd.uniform(miny, maxy)
+            feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
+                          "properties": {"DEPTH": round(rnd.uniform(4, 60), 1)}})
+    elif key == "fline":
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(SIM_FAIRWAY)},
+                      "properties": {"mitoitussyvays": 10.0}})
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(SIM_BOAT_ROUTE)},
+                      "properties": {"mitoitussyvays": None}})
+    elif key == "farea":
+        line = _sim_line(SIM_FAIRWAY)
+        left = [[x, y + 700] for x, y in line]
+        right = [[x, y - 700] for x, y in line][::-1]
+        feats.append({"geometry": {"type": "Polygon", "coordinates": [left + right + [left[0]]]},
+                      "properties": {"tyyppikoodi": 1, "mitoitussyvays": 10.0}})
+    elif key == "lead":
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line([(24.62, 59.975), (24.66, 59.99)])},
+                      "properties": {}})
+    elif key == "sector":
+        from .vchart import lonlat_to_mercator
+        x, y = lonlat_to_mercator(24.62, 59.975)
+        for a, b, colour in ((200, 238, "vi"), (238, 246, "v"), (246, 290, "p"), (40, 70, "v")):
+            feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
+                          "properties": {"alkukulma": a, "loppukulma": b, "vari": colour}})
+    elif key == "aid":
+        from .vchart import lonlat_to_mercator
+        aids = [
+            (24.80, 60.030, "Viitta", 1, "E", "Rönnskär 1"), (24.80, 60.020, "Viitta", 2, "K", "Rönnskär 2"),
+            (24.70, 59.992, "Poiju", 3, "K", "Kallbåda N"), (24.55, 59.968, "Viitta", 4, "E", "Stora S"),
+            (24.47, 59.958, "Viitta", 5, "E", "Porkala W"), (24.30, 59.952, "Viitta", 6, "E", "Rönn E"),
+            (24.40, 60.005, "Merimajakka", 99, "K", "Porkkala majakka"),
+            (24.62, 59.975, "Sektoriloisto", 99, "K", "Kallbådan"), (24.66, 59.99, "Linjamerkki", 99, "K", "Linja ylempi"),
+            (24.43, 59.965, "Kummeli", 99, "E", "Kummeli"), (24.395, 60.032, "Viitta", 7, "E", "Kari"),
+            (24.445, 60.0, "Viitta", 8, "E", "Turvavesi"), (24.5, 59.98, "Poiju", 9, "E", "Erikois"),
+            (24.36, 59.975, "Reunamerkki", 2, "K", "Reuna"),
+        ]
+        for lon, lat, kind, cat, lit, name in aids:
+            feats.append({"geometry": {"type": "MultiPoint", "coordinates": [list(lonlat_to_mercator(lon, lat))]},
+                          "properties": {"turvalaitetyyppifi": kind, "navigointilajikoodi": cat,
+                                         "valaistu": lit, "nimifi": name}})
+    return feats
