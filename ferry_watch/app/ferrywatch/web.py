@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import stats
+from . import __version__, stats
 from .config import DEV
 from .fleets import FLEET_IDS
 
@@ -95,6 +95,10 @@ class Web:
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         html = (STATIC / "index.html").read_text()
+        # A version on the panel's own files makes phones load the new ones after an update
+        # instead of what they cached.
+        for name in ("static/app.js", "static/app.css"):
+            html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
         prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")

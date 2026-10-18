@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+- After an update, phones could keep running the old panel from their cache
+  (for example still showing "API key required" on the map). The panel's
+  files now carry the version number, so an update always loads the new ones.
+
 ## 0.6.0
 
 - Rescue and coast guard fleet: Finnish ships that report themselves as search
