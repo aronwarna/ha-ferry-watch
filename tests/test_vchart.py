@@ -251,6 +251,12 @@ def test_adding_a_key_fetches_only_the_new_part(tmp_path):
     asyncio.run(run())
 
 
+def test_station_names_are_left_out():
+    rows = {"name": [[[ "HANKO, POHJOINEN", "fin", 48120], 100.0, 100.0], [["Hanko", "fin", 48120], 200.0, 200.0]]}
+    tile = vchart.make_tile(11, 0, 0, {(0, 0): rows})
+    assert [n[2] for n in tile["name"]] == ["Hanko"]
+
+
 def test_mml_features_are_converted_to_mercator():
     page = {"features": [
         {"geometry": {"type": "Point", "coordinates": [24.4, 60.0]}, "properties": {"teksti": "Rönnskär", "kieli": "swe"}},

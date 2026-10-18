@@ -55,7 +55,7 @@ PAGE = 20000
 MAX_RESPONSE = 20 * 1024 * 1024  # bytes; more than this from one request is refused, to spare RAM
 MEMORY_BLOCKS = 6  # parsed blocks kept in RAM; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
-TILE_REV = 2  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 3  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # What to fetch: layer key -> (service, type name, kind, properties to keep)
@@ -506,8 +506,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if "name" in tile:
         names = []
         for px, py, text, lang, code in tile["name"]:
-            if not text:
-                continue
+            text = str(text or "")
+            if not text or ("," in text and text.isupper()):
+                continue  # e.g. "HANKO, POHJOINEN": station names, not chart names
             kind = _name_kind(_int(code))
             if z < 12 and kind != "s":
                 continue  # only towns and villages when zoomed out

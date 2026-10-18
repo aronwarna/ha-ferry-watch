@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- Drawn chart: leaves out railway-station style names such as
+  "HANKO, POHJOINEN" that aren't chart names.
+
 ## 0.11.0
 
 - New **Official** chart style: Traficom's electronic chart from its S-57 view
