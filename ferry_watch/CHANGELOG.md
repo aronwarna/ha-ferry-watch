@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- Tap a ship and its voyage track is coloured by speed, from purple (stopped)
+  through blue, green and amber to red (25 kn and over), with a scale and the
+  top speed on the card. Tap the track to see the speed and time at that spot.
+- Rescue aircraft popups now show a photo of the aircraft (from
+  Planespotters.net, credited and linked), its type in plain words, operator,
+  owner, year built, altitude, speed in knots and km/h, whether it's climbing
+  or descending, any emergency, and a link to follow it on adsb.fi.
+
 ## 0.7.1
 
 - Chart view no longer shows two sets of buoys in Finnish waters: OpenSeaMap's

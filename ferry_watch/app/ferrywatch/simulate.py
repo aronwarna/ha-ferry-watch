@@ -96,7 +96,10 @@ def _message(path, dock_s: int, depart_ts: float, speed: float, ts: float) -> di
         lat, lon = path[0]
         return {"time": int(ts), "lat": lat, "lon": lon, "sog": 0.0, "cog": 0.0, "heading": 180}
     (lat, lon), brg, done = _point_along(path, (ts - depart_ts) * speed * KNOTS)
-    sog = 0.0 if done else speed
+    # Reported speed picks up after leaving port and wanders a little, so the
+    # speed-coloured track has something to show (positions still move evenly).
+    elapsed = ts - depart_ts
+    sog = 0.0 if done else round(speed * min(1.0, 0.3 + elapsed / 1500) + 1.5 * math.sin(elapsed / 700), 1)
     return {"time": int(ts), "lat": lat, "lon": lon, "sog": sog, "cog": round(brg, 1),
             "heading": int(brg)}
 
@@ -188,10 +191,12 @@ async def simulate_aircraft(watcher, step: float = 5.0) -> None:
             rows = [
                 {"hex": "461f01", "r": "OH-HMV", "t": "H145", "category": "A7", "flight": "FINNHEMS10",
                  "lat": 60.317 + (59.98 - 60.317) * heli_f, "lon": 24.963 + (24.40 - 24.963) * heli_f,
-                 "alt_baro": 1500, "gs": 130, "track": 235, "seen_pos": 1},
+                 "alt_baro": 1500, "gs": 130, "track": 235, "seen_pos": 1, "baro_rate": -640,
+                 "desc": "AIRBUS HELICOPTERS H-145", "ownOp": "Skarven Helicopters Oy", "year": "2019"},
                 {"hex": "461f02", "r": "OH-MVL", "t": "D228", "category": "A1", "flight": "FGU2",
                  "lat": 59.85 + 0.12 * math.sin(a), "lon": 23.9 + 0.5 * math.cos(a),
-                 "alt_baro": 1000, "gs": 150, "track": (math.degrees(-a) + 360) % 360, "seen_pos": 2},
+                 "alt_baro": 1000, "gs": 150, "track": (math.degrees(-a) + 360) % 360, "seen_pos": 2,
+                 "ownOp": "SUOMEN RAJAVARTIOLAITOS"},
             ]
             watcher.update(rows, time.time())
             watcher.publish(watcher.snapshot())

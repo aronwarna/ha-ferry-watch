@@ -212,6 +212,7 @@
   // --- aircraft (adsb.fi) ----------------------------------------------------------
 
   const AIRCRAFT_COLORS = { FinnHEMS: "#dc2626", "Border Guard": "#15803d", Police: "#1d4ed8" };
+  const ROLE_NAMES = { FinnHEMS: "Medical helicopter (FinnHEMS)", "Border Guard": "Border Guard", Police: "Police" };
   const AIRCRAFT_CREDIT = '<a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a>';
   const aircraft = new Map(); // hex -> { marker, trail }
   let aircraftCredit = false;
@@ -235,15 +236,79 @@
     return `${ac.operator} ${name}`;
   }
 
-  function aircraftPopup(ac) {
-    const rows = [
-      `<strong>${esc(aircraftLabel(ac))}</strong>`,
-      esc([ac.reg, ac.type].filter(Boolean).join(" · ")),
-      esc([ac.alt_ft != null ? (ac.alt_ft ? `${Math.round(ac.alt_ft * 0.3048).toLocaleString()} m` : "On the ground") : null,
-        ac.gs_kn != null ? `${Math.round(ac.gs_kn)} kn` : null].filter(Boolean).join(" · ")),
-      `<span class="muted">Last report ${esc(ago(ac.ts))}</span>`,
-    ];
-    return rows.filter(Boolean).join("<br>");
+  // Photos come from Planespotters.net, straight to the browser as their terms ask
+  // (credited, linked, never stored by the add-on). Looked up once per aircraft.
+  const PHOTO_TTL = 24 * 3600 * 1000;
+  const acPhotos = new Map(); // hex -> photo | null | Promise
+
+  function aircraftPhoto(hex) {
+    if (acPhotos.has(hex)) return acPhotos.get(hex);
+    try {
+      const saved = JSON.parse(store.get(`fw-acphoto-${hex}`) || "null");
+      if (saved && Date.now() - saved.at < PHOTO_TTL) {
+        acPhotos.set(hex, saved.photo);
+        return saved.photo;
+      }
+    } catch { /* ignore */ }
+    const lookup = fetch(`https://api.planespotters.net/pub/photos/hex/${encodeURIComponent(hex)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const p = data?.photos?.[0];
+        const photo = p ? { src: (p.thumbnail_large || p.thumbnail).src, link: p.link, by: p.photographer } : null;
+        acPhotos.set(hex, photo);
+        store.set(`fw-acphoto-${hex}`, JSON.stringify({ at: Date.now(), photo }));
+        return photo;
+      })
+      .catch(() => { acPhotos.set(hex, null); return null; });
+    acPhotos.set(hex, lookup);
+    return lookup;
+  }
+
+  function aircraftPopupElement() {
+    const el = document.createElement("div");
+    el.className = "ac-popup";
+    el.innerHTML = `<a class="ac-photo" target="_blank" rel="noopener" hidden><img alt=""><span class="credit"></span></a>
+      <div class="ac-body"><strong class="ac-name"></strong><div class="ac-type"></div><div class="ac-role muted"></div>
+      <div class="ac-flight"></div><div class="ac-alert" hidden></div>
+      <div class="ac-foot muted"><span class="ac-seen"></span> · <a target="_blank" rel="noopener">adsb.fi</a></div></div>`;
+    return el;
+  }
+
+  function showAircraftPhoto(el, photo) {
+    const a = el.querySelector(".ac-photo");
+    if (!photo || a.dataset.src === photo.src) { a.hidden = !photo; return; }
+    a.dataset.src = photo.src;
+    a.href = photo.link;
+    a.querySelector("img").src = photo.src;
+    a.querySelector(".credit").textContent = `© ${photo.by} · Planespotters.net`;
+    a.hidden = false;
+  }
+
+  function fillAircraftPopup(entry, ac) {
+    const el = entry.popupEl;
+    el.querySelector(".ac-name").textContent = aircraftLabel(ac);
+    const reg = ac.reg?.replace("-", "\u2011"); // keep OH-HMV on one line
+    el.querySelector(".ac-type").textContent = [ac.type_name || ac.type, reg].filter(Boolean).join(" · ");
+    const role = ROLE_NAMES[ac.operator];
+    const owner = ac.owner && (!role || !ac.owner.toLowerCase().includes(ac.operator.toLowerCase())) ? ac.owner : null;
+    el.querySelector(".ac-role").textContent = [role, owner, ac.year ? `built ${ac.year}` : null].filter(Boolean).join(" · ");
+    const climb = Math.abs(ac.climb_fpm || 0) >= 300 ? (ac.climb_fpm > 0 ? "climbing" : "descending") : null;
+    el.querySelector(".ac-flight").textContent = [
+      ac.alt_ft != null ? (ac.alt_ft ? `${Math.round(ac.alt_ft * 0.3048).toLocaleString()} m` : "On the ground") : null,
+      ac.gs_kn != null && ac.alt_ft !== 0 ? `${Math.round(ac.gs_kn)} kn (${Math.round(ac.gs_kn * 1.852)} km/h)` : null,
+      climb,
+    ].filter(Boolean).join(" · ");
+    const alert = el.querySelector(".ac-alert");
+    alert.hidden = !ac.emergency;
+    alert.textContent = ac.emergency ? `Emergency: ${ac.emergency}${ac.squawk ? ` (squawk ${ac.squawk})` : ""}` : "";
+    el.querySelector(".ac-seen").textContent = `Last report ${ago(ac.ts)}`;
+    el.querySelector(".ac-foot a").href = `https://globe.adsb.fi/?icao=${encodeURIComponent(ac.hex)}`;
+    const photo = aircraftPhoto(ac.hex);
+    if (photo instanceof Promise) {
+      photo.then((p) => { showAircraftPhoto(el, p); entry.marker.getPopup()?.update(); });
+    } else {
+      showAircraftPhoto(el, photo);
+    }
   }
 
   function renderAircraft(list) {
@@ -254,10 +319,12 @@
       let entry = aircraft.get(ac.hex);
       const icon = L.divIcon({ className: "aircraft-icon", html: aircraftSvg(ac, color), iconSize: [26, 26], iconAnchor: [13, 13] });
       if (!entry) {
+        const popupEl = aircraftPopupElement();
         entry = {
+          popupEl,
           marker: L.marker([ac.lat, ac.lon], { icon, zIndexOffset: 1000, keyboard: false })
             .bindTooltip("", { permanent: true, direction: "right", offset: [12, 0], className: "ship-label aircraft-label" })
-            .bindPopup(""),
+            .bindPopup(popupEl, { minWidth: 220, maxWidth: 260, className: "ac-popup-wrap", autoPanPaddingTopLeft: [12, 130] }),
           trail: L.polyline([], { color, weight: 2, opacity: 0.6, dashArray: "2 5", interactive: false }),
         };
         entry.trail.addTo(map);
@@ -266,7 +333,7 @@
       }
       entry.marker.setLatLng([ac.lat, ac.lon]).setIcon(icon);
       entry.marker.setTooltipContent(esc(aircraftLabel(ac)));
-      entry.marker.setPopupContent(aircraftPopup(ac));
+      fillAircraftPopup(entry, ac);
       entry.trail.setLatLngs(ac.trail || []);
     }
     for (const [hex, entry] of aircraft) {
@@ -378,11 +445,72 @@
     while (entry.tailPoints.length && entry.tailPoints[0][2] < cutoff) entry.tailPoints.shift();
     entry.tail.setLatLngs(entry.tailPoints.map((q) => [q[0], q[1]]));
     if (focused?.mmsi === info.mmsi) {
-      appendPoint(focused.points, [p.lat, p.lon, p.ts]);
-      focused.line.setLatLngs(focused.points.map((q) => [q[0], q[1]]));
+      appendPoint(focused.points, [p.lat, p.lon, p.ts, p.sog]);
+      focused.line?.set(focused.points);
       renderCard();
     }
     renderStrip();
+  }
+
+  // --- speed-coloured track -------------------------------------------------------
+
+  // Slow to fast: purple, blue, teal, green, amber, red (knots).
+  const SPEED_STOPS = [[0, [91, 42, 134]], [6, [37, 99, 235]], [12, [13, 148, 136]], [17, [101, 163, 13]],
+    [21, [245, 158, 11]], [25, [220, 38, 38]]];
+  const SPEED_MAX = SPEED_STOPS[SPEED_STOPS.length - 1][0];
+
+  function speedColor(kn) {
+    const v = Math.max(0, Math.min(SPEED_MAX, Math.round(kn ?? 0)));
+    const i = SPEED_STOPS.findIndex(([k]) => k >= v);
+    if (i <= 0) return `rgb(${SPEED_STOPS[0][1]})`;
+    const [k0, c0] = SPEED_STOPS[i - 1], [k1, c1] = SPEED_STOPS[i];
+    const t = (v - k0) / (k1 - k0);
+    return `rgb(${c0.map((c, j) => Math.round(c + (c1[j] - c) * t))})`;
+  }
+
+  const SPEED_GRADIENT = `linear-gradient(90deg, ${SPEED_STOPS.map(([k]) => `${speedColor(k)} ${(k / SPEED_MAX) * 100}%`).join(", ")})`;
+
+  // The focused ship's voyage: a dark outline with the line coloured by speed on top.
+  // Tap anywhere on it to see the speed and time there.
+  function speedTrack(points) {
+    const group = L.layerGroup();
+    const outline = L.polyline([], { color: "#111827", weight: 8, opacity: 0.35, lineCap: "round", lineJoin: "round" });
+    outline.on("click", (e) => {
+      let best = null, bestD = Infinity;
+      for (const p of group.points) {
+        const d = map.distance(e.latlng, [p[0], p[1]]);
+        if (d < bestD) { best = p; bestD = d; }
+      }
+      if (!best) return;
+      const kn = best[3];
+      L.popup({ className: "speed-popup", closeButton: false, offset: [0, -4] })
+        .setLatLng([best[0], best[1]])
+        .setContent(`<strong>${kn != null ? `${kn.toFixed(1)} kn` : "Speed unknown"}</strong>`
+          + `${kn != null ? ` · ${Math.round(kn * 1.852)} km/h` : ""}<br><span class="muted">${clock(best[2])}</span>`)
+        .openOn(map);
+    });
+    group.addLayer(outline);
+    const segments = L.layerGroup().addTo(group);
+    group.set = (pts) => {
+      group.points = pts;
+      outline.setLatLngs(pts.map((p) => [p[0], p[1]]));
+      segments.clearLayers();
+      // One line per run of points with the same colour keeps the layer count low.
+      let run = [], color = null;
+      for (let i = 0; i < pts.length; i++) {
+        const c = speedColor(pts[i][3]);
+        if (c !== color && run.length) {
+          run.push([pts[i][0], pts[i][1]]);
+          segments.addLayer(L.polyline(run, { color, weight: 4.5, opacity: 1, interactive: false, lineCap: "round" }));
+          run = [];
+        }
+        color = c;
+        run.push([pts[i][0], pts[i][1]]);
+      }
+      if (run.length > 1) segments.addLayer(L.polyline(run, { color, weight: 4.5, opacity: 1, interactive: false, lineCap: "round" }));
+    };
+    group.set(points);
+    return group;
   }
 
   // --- focus a ship -------------------------------------------------------------
@@ -407,9 +535,7 @@
     }
     if (focused?.mmsi !== mmsi) return;
     focused.points = data.points;
-    focused.line = L.polyline(data.points.map((p) => [p[0], p[1]]), {
-      color: entry.info.color, weight: 4, opacity: 0.9, interactive: false,
-    }).addTo(map);
+    focused.line = speedTrack(data.points).addTo(map);
     entry.marker?.setZIndexOffset(1000);
     renderCard();
     if (fit) zoomToTrack();
@@ -486,6 +612,13 @@
     }
     $("card-voyage").textContent = voyage;
     $("card-seen").textContent = info.position ? `Last report ${ago(info.position.ts)}` : "Waiting for the first report";
+    const speeds = (focused.points || []).map((p) => p[3]).filter((v) => v != null);
+    $("card-speed").hidden = speeds.length < 2;
+    if (speeds.length >= 2) {
+      $("card-speed-bar").style.background = SPEED_GRADIENT;
+      $("card-speed-max").textContent = `${SPEED_MAX}+ kn`;
+      $("card-speed-top").textContent = `Top ${Math.max(...speeds).toFixed(1)} kn`;
+    }
     const fleet = info.fleet && lastState?.fleets?.find((f) => f.id === info.fleet);
     $("card-fleet").hidden = !fleet;
     if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;

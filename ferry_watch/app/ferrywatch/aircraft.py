@@ -28,7 +28,22 @@ TRAIL_POINTS = 60  # about 10 minutes
 FORGET_SECONDS = 120
 HELICOPTER_TYPES = {"EC35", "EC45", "H145", "EC30", "EC55", "A109", "A119", "A139", "A169", "AS32",
                     "AS50", "AS55", "AS65", "EC25", "EC75", "H160", "H215", "NH90", "S76", "S92", "B06",
-                    "B407", "B429", "R44", "R66", "MD52", "MI8"}
+                    "B407", "B429", "R44", "R66", "MD52", "MI8", "EXPL"}
+# Readable names for the ICAO type codes these aircraft use, for when adsb.fi's own
+# description is missing.
+TYPE_NAMES = {
+    "EC35": "Airbus H135", "EC45": "Airbus H145", "H145": "Airbus H145", "EC30": "Airbus H130",
+    "EC55": "Airbus H155", "H160": "Airbus H160", "AS32": "Airbus Super Puma", "H215": "Airbus H215 Super Puma",
+    "AS50": "Airbus AS350 Écureuil", "AS55": "Airbus AS355 Écureuil 2", "AS65": "Airbus Dauphin",
+    "EC25": "Airbus H225", "EC75": "Airbus H175", "A109": "Leonardo AW109", "A119": "Leonardo AW119 Koala",
+    "A139": "Leonardo AW139", "A169": "Leonardo AW169", "NH90": "NH90", "S76": "Sikorsky S-76",
+    "S92": "Sikorsky S-92", "B06": "Bell 206 JetRanger", "B407": "Bell 407", "B429": "Bell 429",
+    "R44": "Robinson R44", "R66": "Robinson R66", "MD52": "MD 520N", "EXPL": "MD 902 Explorer",
+    "MI8": "Mil Mi-8", "D228": "Dornier 228", "D328": "Dornier 328", "C295": "Airbus C295",
+    "LJ35": "Learjet 35", "B350": "Beechcraft King Air 350", "PC12": "Pilatus PC-12",
+}
+ROLES = {"FinnHEMS": "Medical helicopter", "Border Guard": "Border Guard", "Police": "Police"}
+
 # Border Guard registrations: helicopters OH-HV.., Dornier patrol planes OH-MV...
 OPERATORS = (("OH-HV", "Border Guard"), ("OH-MV", "Border Guard"), ("OH-HP", "Police"))
 
@@ -40,6 +55,20 @@ def operator(reg: str, flight: str) -> str | None:
     if "HEMS" in flight.upper():
         return "FinnHEMS"
     return None
+
+
+def _title(text: Any) -> str | None:
+    """adsb.fi's descriptions are upper case ('AIRBUS HELICOPTERS H-145'); make them readable."""
+    if not text:
+        return None
+    text = str(text).strip()
+    if text != text.upper():
+        return text  # already mixed case
+    words = []
+    for word in text.split():
+        keep = any(c.isdigit() for c in word) or word in ("AB", "MD", "NH")
+        words.append(word if keep else word.capitalize())
+    return " ".join(words)
 
 
 def interesting(ac: dict[str, Any]) -> bool:
@@ -93,15 +122,22 @@ class AircraftWatcher:
             alt = ac.get("alt_baro")
             seen = now - float(ac.get("seen_pos") or 0)
             entry = self.aircraft.setdefault(hexid, {"hex": hexid, "trail": []})
+            type_code = str(ac.get("t") or "").upper()
             entry.update({
                 "reg": reg,
                 "callsign": flight or None,
                 "type": ac.get("t"),
+                "type_name": _title(ac.get("desc")) or TYPE_NAMES.get(type_code),
+                "owner": _title(ac.get("ownOp")),
+                "year": ac.get("year"),
                 "operator": operator(reg, flight),
                 "helicopter": ac.get("category") == "A7" or str(ac.get("t") or "").upper() in HELICOPTER_TYPES,
                 "lat": ac["lat"], "lon": ac["lon"],
                 "alt_ft": 0 if alt == "ground" else alt,
                 "gs_kn": ac.get("gs"),
+                "climb_fpm": ac.get("baro_rate"),
+                "squawk": ac.get("squawk"),
+                "emergency": ac.get("emergency") if ac.get("emergency") not in (None, "none") else None,
                 "track": ac.get("track"),
                 "ts": seen,
             })

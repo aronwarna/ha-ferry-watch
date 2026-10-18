@@ -184,15 +184,16 @@ class Store:
         row = self.db.execute("SELECT MIN(ts) FROM positions WHERE mmsi = ?", (mmsi,)).fetchone()
         return row[0] if row else None
 
-    def track(self, mmsi: int, since_ts: int, until_ts: int | None = None) -> list[list[float]]:
-        """Positions as compact [lat, lon, ts] triples, oldest first."""
+    def track(self, mmsi: int, since_ts: int, until_ts: int | None = None,
+              speed: bool = False) -> list[list[float]]:
+        """Positions as compact [lat, lon, ts] triples, oldest first; with speed, [lat, lon, ts, sog]."""
         if until_ts is None:
             until_ts = 2**62
         rows = self.db.execute(
-            "SELECT lat, lon, ts FROM positions WHERE mmsi = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            "SELECT lat, lon, ts, sog FROM positions WHERE mmsi = ? AND ts >= ? AND ts <= ? ORDER BY ts",
             (mmsi, since_ts, until_ts),
         ).fetchall()
-        return [[r[0], r[1], r[2]] for r in rows]
+        return [list(r) if speed else [r[0], r[1], r[2]] for r in rows]
 
     def stopped_since(self, mmsi: int, stop_speed: float) -> int | None:
         """Start of the stop the ship is currently in, or None if it is moving."""

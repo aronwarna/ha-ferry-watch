@@ -145,5 +145,6 @@ by name.
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
-  nautical chart © Traficom.
+  nautical chart © Traficom; aircraft photos © their photographers via
+  Planespotters.net (loaded by your browser, never stored by the add-on).
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

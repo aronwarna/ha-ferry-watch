@@ -137,11 +137,11 @@ class Web:
             raise web.HTTPNotFound()
         if since is None:
             since = tracker.voyage_start(mmsi) or 0
-        points = self.fw.store.track(mmsi, since)
+        points = self.fw.store.track(mmsi, since, speed=True)
         last = tracker.ships[mmsi].last
         # The latest position may not have been stored yet (thinning); include it.
         if last and (not points or points[-1][2] < last.ts):
-            points.append([last.lat, last.lon, last.ts])
+            points.append([last.lat, last.lon, last.ts, last.sog])
         return web.json_response({"mmsi": mmsi, "since": since, "points": points})
 
     async def tile(self, request: web.Request) -> web.StreamResponse:
