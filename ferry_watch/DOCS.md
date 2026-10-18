@@ -49,6 +49,13 @@ To show any other ship, search for it under **Add a ship** and choose
 **Follow**. Followed ships are listed under **Followed ships** in the Fleets tab
 and are kept like fleet ships: only their latest trip is stored.
 
+Three more switches start off: **Rescue and coast guard** (Finnish ships whose
+AIS says search and rescue, Border Guard or military; the Navy mostly keeps AIS
+off), **Icebreakers**, and **Rescue aircraft**: FinnHEMS, Border Guard and police
+helicopters and Border Guard planes, from [adsb.fi](https://adsb.fi)'s open
+ADS-B data. Aircraft are fetched every 10 seconds only while that switch is on
+and the panel is open, and they are never stored.
+
 Ships are matched by name once a day from Digitraffic's vessel list, so new
 ships join by themselves; a sold ship drops out once it's renamed. Ships that
 haven't reported in Finnish waters for a week are left off the map. Fleet ships
@@ -116,7 +123,7 @@ The add-on keeps one websocket open. Your ships are stored about every 30
 seconds while moving (every 5 minutes in port) and kept for `retention_days`;
 fleet ships every minute (10 minutes in port) and kept for 3 days. Expect well
 under 1% CPU, about 50 MB of memory, and a database of a few tens of MB. Once
-a day the add-on downloads Digitraffic's vessel list to update the fleets.
+a day the add-on downloads Digitraffic's vessel list to update the fleets. Rescue aircraft add one small request every 10 seconds, only while the panel is open.
 
 ## If a ship never shows up
 
@@ -128,6 +135,7 @@ by name.
 ## Data sources
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
+- Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps and imagery © Esri, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart © Traficom.
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

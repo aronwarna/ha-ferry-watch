@@ -378,3 +378,6 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
   .card-photo { aspect-ratio: 2 / 1; }
 }
 .card-stats p span { display: block; }
+.aircraft-icon svg { display: block; overflow: visible; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35)); }
+.leaflet-tooltip.aircraft-label { font-weight: 500; font-size: 11px; }
+.fleet a, .card a:not(.credit), dialog a { color: var(--accent); }

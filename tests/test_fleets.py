@@ -122,3 +122,22 @@ def test_followed_ships_and_new_fleets(tmp_path):
     assert set(again.active(tracked=set())) == {1, 40}
     again.unfollow(40)
     assert 40 not in FleetManager(store).members
+
+
+def test_rescue_and_icebreakers_are_finnish_and_start_off(tmp_path):
+    members = match_fleets([
+        vessel(230000001, "PV TURVA", ship_type=55),
+        vessel(230000002, "JENNY WIHURI", ship_type=51),
+        vessel(230000003, "JENNY WIHURI", ship_type=51),  # two boats may share a name
+        vessel(276000004, "RESCUE EST", ship_type=51),  # not Finnish
+        vessel(230000005, "POLARIS", ship_type=52),
+        vessel(265000006, "POLARIS", ship_type=37),  # a Swedish yacht
+    ])
+    assert members == {
+        230000001: {"fleet": "rescue", "name": "PV Turva"},
+        230000002: {"fleet": "rescue", "name": "Jenny Wihuri"},
+        230000003: {"fleet": "rescue", "name": "Jenny Wihuri"},
+        230000005: {"fleet": "icebreakers", "name": "Polaris"},
+    }
+    fm = FleetManager(Store(tmp_path / "t.db"))
+    assert "rescue" not in fm.enabled and "icebreakers" not in fm.enabled

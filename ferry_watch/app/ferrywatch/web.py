@@ -86,6 +86,7 @@ class Web:
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
+        r.add_post("/api/aircraft", self.set_aircraft)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
         r.add_static("/static/", STATIC, append_version=False)
@@ -261,6 +262,11 @@ class Web:
         await self.fw.set_fleet(fleet_id, bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
+    async def set_aircraft(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        await self.fw.set_aircraft(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
     async def test_notification(self, request: web.Request) -> web.Response:
         try:
             message = await self.fw.notifier.send_test()
@@ -292,6 +298,9 @@ class Web:
     def on_fleet_event(self, kind: str, payload: dict[str, Any]) -> None:
         if self.sockets:
             self._send({"type": kind, "ship": self.fw.fleet_summary(payload["mmsi"])})
+
+    def broadcast_aircraft(self, aircraft: list[dict[str, Any]]) -> None:
+        self._send({"type": "aircraft", "aircraft": aircraft})
 
     async def broadcast_ships(self) -> None:
         self._send({"type": "reload"})

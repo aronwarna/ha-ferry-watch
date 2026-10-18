@@ -53,6 +53,7 @@ FLEET_MEMBERS = {
     230000104: {"fleet": "finnlines", "name": "Finnstar"},
     230000105: {"fleet": "finnlines", "name": "Finnmaid"},
     230000106: {"fleet": "finferries", "name": "Utö"},
+    230000107: {"fleet": "rescue", "name": "PV Turva"},
     230184000: {"fleet": "tallink", "name": "Silja Serenade"},
     265004000: {"fleet": "tallink", "name": "Silja Symphony"},
     230713000: {"fleet": "viking", "name": "Viking Cinderella"},
@@ -65,6 +66,7 @@ FLEET_SCENARIOS = [
     (230000104, [VUOSAARI, *VUOSAARI_WEST], 2 * 3600, -180 * 60, 21.0),
     (230000105, [VUOSAARI], 10**6, 0, 0.0),
     (230000106, UTO_ROUTE, 30 * 60, -90 * 60, 11.0),
+    (230000107, [(59.98, 24.60), (59.93, 24.30), (59.90, 23.90)], 10 * 60, -30 * 60, 8.0),
 ]
 
 
@@ -173,3 +175,24 @@ class FakeHA:
     async def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
         self.events.append((event_type, data))
         _LOGGER.info("FAKE event %s: %s", event_type, data)
+
+
+async def simulate_aircraft(watcher, step: float = 5.0) -> None:
+    """A FinnHEMS helicopter flying to Porkkala and a Border Guard plane on patrol."""
+    start = time.time()
+    while True:
+        if watcher.wanted():
+            t = time.time() - start
+            heli_f = (t % 900) / 900
+            a = (t % 1200) / 1200 * 2 * math.pi
+            rows = [
+                {"hex": "461f01", "r": "OH-HMV", "t": "H145", "category": "A7", "flight": "FINNHEMS10",
+                 "lat": 60.317 + (59.98 - 60.317) * heli_f, "lon": 24.963 + (24.40 - 24.963) * heli_f,
+                 "alt_baro": 1500, "gs": 130, "track": 235, "seen_pos": 1},
+                {"hex": "461f02", "r": "OH-MVL", "t": "D228", "category": "A1", "flight": "FGU2",
+                 "lat": 59.85 + 0.12 * math.sin(a), "lon": 23.9 + 0.5 * math.cos(a),
+                 "alt_baro": 1000, "gs": 150, "track": (math.degrees(-a) + 360) % 360, "seen_pos": 2},
+            ]
+            watcher.update(rows, time.time())
+            watcher.publish(watcher.snapshot())
+        await asyncio.sleep(step)

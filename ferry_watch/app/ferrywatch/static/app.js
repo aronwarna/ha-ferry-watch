@@ -33,7 +33,7 @@
   const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
   const streets = () => L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
     maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER,
-    attribution: "Map © Esri, HERE, Garmin, © OpenStreetMap contributors",
+    attribution: "© Esri, HERE, Garmin, OpenStreetMap",
   });
   const seamarks = () => L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
     maxZoom: 18, referrerPolicy: REFERRER, attribution: "Sea marks © OpenSeaMap",
@@ -190,6 +190,80 @@
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     });
+  }
+
+  // --- aircraft (adsb.fi) ----------------------------------------------------------
+
+  const AIRCRAFT_COLORS = { FinnHEMS: "#dc2626", "Border Guard": "#15803d", Police: "#1d4ed8" };
+  const AIRCRAFT_CREDIT = '<a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a>';
+  const aircraft = new Map(); // hex -> { marker, trail }
+  let aircraftCredit = false;
+
+  function aircraftSvg(ac, color) {
+    const rotation = ac.track ?? 0;
+    const body = ac.helicopter
+      ? `<ellipse cx="0" cy="1" rx="4.5" ry="6" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+         <path d="M0 6 L0 12 M-3 12 L3 12" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>
+         <path d="M-11 -9 L11 9 M11 -9 L-11 9" stroke="#fff" stroke-width="3.4" stroke-linecap="round"/>
+         <path d="M-11 -9 L11 9 M11 -9 L-11 9" stroke="${color}" stroke-width="1.6" stroke-linecap="round"/>`
+      : `<path d="M0 -12 L2 -4 L11 1 L11 3 L2 1 L1.5 8 L5 11 L5 12.5 L0 11 L-5 12.5 L-5 11 L-1.5 8 L-2 1 L-11 3 L-11 1 L-2 -4 Z"
+           fill="${color}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>`;
+    return `<svg width="26" height="26" viewBox="-13 -13 26 26" style="transform: rotate(${rotation}deg)">${body}</svg>`;
+  }
+
+  function aircraftLabel(ac) {
+    const name = ac.callsign || ac.reg;
+    const squash = (t) => t.toLowerCase().replace(/\s/g, "");
+    if (!ac.operator || squash(name).includes(squash(ac.operator))) return name;
+    return `${ac.operator} ${name}`;
+  }
+
+  function aircraftPopup(ac) {
+    const rows = [
+      `<strong>${esc(aircraftLabel(ac))}</strong>`,
+      esc([ac.reg, ac.type].filter(Boolean).join(" · ")),
+      esc([ac.alt_ft != null ? (ac.alt_ft ? `${Math.round(ac.alt_ft * 0.3048).toLocaleString()} m` : "On the ground") : null,
+        ac.gs_kn != null ? `${Math.round(ac.gs_kn)} kn` : null].filter(Boolean).join(" · ")),
+      `<span class="muted">Last report ${esc(ago(ac.ts))}</span>`,
+    ];
+    return rows.filter(Boolean).join("<br>");
+  }
+
+  function renderAircraft(list) {
+    const seen = new Set();
+    for (const ac of list || []) {
+      seen.add(ac.hex);
+      const color = AIRCRAFT_COLORS[ac.operator] || "#7c3aed";
+      let entry = aircraft.get(ac.hex);
+      const icon = L.divIcon({ className: "aircraft-icon", html: aircraftSvg(ac, color), iconSize: [26, 26], iconAnchor: [13, 13] });
+      if (!entry) {
+        entry = {
+          marker: L.marker([ac.lat, ac.lon], { icon, zIndexOffset: 1000, keyboard: false })
+            .bindTooltip("", { permanent: true, direction: "right", offset: [12, 0], className: "ship-label aircraft-label" })
+            .bindPopup(""),
+          trail: L.polyline([], { color, weight: 2, opacity: 0.6, dashArray: "2 5", interactive: false }),
+        };
+        entry.trail.addTo(map);
+        entry.marker.addTo(map);
+        aircraft.set(ac.hex, entry);
+      }
+      entry.marker.setLatLng([ac.lat, ac.lon]).setIcon(icon);
+      entry.marker.setTooltipContent(esc(aircraftLabel(ac)));
+      entry.marker.setPopupContent(aircraftPopup(ac));
+      entry.trail.setLatLngs(ac.trail || []);
+    }
+    for (const [hex, entry] of aircraft) {
+      if (seen.has(hex)) continue;
+      entry.marker.remove();
+      entry.trail.remove();
+      aircraft.delete(hex);
+    }
+    const on = Boolean(lastState?.aircraft?.enabled);
+    if (on !== aircraftCredit) {
+      if (on) map.attributionControl.addAttribution(AIRCRAFT_CREDIT);
+      else map.attributionControl.removeAttribution(AIRCRAFT_CREDIT);
+      aircraftCredit = on;
+    }
   }
 
   function upsertShip(info) {
@@ -539,6 +613,7 @@
     }
     for (const mmsi of [...ships.keys()]) if (!seen.has(mmsi)) removeShip(mmsi);
     updateChart(state.chart);
+    renderAircraft(state.aircraft?.list);
     renderStrip();
     renderCard();
     renderStatus();
@@ -573,6 +648,7 @@
       const msg = JSON.parse(ev.data);
       if (msg.type === "position" || msg.type === "meta") onPosition(msg.ship);
       else if (msg.type === "reload") loadState().then(loadTails).catch(console.error);
+      else if (msg.type === "aircraft") renderAircraft(msg.aircraft);
     };
     ws.onclose = () => {
       socketOpen = false;
@@ -1181,6 +1257,44 @@
 
   // --- fleets -------------------------------------------------------------------
 
+  function renderAircraftSection() {
+    const info = lastState?.aircraft || { enabled: false };
+    const section = document.createElement("section");
+    section.className = "fleet";
+    const head = document.createElement("label");
+    head.className = "fleet-head";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = AIRCRAFT_COLORS.FinnHEMS;
+    const name = document.createElement("span");
+    name.className = "grow strong";
+    name.textContent = "Rescue aircraft";
+    const count = document.createElement("span");
+    count.className = "small muted";
+    count.textContent = info.enabled ? `${aircraft.size} in the air` : "";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "switch";
+    toggle.checked = info.enabled;
+    toggle.addEventListener("change", async () => {
+      toggle.disabled = true;
+      try {
+        await api("api/aircraft", { method: "POST", body: { enabled: toggle.checked } });
+        await loadState();
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    head.append(dot, name, count, toggle);
+    const note = document.createElement("p");
+    note.className = "small muted";
+    note.innerHTML = info.error
+      ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again every 10 seconds.`
+      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes, while the map is open. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
+    section.append(head, note);
+    return section;
+  }
+
   function renderFleets() {
     const box = $("fleets-list");
     const fleets = lastState?.fleets || [];
@@ -1278,6 +1392,7 @@
       }
       return section;
     }));
+    box.append(renderAircraftSection());
   }
 
   // --- start --------------------------------------------------------------------

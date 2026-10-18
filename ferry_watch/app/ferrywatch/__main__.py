@@ -14,6 +14,7 @@ from aiohttp import web
 
 from . import __version__
 from .ais import DigitrafficFeed
+from .aircraft import AircraftWatcher
 from .charts import chart_layer
 from .fleets import FleetManager, match_fleets
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
@@ -57,6 +58,8 @@ class FerryWatch:
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
         self.chart: dict[str, Any] | None = None
+        self.aircraft: AircraftWatcher | None = None
+        self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
         self.tasks: list[asyncio.Task] = []
 
     def _fleet_members(self) -> set[int]:
@@ -85,6 +88,9 @@ class FerryWatch:
         self.tracker.subscribe(self.web.on_event)
         self.tracker.subscribe(self.detector.on_event)
         self.fleet_tracker.subscribe(self.web.on_fleet_event)
+        # Aircraft are only fetched while the switch is on and someone has the panel open.
+        self.aircraft = AircraftWatcher(self.session, lambda: self.aircraft_enabled and bool(self.web.sockets),
+                                        self.web.broadcast_aircraft)
 
         if os.environ.get("FW_FAKE_HA") == "1":
             from .simulate import FakeHA
@@ -104,13 +110,15 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import FLEET_MEMBERS, run_simulation, seed_history
+            from .simulate import FLEET_MEMBERS, run_simulation, seed_history, simulate_aircraft
             if os.environ.get("FW_SIM_HISTORY") == "1":
                 seed_history(self.store)
             self.fleets.update(FLEET_MEMBERS)
             self.fleet_tracker.load()
             self.tasks.append(asyncio.create_task(run_simulation(self.tracker, self.fleet_tracker)))
+            self.tasks.append(asyncio.create_task(simulate_aircraft(self.aircraft)))
         else:
+            self.tasks.append(asyncio.create_task(self.aircraft.run()))
             self.tasks.append(asyncio.create_task(self.feed.start()))
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
@@ -167,6 +175,14 @@ class FerryWatch:
                 changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"]})
         if changed:
             await self.web.broadcast_ships()
+
+    async def set_aircraft(self, on: bool) -> None:
+        self.aircraft_enabled = on
+        self.store.kv_set("aircraft_enabled", on)
+        if not on:
+            self.aircraft.aircraft.clear()
+        self.web.broadcast_aircraft(self.aircraft.snapshot())
+        await self.web.broadcast_ships()
 
     async def follow(self, mmsi: int, name: str) -> None:
         self.fleets.follow(mmsi, name)
@@ -235,6 +251,11 @@ class FerryWatch:
             "chart": self.chart,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
+            "aircraft": {
+                "enabled": self.aircraft_enabled,
+                "error": self.aircraft.error if self.aircraft else None,
+                "list": self.aircraft.snapshot() if self.aircraft and self.aircraft_enabled else [],
+            },
         }
 
     def fleet_summary(self, mmsi: int, info: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- Rescue and coast guard fleet: Finnish ships that report themselves as search
+  and rescue, Border Guard (law enforcement) or military in AIS. Navy ships
+  mostly keep AIS off, so few of them appear.
+- Icebreakers fleet: Urho, Sisu, Otso, Kontio, Voima, Polaris, Fennica, Nordica.
+- Rescue aircraft: FinnHEMS, Border Guard and police helicopters and Border
+  Guard planes from adsb.fi, with a 10-minute trail. Fetched every 10 seconds
+  only while the switch is on and the map is open; nothing is stored.
+- These three start switched off; turn them on in the Fleets tab.
+
 ## 0.5.0
 
 - Map and Chart showed "API key required": CARTO's map tiles now need a key, so

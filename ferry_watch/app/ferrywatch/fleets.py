@@ -41,13 +41,26 @@ FLEETS: list[dict[str, Any]] = [
         "names": ["UTO", "KOKAR", "TUULI", "ALTERA", "ELEKTRA", "STELLA", "MERGUS", "FINNO"],
         "typed": True,
     },
+    {
+        # Finnish (MMSI 230...) ships that report AIS type SAR (51), law enforcement (55,
+        # the Border Guard) or military (35): rescue boats and coast guard ships.
+        "id": "rescue", "name": "Rescue and coast guard", "color": "#ea580c",
+        "names": [], "types": [51, 55, 35], "mmsi_prefix": "230", "default_off": True,
+    },
+    {
+        "id": "icebreakers", "name": "Icebreakers", "color": "#0891b2",
+        "names": ["URHO", "SISU", "OTSO", "KONTIO", "VOIMA", "POLARIS", "FENNICA", "NORDICA"],
+        "mmsi_prefix": "230", "default_off": True,
+    },
 ]
+FLEETS_BY_ID = {f["id"]: f for f in FLEETS}
 FOLLOWED = {"id": "followed", "name": "Followed ships", "color": "#475569"}
 FLEET_IDS = [f["id"] for f in FLEETS] + [FOLLOWED["id"]]
+DEFAULT_ON = [i for i in FLEET_IDS if not next((f for f in FLEETS if f["id"] == i), {}).get("default_off")]
 # Changing the fleet lists above re-reads the vessel list at the next start.
 FLEET_DEFS = hashlib.sha1(json.dumps(FLEETS, sort_keys=True).encode()).hexdigest()[:12]
 PREFIX_SHIP_TYPES = range(60, 80)  # AIS passenger (60-69) and cargo (70-79)
-UPPERCASE_WORDS = {"XPRS", "II", "III"}
+UPPERCASE_WORDS = {"XPRS", "II", "III", "PV", "SAR"}
 SPECIAL_NAMES = {"MYSTAR": "MyStar", "UTO": "Utö", "KOKAR": "Kökar", "FINNO": "Finnö"}
 
 
@@ -63,8 +76,12 @@ def display_name(ais_name: str) -> str:
     return " ".join(w if w in UPPERCASE_WORDS else w.capitalize() for w in ais_name.split())
 
 
-def fleet_for(name: str, ship_type: Any) -> str | None:
+def fleet_for(name: str, ship_type: Any, mmsi: int = 0) -> str | None:
     for fleet in FLEETS:
+        if not str(mmsi).startswith(fleet.get("mmsi_prefix", "")):
+            continue
+        if ship_type in fleet.get("types", ()):
+            return fleet["id"]
         if name in fleet["names"] and (not fleet.get("typed") or ship_type in PREFIX_SHIP_TYPES):
             return fleet["id"]
         if any(name.startswith(p) for p in fleet.get("prefixes", ())) and ship_type in PREFIX_SHIP_TYPES:
@@ -85,10 +102,12 @@ def match_fleets(vessels: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
             continue
         if not name:
             continue
-        fleet = fleet_for(name, v.get("shipType"))
-        if fleet and (name not in best or updated > best[name][0]):
-            best[name] = (updated, mmsi, fleet)
-    return {mmsi: {"fleet": fleet, "name": display_name(name)} for name, (_, mmsi, fleet) in best.items()}
+        fleet = fleet_for(name, v.get("shipType"), mmsi)
+        # Type-matched ships (rescue boats) can share a name; keep each of them.
+        key = f"{name}#{mmsi}" if fleet and FLEETS_BY_ID[fleet].get("types") else name
+        if fleet and (key not in best or updated > best[key][0]):
+            best[key] = (updated, mmsi, fleet)
+    return {mmsi: {"fleet": fleet, "name": display_name(key.split("#")[0])} for key, (_, mmsi, fleet) in best.items()}
 
 
 class FleetManager:
@@ -100,12 +119,12 @@ class FleetManager:
         self.followed: dict[int, str] = {int(m): n for m, n in store.kv_get("followed_ships", {}).items()}
         enabled = store.kv_get("fleets_enabled")
         if enabled is None:
-            self.enabled = set(FLEET_IDS)
+            self.enabled = set(DEFAULT_ON)
         else:
             self.enabled = set(enabled)
             # Fleets added in an update start switched on.
             known = set(store.kv_get("fleets_known", ["tallink", "viking", "finnlines"]))
-            self.enabled |= set(FLEET_IDS) - known
+            self.enabled |= set(DEFAULT_ON) - known
             store.kv_set("fleets_enabled", sorted(self.enabled))
         store.kv_set("fleets_known", FLEET_IDS)
         self.updated_ts: float = store.kv_get("fleet_members_ts", 0)
