@@ -13,7 +13,7 @@ sidebar.
   whole current voyage.
 - **Map, satellite or nautical chart.** Switch with the buttons at the top.
   The chart is Traficom's open nautical chart when the add-on can find it,
-  otherwise OpenStreetMap with OpenSeaMap sea marks. Not for navigation.
+  otherwise a street map with OpenSeaMap sea marks. Not for navigation.
 - **Ship photos.** Each ship's photo comes from its Wikipedia article. Use
   **Change photo** on a ship's card to upload your own.
 - **Other ships.** Add or remove ships from the list button (top right) by name
@@ -49,6 +49,6 @@ by name.
 ## Data sources
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
-- Maps: © OpenStreetMap contributors; imagery © Esri; sea marks © OpenSeaMap;
+- Maps: © OpenStreetMap contributors, © CARTO; imagery © Esri; sea marks © OpenSeaMap;
   nautical chart © Traficom.
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

@@ -24,11 +24,16 @@
   L.control.zoom({ position: "bottomright" }).addTo(map);
   map.attributionControl.setPrefix(false);
 
-  const osm = () => L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: "© OpenStreetMap contributors",
+  // HA serves the panel with a no-referrer policy; tile servers want to see where requests come from.
+  const REFERRER = "strict-origin-when-cross-origin";
+  // OpenStreetMap's own tile servers block requests from embedded apps like this one, so the
+  // street map uses CARTO's OpenStreetMap-based tiles instead.
+  const streets = () => L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 20, subdomains: "abcd", referrerPolicy: REFERRER,
+    attribution: "© OpenStreetMap contributors © CARTO",
   });
   const seamarks = () => L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
-    maxZoom: 18, attribution: "Sea marks © OpenSeaMap",
+    maxZoom: 18, referrerPolicy: REFERRER, attribution: "Sea marks © OpenSeaMap",
   });
 
   // Traficom's WMTS uses its own matrix ids per zoom level.
@@ -41,29 +46,30 @@
   });
 
   const layers = {
-    map: osm(),
+    map: streets(),
     satellite: L.layerGroup([
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        maxZoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+        maxZoom: 19, referrerPolicy: REFERRER, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
       }),
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
-        maxZoom: 19,
+        maxZoom: 19, referrerPolicy: REFERRER,
       }),
     ]),
-    chart: L.layerGroup([osm(), seamarks()]),
+    chart: L.layerGroup([streets(), seamarks()]),
   };
   let activeLayer = null;
 
   function buildChartLayer(info) {
-    if (!info) return L.layerGroup([osm(), seamarks()]);
+    if (!info) return L.layerGroup([streets(), seamarks()]);
     return L.layerGroup([
-      osm(),
+      streets(),
       new MatrixTileLayer(info.url, {
         matrixIds: info.matrix_ids,
         minZoom: 0,
         minNativeZoom: info.min_zoom,
         maxNativeZoom: info.max_zoom,
         maxZoom: 19,
+        referrerPolicy: REFERRER,
         attribution: info.attribution,
       }),
       seamarks(),
@@ -129,7 +135,7 @@
     if (p.sog != null) parts.push(`${p.sog.toFixed(1)} kn`);
     const dir = compass(p.heading ?? p.cog);
     if (dir && p.sog > 0.5) parts.push(`heading ${dir}`);
-    if (info.destination) parts.push(`to ${titleCase(info.destination)}`);
+    if (info.destination) parts.push(destinationText(info.destination));
     return parts.join(" · ") || "Stopped";
   }
 
@@ -137,6 +143,24 @@
     return text === text.toUpperCase()
       ? text.toLowerCase().replace(/(^|[\s-])\p{L}/gu, (c) => c.toUpperCase())
       : text;
+  }
+
+  // AIS destinations are often UN/LOCODEs, e.g. "SESTO<>FIMHQ<>FIHEL" for a route.
+  const LOCODES = {
+    SESTO: "Stockholm", FIHEL: "Helsinki", FIMHQ: "Mariehamn", EETLL: "Tallinn", FITKU: "Turku",
+    SEKPS: "Kapellskär", FIHKO: "Hanko", FIVAA: "Vaasa", SEUME: "Umeå", DEROS: "Rostock",
+    DETRV: "Travemünde", DEKEL: "Kiel", RULED: "St Petersburg", SENYN: "Nynäshamn", PLGDY: "Gdynia",
+  };
+
+  function placeName(text) {
+    const code = text.replace(/\s+/g, "").toUpperCase();
+    return LOCODES[code] || titleCase(text.trim());
+  }
+
+  function destinationText(raw) {
+    if (raw.includes("<>")) return `route ${raw.split("<>").map(placeName).join(" – ")}`;
+    const legs = raw.split(/\s*-?>\s*/).filter(Boolean);
+    return `to ${placeName(legs[legs.length - 1] || raw)}`;
   }
 
   const isStale = (info) => !info.position || now() - info.position.ts > STALE_SECONDS;
@@ -512,7 +536,7 @@
       name.textContent = r.name || `MMSI ${r.mmsi}`;
       const sub = document.createElement("span");
       sub.className = "muted small";
-      sub.textContent = `MMSI ${r.mmsi}${r.destination ? ` · to ${titleCase(r.destination)}` : ""}`;
+      sub.textContent = `MMSI ${r.mmsi}${r.destination ? ` · ${destinationText(r.destination)}` : ""}`;
       grow.append(name, sub);
       const add = document.createElement("button");
       add.type = "button";
