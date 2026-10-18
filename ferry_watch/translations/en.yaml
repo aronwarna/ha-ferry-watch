@@ -1,0 +1,9 @@
+configuration:
+  retention_days:
+    name: Keep positions (days)
+    description: How long ship positions are kept for tracks. Passages and stats are kept forever.
+  ha_entities:
+    name: Ship trackers in Home Assistant
+    description: Show each ship as a device_tracker entity, updated about once a minute.
+  log_level:
+    name: Log level

@@ -1,0 +1,210 @@
+"""Turns raw AIS messages into stored, thinned tracks and voyages.
+
+A voyage starts when a ship leaves port: it has been below STOP_SPEED for at
+least PORT_STOP_SECONDS and then moves faster than MOVE_SPEED again. The map
+shows each ship's track since the start of its current voyage.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+from .geo import angle_diff, nearest_port
+from .store import Position, Store
+
+_LOGGER = logging.getLogger(__name__)
+
+STOP_SPEED = 1.0  # knots
+MOVE_SPEED = 2.0  # knots
+PORT_STOP_SECONDS = 20 * 60
+STORE_INTERVAL_MOVING = 30  # seconds between stored points while under way
+STORE_INTERVAL_STOPPED = 300  # seconds between stored points while stopped
+TURN_DEGREES = 15  # store early when the course changes this much
+MIN_TURN_INTERVAL = 5
+
+Listener = Callable[[str, dict[str, Any]], None]
+
+
+@dataclass
+class ShipState:
+    mmsi: int
+    last: Position | None = None
+    last_stored: Position | None = None
+    stopped_since: int | None = None
+    in_port: bool = False
+    port: str | None = None
+    voyage_start: int | None = None
+    voyage_from: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def parse_location(mmsi: int, data: dict[str, Any]) -> Position | None:
+    """Parse a Digitraffic vessels-v2 location message. Returns None if unusable."""
+    try:
+        lat = float(data["lat"])
+        lon = float(data["lon"])
+        ts = int(data["time"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    # AIS uses 91/181 for "not available".
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    sog = data.get("sog")
+    sog = float(sog) if isinstance(sog, (int, float)) and sog < 102.3 else None
+    cog = data.get("cog")
+    cog = float(cog) if isinstance(cog, (int, float)) and cog < 360 else None
+    heading = data.get("heading")
+    heading = int(heading) if isinstance(heading, (int, float)) and heading < 360 else None
+    return Position(mmsi=mmsi, ts=ts, lat=lat, lon=lon, sog=sog, cog=cog, heading=heading)
+
+
+def parse_metadata(data: dict[str, Any]) -> dict[str, Any]:
+    def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            value = " ".join(value.replace("@", " ").split())
+            return value or None
+        return value
+
+    ts = data.get("timestamp")
+    return {
+        "name": clean(data.get("name")),
+        "destination": clean(data.get("destination")),
+        "imo": data.get("imo") or None,
+        "call_sign": clean(data.get("callSign")),
+        "ship_type": data.get("type"),
+        # Metadata timestamps are milliseconds, location timestamps seconds.
+        "updated_ts": int(ts / 1000) if isinstance(ts, (int, float)) else int(time.time()),
+    }
+
+
+class Tracker:
+    def __init__(self, store: Store):
+        self.store = store
+        self.ships: dict[int, ShipState] = {}
+        self.listeners: list[Listener] = []
+
+    def load(self) -> None:
+        """Rebuild in-memory state for the configured ships from the database."""
+        wanted = {s["mmsi"] for s in self.store.ships()}
+        for mmsi in list(self.ships):
+            if mmsi not in wanted:
+                del self.ships[mmsi]
+        for mmsi in wanted:
+            if mmsi in self.ships:
+                continue
+            state = ShipState(mmsi=mmsi)
+            state.last = state.last_stored = self.store.last_position(mmsi)
+            if state.last and state.last.sog is not None and state.last.sog < STOP_SPEED:
+                # Resume a stop that was in progress before a restart.
+                state.stopped_since = self.store.stopped_since(mmsi, STOP_SPEED)
+                if state.stopped_since and state.last.ts - state.stopped_since >= PORT_STOP_SECONDS:
+                    state.in_port = True
+                    state.port = nearest_port(state.last.lat, state.last.lon)
+            voyage = self.store.current_voyage(mmsi)
+            if voyage:
+                state.voyage_start = voyage["start_ts"]
+                state.voyage_from = voyage["from_port"]
+            state.meta = self.store.meta(mmsi) or {}
+            self.ships[mmsi] = state
+
+    def subscribe(self, listener: Listener) -> None:
+        self.listeners.append(listener)
+
+    def _emit(self, kind: str, payload: dict[str, Any]) -> None:
+        for listener in self.listeners:
+            try:
+                listener(kind, payload)
+            except Exception:  # noqa: BLE001 - one bad listener must not stop tracking
+                _LOGGER.exception("Listener failed")
+
+    # --- incoming data ---------------------------------------------------
+
+    def on_location(self, mmsi: int, data: dict[str, Any]) -> None:
+        state = self.ships.get(mmsi)
+        if state is None:
+            return
+        pos = parse_location(mmsi, data)
+        if pos is None:
+            return
+        if state.last and pos.ts <= state.last.ts:
+            return  # duplicate or out of order
+        self._update_voyage(state, pos)
+        state.last = pos
+        if self._should_store(state, pos):
+            self.store.insert_position(pos)
+            state.last_stored = pos
+        self._emit("position", self.ship_summary(mmsi))
+
+    def on_metadata(self, mmsi: int, data: dict[str, Any]) -> None:
+        state = self.ships.get(mmsi)
+        if state is None:
+            return
+        meta = parse_metadata(data)
+        state.meta = {**state.meta, **{k: v for k, v in meta.items() if v is not None}}
+        self.store.upsert_meta(mmsi, state.meta)
+        self._emit("meta", self.ship_summary(mmsi))
+
+    def _update_voyage(self, state: ShipState, pos: Position) -> None:
+        if pos.sog is None:
+            return
+        if pos.sog < STOP_SPEED:
+            if state.stopped_since is None:
+                state.stopped_since = pos.ts
+            if not state.in_port and pos.ts - state.stopped_since >= PORT_STOP_SECONDS:
+                state.in_port = True
+                state.port = nearest_port(pos.lat, pos.lon)
+                _LOGGER.info("%s: in port (%s)", state.mmsi, state.port or "unknown")
+        elif pos.sog >= MOVE_SPEED:
+            if state.in_port or state.voyage_start is None:
+                start = pos.ts
+                state.voyage_start = start
+                state.voyage_from = state.port if state.in_port else None
+                self.store.start_voyage(state.mmsi, start, state.voyage_from)
+                _LOGGER.info("%s: new voyage from %s", state.mmsi, state.voyage_from or "unknown")
+            state.in_port = False
+            state.port = None
+            state.stopped_since = None
+
+    @staticmethod
+    def _should_store(state: ShipState, pos: Position) -> bool:
+        prev = state.last_stored
+        if prev is None:
+            return True
+        elapsed = pos.ts - prev.ts
+        stopped = pos.sog is not None and pos.sog < STOP_SPEED
+        if elapsed >= (STORE_INTERVAL_STOPPED if stopped else STORE_INTERVAL_MOVING):
+            return True
+        if (
+            not stopped
+            and elapsed >= MIN_TURN_INTERVAL
+            and pos.cog is not None
+            and prev.cog is not None
+            and angle_diff(pos.cog, prev.cog) >= TURN_DEGREES
+        ):
+            return True
+        return False
+
+    # --- queries ---------------------------------------------------------
+
+    def voyage_start(self, mmsi: int) -> int | None:
+        state = self.ships.get(mmsi)
+        if state and state.voyage_start:
+            return state.voyage_start
+        return self.store.first_position_ts(mmsi)
+
+    def ship_summary(self, mmsi: int) -> dict[str, Any]:
+        state = self.ships[mmsi]
+        last = state.last
+        return {
+            "mmsi": mmsi,
+            "position": last.as_dict() if last else None,
+            "in_port": state.in_port,
+            "port": state.port,
+            "voyage_start": self.voyage_start(mmsi),
+            "voyage_from": state.voyage_from,
+            "destination": state.meta.get("destination"),
+            "ais_name": state.meta.get("name"),
+        }
