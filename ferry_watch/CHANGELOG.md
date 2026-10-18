@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- Chart: the nautical chart flashed and was then covered by the normal map; the
+  chart now stays on top of it. Place names in the satellite view now show
+  above the imagery too.
+
 ## 0.6.1
 
 - After an update, phones could keep running the old panel from their cache

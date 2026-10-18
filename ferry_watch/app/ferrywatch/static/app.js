@@ -32,11 +32,11 @@
   // satellite view).
   const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
   const streets = () => L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
-    maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER,
+    maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER, zIndex: 1,
     attribution: "© Esri, HERE, Garmin, OpenStreetMap",
   });
   const seamarks = () => L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
-    maxZoom: 18, referrerPolicy: REFERRER, attribution: "Sea marks © OpenSeaMap",
+    maxZoom: 18, referrerPolicy: REFERRER, zIndex: 3, attribution: "Sea marks © OpenSeaMap",
   });
 
   // Traficom's WMTS uses its own matrix ids per zoom level.
@@ -52,10 +52,10 @@
     map: streets(),
     satellite: L.layerGroup([
       L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
-        maxZoom: 19, referrerPolicy: REFERRER, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+        maxZoom: 19, referrerPolicy: REFERRER, zIndex: 1, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
       }),
       L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
-        maxZoom: 19, referrerPolicy: REFERRER,
+        maxZoom: 19, referrerPolicy: REFERRER, zIndex: 2,
       }),
     ]),
     chart: L.layerGroup([streets(), seamarks()]),
@@ -73,6 +73,7 @@
         maxNativeZoom: info.max_zoom,
         maxZoom: 19,
         referrerPolicy: REFERRER,
+        zIndex: 2,
         attribution: info.attribution,
       }),
       seamarks(),
@@ -84,7 +85,6 @@
     if (activeLayer) map.removeLayer(activeLayer);
     activeLayer = layers[name];
     activeLayer.addTo(map);
-    activeLayer.eachLayer?.((l) => l.bringToBack?.());
     document.querySelectorAll("[data-layer]").forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.layer === name));
     });
