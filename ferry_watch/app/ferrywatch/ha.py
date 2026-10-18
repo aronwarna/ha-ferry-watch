@@ -1,21 +1,22 @@
-"""Publishes each ship to Home Assistant as a device_tracker state.
-
-Updates are batched to at most one per ship per interval, so the HA recorder
-isn't flooded the way per-message sensors would.
-"""
+"""Home Assistant access: ship device_trackers, phone location and notifications."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+import time
+from datetime import datetime
 from typing import Any
 
 import aiohttp
 
-from .config import HA_API
+from . import config
 
 _LOGGER = logging.getLogger(__name__)
+
+LOCATION_REQUEST_WAIT = 60  # seconds to wait for the phone to answer a location request
+STALE_LOCATION_LIMIT = 2 * 3600  # an old fix is still used if the phone doesn't answer
 
 
 def entity_id(name: str) -> str:
@@ -23,10 +24,89 @@ def entity_id(name: str) -> str:
     return f"device_tracker.ferry_watch_{slug}"
 
 
-class HAPublisher:
-    def __init__(self, session: aiohttp.ClientSession, token: str, interval: int, app):
+def _parse_ts(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+class HAClient:
+    """Thin client for the Core API through the Supervisor proxy."""
+
+    def __init__(self, session: aiohttp.ClientSession, token: str):
         self.session = session
-        self.token = token
+        self.headers = {"Authorization": f"Bearer {token}"}
+        self.timeout = aiohttp.ClientTimeout(total=20)
+
+    async def get_state(self, entity: str) -> dict[str, Any] | None:
+        async with self.session.get(f"{config.HA_API}/states/{entity}", headers=self.headers,
+                                    timeout=self.timeout) as resp:
+            if resp.status == 404:
+                return None
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def set_state(self, entity: str, state: str, attributes: dict[str, Any]) -> None:
+        async with self.session.post(f"{config.HA_API}/states/{entity}", headers=self.headers,
+                                     json={"state": state, "attributes": attributes},
+                                     timeout=self.timeout) as resp:
+            resp.raise_for_status()
+
+    async def call_service(self, service: str, data: dict[str, Any]) -> None:
+        domain, _, name = service.partition(".")
+        async with self.session.post(f"{config.HA_API}/services/{domain}/{name}", headers=self.headers,
+                                     json=data, timeout=self.timeout) as resp:
+            resp.raise_for_status()
+
+    async def phone_location(self, entity: str, notify_service: str,
+                             max_age: float) -> tuple[float, float, float] | None:
+        """(lat, lon, age in seconds) of the phone, asking it for a fresh fix if needed."""
+        fix = await self._phone_fix(entity)
+        if fix and fix[2] <= max_age:
+            return fix
+        # Ask the companion app for a new location and wait briefly for it.
+        try:
+            await self.call_service(notify_service, {"message": "request_location_update"})
+        except aiohttp.ClientError as err:
+            _LOGGER.warning("Could not ask the phone for its location: %s", err)
+        deadline = time.monotonic() + LOCATION_REQUEST_WAIT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(5)
+            fresh = await self._phone_fix(entity)
+            if fresh and fresh[2] <= max_age:
+                return fresh
+        if fix and fix[2] <= STALE_LOCATION_LIMIT:
+            _LOGGER.info("Phone didn't send a new location; using one from %.0f min ago", fix[2] / 60)
+            return fix
+        return None
+
+    async def _phone_fix(self, entity: str) -> tuple[float, float, float] | None:
+        try:
+            state = await self.get_state(entity)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.warning("Could not read %s: %s", entity, err)
+            return None
+        if not state:
+            return None
+        attrs = state.get("attributes", {})
+        lat, lon = attrs.get("latitude"), attrs.get("longitude")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return None
+        # last_reported moves even when the phone reports the same position again.
+        seen = [t for t in (_parse_ts(state.get("last_reported")), _parse_ts(state.get("last_updated"))) if t]
+        age = time.time() - max(seen) if seen else float("inf")
+        return float(lat), float(lon), age
+
+
+class HAPublisher:
+    """Publishes each ship as a device_tracker state, at most once per ship per interval,
+    so the HA recorder isn't flooded the way per-message sensors would."""
+
+    def __init__(self, client: HAClient, interval: int, app):
+        self.client = client
         self.interval = max(15, interval)
         self.app = app  # FerryWatch, for ship info and photo URLs
         self.dirty: set[int] = set()
@@ -72,10 +152,4 @@ class HAPublisher:
         if photo:
             attrs["entity_picture"] = photo
         state = "in_port" if summary["in_port"] else "under_way"
-        async with self.session.post(
-            f"{HA_API}/states/{entity_id(ship['name'])}",
-            json={"state": state, "attributes": attrs},
-            headers={"Authorization": f"Bearer {self.token}"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            resp.raise_for_status()
+        await self.client.set_state(entity_id(ship["name"]), state, attrs)

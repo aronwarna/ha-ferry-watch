@@ -36,6 +36,21 @@ async def ingress_only(request: web.Request, handler):
     return await handler(request)
 
 
+ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
+
+
+def _points(value: Any, minimum: int) -> list[list[float]]:
+    try:
+        points = [[float(lat), float(lon)] for lat, lon in value]
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Points must be [lat, lon] pairs") from None
+    if len(points) < minimum or len(points) > 500:
+        raise web.HTTPBadRequest(text=f"Needs at least {minimum} points")
+    if not all(-90 <= lat <= 90 and -180 <= lon <= 180 for lat, lon in points):
+        raise web.HTTPBadRequest(text="Point out of range")
+    return points
+
+
 def _mmsi(request: web.Request) -> int:
     try:
         return int(request.match_info["mmsi"])
@@ -50,6 +65,7 @@ class Web:
         self.app = web.Application(middlewares=[ingress_only], client_max_size=10 * 1024 * 1024)
         r = self.app.router
         r.add_get("/", self.index)
+        r.add_get("/ship/{mmsi}", self.index)
         r.add_get("/api/state", self.state)
         r.add_get("/api/tails", self.tails)
         r.add_get("/api/track/{mmsi}", self.track)
@@ -59,12 +75,25 @@ class Web:
         r.add_delete("/api/ships/{mmsi}", self.remove_ship)
         r.add_get("/api/search", self.search)
         r.add_get("/api/ws", self.websocket)
+        r.add_get("/api/zones", self.zones)
+        r.add_post("/api/zones", self.add_zone)
+        r.add_put("/api/zones/{zone_id}", self.update_zone)
+        r.add_delete("/api/zones/{zone_id}", self.delete_zone)
+        r.add_get("/api/passages", self.passages)
+        r.add_post("/api/notify/test", self.test_notification)
         r.add_static("/static/", STATIC, append_version=False)
 
     # --- pages -----------------------------------------------------------
 
     async def index(self, request: web.Request) -> web.StreamResponse:
-        return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+        html = (STATIC / "index.html").read_text()
+        # Ingress serves the panel under a per-session prefix; a <base> keeps relative
+        # URLs working on deep links like /ship/<mmsi>.
+        prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
+        base = f"{prefix}/" if prefix or request.path != "/" else ""
+        if base:
+            html = html.replace("<head>", f'<head>\n  <base href="{base}">', 1)
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
     async def state(self, request: web.Request) -> web.Response:
         return web.json_response(await self.fw.state())
@@ -131,6 +160,66 @@ class Web:
 
     async def search(self, request: web.Request) -> web.Response:
         return web.json_response(await self.fw.feed.search(request.query.get("q", "")))
+
+    # --- zones and passages ---------------------------------------------
+
+    async def zones(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.store.zones())
+
+    async def add_zone(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        role, shape = body.get("role"), body.get("shape")
+        if role not in ZONE_ROLES or shape not in ("line", "polygon"):
+            raise web.HTTPBadRequest(text="Unknown zone type")
+        if role == "phone" and shape != "polygon":
+            raise web.HTTPBadRequest(text="Your area must be a shape, not a line")
+        points = _points(body.get("points"), 2 if shape == "line" else 3)
+        name = str(body.get("name") or ZONE_ROLES[role]).strip()[:80]
+        zone_id = self.fw.store.add_zone(name, role, shape, points)
+        self.fw.zones_changed()
+        return web.json_response(self.fw.store.zone(zone_id))
+
+    async def update_zone(self, request: web.Request) -> web.Response:
+        zone = self._zone_or_404(request)
+        body = await request.json()
+        points = _points(body.get("points", zone["points"]), 2 if zone["shape"] == "line" else 3)
+        name = str(body.get("name") or zone["name"]).strip()[:80]
+        self.fw.store.update_zone(zone["id"], name, points)
+        self.fw.zones_changed()
+        return web.json_response(self.fw.store.zone(zone["id"]))
+
+    async def delete_zone(self, request: web.Request) -> web.Response:
+        zone = self._zone_or_404(request)
+        self.fw.store.delete_zone(zone["id"])
+        self.fw.zones_changed()
+        return web.json_response({"ok": True})
+
+    def _zone_or_404(self, request: web.Request) -> dict[str, Any]:
+        try:
+            zone = self.fw.store.zone(int(request.match_info["zone_id"]))
+        except ValueError:
+            zone = None
+        if not zone:
+            raise web.HTTPNotFound()
+        return zone
+
+    async def passages(self, request: web.Request) -> web.Response:
+        limit = min(int(request.query.get("limit", 30)), 500)
+        names = {s["mmsi"]: s["name"] for s in self.fw.store.ships()}
+        rows = self.fw.store.passages(limit=limit, route=request.query.get("route"))
+        for row in rows:
+            row["name"] = names.get(row["mmsi"], f"MMSI {row['mmsi']}")
+        return web.json_response(rows)
+
+    async def test_notification(self, request: web.Request) -> web.Response:
+        try:
+            message = await self.fw.notifier.send_test()
+        except RuntimeError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        except Exception as err:  # noqa: BLE001 - report any failure to the panel
+            _LOGGER.exception("Test notification failed")
+            raise web.HTTPBadGateway(text=f"Sending failed: {err}") from None
+        return web.json_response({"message": message})
 
     # --- live updates ----------------------------------------------------
 

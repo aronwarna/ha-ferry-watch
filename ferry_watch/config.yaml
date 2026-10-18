@@ -1,7 +1,7 @@
 name: Ferry Watch
-version: "0.1.1"
+version: "0.2.0"
 slug: ferry_watch
-description: Live map of the Porkkala inner-route ferries, with tracks since last port.
+description: Live map of the Porkkala inner-route ferries, with alerts when one takes the inner route.
 url: https://github.com/aronwarna/ha-ferry-watch
 arch:
   - aarch64
@@ -14,11 +14,25 @@ ingress_port: 8099
 panel_icon: mdi:ferry
 panel_title: Ferry Watch
 homeassistant_api: true
+hassio_api: true
+map:
+  - type: media
+    read_only: false
 options:
   retention_days: 60
   ha_entities: true
+  notify_service: notify.mobile_app_samsung_galaxy_s22
+  phone_entity: device_tracker.samsung_galaxy_s22
+  phone_max_age_minutes: 15
+  require_phone_area: true
+  notify_feed_problems: true
   log_level: info
 schema:
   retention_days: int(7,365)
   ha_entities: bool
+  notify_service: str
+  phone_entity: str
+  phone_max_age_minutes: int(1,120)
+  require_phone_area: bool
+  notify_feed_problems: bool
   log_level: list(debug|info|warning|error)
