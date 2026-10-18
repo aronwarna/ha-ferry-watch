@@ -156,6 +156,25 @@ class FerryWatch:
         if new and not os.environ.get("FW_SIMULATE"):
             await self.feed.bootstrap(new)
             await self.web.broadcast_ships()
+        if new:
+            asyncio.create_task(self._fleet_photos())
+
+    async def _fleet_photos(self) -> None:
+        """Look up photos for followed fleet ships, one at a time (each is looked up once)."""
+        changed = False
+        for mmsi, info in self.fleets.active(set(self.tracker.ships)).items():
+            if not self.photos.path(mmsi):
+                changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"]})
+        if changed:
+            await self.web.broadcast_ships()
+
+    async def follow(self, mmsi: int, name: str) -> None:
+        self.fleets.follow(mmsi, name)
+        await self.fleets_changed()
+
+    async def unfollow(self, mmsi: int) -> None:
+        self.fleets.unfollow(mmsi)
+        await self.fleets_changed()
 
     async def set_fleet(self, fleet_id: str, on: bool) -> None:
         self.fleets.set_enabled(fleet_id, on)
@@ -180,6 +199,7 @@ class FerryWatch:
             self.notifier.cleanup_pictures()
             for ship in self.store.ships():
                 await self.photos.ensure(ship)
+            await self._fleet_photos()
             await self.web.broadcast_ships()
             await asyncio.sleep(HOUSEKEEPING_INTERVAL)
 
@@ -224,6 +244,7 @@ class FerryWatch:
             "name": info.get("name", f"MMSI {mmsi}"),
             "fleet": info.get("fleet"),
             "color": self.fleets.color(info.get("fleet")),
+            "photo": self.photos.public_info(mmsi) if self.photos else None,
         }
 
     def tracker_for(self, mmsi: int) -> Tracker | None:

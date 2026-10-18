@@ -53,7 +53,7 @@ def test_fleet_manager(tmp_path):
     assert not fm.update({})  # an empty vessel list doesn't wipe the fleets
 
     again = FleetManager(store)  # survives a restart
-    assert again.enabled == {"tallink", "viking"}
+    assert again.enabled == {"tallink", "viking", "finferries", "followed"}
     assert set(again.members) == {1, 2, 3}
     summary = {f["id"]: f for f in again.summary()}
     assert summary["tallink"]["members"] == [1, 3] and not summary["finnlines"]["enabled"]
@@ -100,3 +100,25 @@ def test_prune_untracked(tmp_path):
         store.insert_position(Position(mmsi=mmsi, ts=900, lat=60, lon=24, sog=10, cog=0, heading=0))
     assert store.prune_untracked(500) == 1
     assert len(store.track(1, 0)) == 2 and len(store.track(2, 0)) == 1
+
+
+def test_finferries_need_a_ship_type():
+    members = match_fleets([
+        vessel(30, "UTÖ", ship_type=60), vessel(31, "STELLA", ship_type=37), vessel(32, "TUULI", ship_type=69),
+    ])
+    assert members == {30: {"fleet": "finferries", "name": "Utö"}, 32: {"fleet": "finferries", "name": "Tuuli"}}
+
+
+def test_followed_ships_and_new_fleets(tmp_path):
+    store = Store(tmp_path / "t.db")
+    store.kv_set("fleets_enabled", ["tallink"])  # saved by an older version
+    fm = FleetManager(store)
+    assert fm.enabled == {"tallink", "finferries", "followed"}  # fleets new in this version start on
+    assert fm.updated_ts == 0  # changed fleet lists are matched again right away
+    fm.follow(40, "Aranda")
+    fm.update({1: {"fleet": "tallink", "name": "Megastar"}})
+    again = FleetManager(store)
+    assert again.members[40] == {"fleet": "followed", "name": "Aranda"}
+    assert set(again.active(tracked=set())) == {1, 40}
+    again.unfollow(40)
+    assert 40 not in FleetManager(store).members

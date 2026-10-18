@@ -16,8 +16,8 @@ from .config import USER_AGENT
 _LOGGER = logging.getLogger(__name__)
 
 TILE = 256
-TILE_URL = "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
-ATTRIBUTION = "© OpenStreetMap contributors © CARTO"
+TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+ATTRIBUTION = "Map © Esri, HERE, Garmin, © OpenStreetMap contributors"
 
 TileFetcher = Callable[[int, int, int], Awaitable[bytes | None]]
 

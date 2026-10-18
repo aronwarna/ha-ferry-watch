@@ -358,3 +358,23 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 @media (pointer: coarse) {
   .leaflet-control-zoom { display: none; }
 }
+
+/* Inner-route numbers on the ship card */
+.card-stats { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.card-stats .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.card-stats .tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.card-stats .tile strong { font-size: 18px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.card-stats .tile span { font-size: 11px; color: var(--muted); }
+.card-stats p { margin: 6px 0 0; }
+.ships-list li button + button { margin-left: 6px; }
+@media (max-width: 480px) {
+  .card-photo { aspect-ratio: 2 / 1; }
+}
+.card-stats p span { display: block; }

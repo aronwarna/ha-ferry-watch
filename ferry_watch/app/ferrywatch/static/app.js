@@ -27,11 +27,13 @@
 
   // HA serves the panel with a no-referrer policy; tile servers want to see where requests come from.
   const REFERRER = "strict-origin-when-cross-origin";
-  // OpenStreetMap's own tile servers block requests from embedded apps like this one, so the
-  // street map uses CARTO's OpenStreetMap-based tiles instead.
-  const streets = () => L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20, subdomains: "abcd", referrerPolicy: REFERRER,
-    attribution: "© OpenStreetMap contributors © CARTO",
+  // OpenStreetMap's own tile servers block requests from embedded apps like this one, and
+  // CARTO's now need an API key, so the map uses Esri's free tiles (the same host as the
+  // satellite view).
+  const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+  const streets = () => L.tileLayer(`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 19, maxNativeZoom: 17, referrerPolicy: REFERRER,
+    attribution: "Map © Esri, HERE, Garmin, © OpenStreetMap contributors",
   });
   const seamarks = () => L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
     maxZoom: 18, referrerPolicy: REFERRER, attribution: "Sea marks © OpenSeaMap",
@@ -49,10 +51,10 @@
   const layers = {
     map: streets(),
     satellite: L.layerGroup([
-      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
       }),
-      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
+      L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER,
       }),
     ]),
@@ -372,7 +374,8 @@
     $("card-fleet").hidden = !fleet;
     if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;
     $("card-follow").hidden = !info.fleet;
-    $("card-photo-label").hidden = Boolean(info.fleet);
+    $("card-unfollow").hidden = info.fleet !== "followed";
+    renderCardStats(info);
 
     const photo = info.photo;
     const box = $("card-photo");
@@ -390,7 +393,69 @@
     }
   }
 
+  // Inner-route numbers for one of my ships, from the same data as the Stats tab.
+  let statsLoading = false;
+  let statsLoadedAt = 0;
+  function refreshStatsData() {
+    if (statsLoading) return;
+    statsLoading = true;
+    api("api/stats")
+      .then((data) => { statsData = data; statsLoadedAt = Date.now(); renderCard(); })
+      .catch(console.error)
+      .finally(() => { statsLoading = false; });
+  }
+
+  function renderCardStats(info) {
+    const box = $("card-stats");
+    if (info.fleet) { box.hidden = true; return; }
+    if (!statsData || Date.now() - statsLoadedAt > 5 * 60000) refreshStatsData();
+    if (!statsData) { box.hidden = true; return; }
+    const today = new Date();
+    const mine = statsData.passages.filter(([, mmsi]) => mmsi === info.mmsi).map(([ts, , route, direction]) => {
+      const d = new Date(ts * 1000);
+      return { ts, route, direction, year: d.getFullYear(), month: d.getMonth(), minute: d.getHours() * 60 + d.getMinutes() };
+    });
+    const inner = mine.filter((p) => p.route === "inner");
+    const year = inner.filter((p) => p.year === today.getFullYear());
+    const month = year.filter((p) => p.month === today.getMonth());
+    const tiles = [
+      [String(month.length), `in ${MONTHS[today.getMonth()]}`],
+      [String(year.length), `in ${today.getFullYear()}`],
+      [mine.length ? `${Math.round((100 * inner.length) / mine.length)}%` : "–", "inner route"],
+    ];
+    $("card-stat-tiles").replaceChildren(...tiles.map(([value, label]) => {
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      const v = document.createElement("strong");
+      v.textContent = value;
+      const l = document.createElement("span");
+      l.textContent = label;
+      tile.append(v, l);
+      return tile;
+    }));
+    const notes = [];
+    const last = inner.at(-1);
+    if (last) notes.push(`Last inner passage ${ago(last.ts)}, ${DIRECTIONS[last.direction] || ""}`.replace(/, $/, ""));
+    for (const [dir, label] of [["east", "towards Helsinki"], ["west", "towards Stockholm"]]) {
+      const times = inner.filter((p) => p.direction === dir).map((p) => p.minute);
+      if (times.length >= 3) notes.push(`Usually ${hhmm(median(times))} ${label}`);
+    }
+    $("card-stat-note").replaceChildren(...(notes.length ? notes : ["No inner-route passages recorded yet."]).map((text) => {
+      const line = document.createElement("span");
+      line.textContent = text;
+      return line;
+    }));
+    box.hidden = false;
+  }
+
   $("card-close").addEventListener("click", unfocus);
+  $("card-unfollow").addEventListener("click", async () => {
+    const info = focused && ships.get(focused.mmsi)?.info;
+    if (!info) return;
+    unfocus();
+    await api(`api/follow/${info.mmsi}`, { method: "DELETE" });
+    await loadState();
+  });
   $("card-follow").addEventListener("click", async () => {
     // A fleet ship becomes one of my ships: alerts, stats and a photo.
     const info = focused && ships.get(focused.mmsi)?.info;
@@ -481,7 +546,8 @@
     renderZones(state.zones || []);
     renderNotifyStatus();
     if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
-    $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored`;
+    const chartSource = state.chart ? "Traficom chart" : "OpenSeaMap sea marks";
+    $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored · Chart layer: ${chartSource}`;
   }
 
   async function loadTails() {
@@ -573,22 +639,27 @@
       sub.className = "muted small";
       sub.textContent = `MMSI ${r.mmsi}${r.destination ? ` · ${destinationText(r.destination)}` : ""}`;
       grow.append(name, sub);
-      const add = document.createElement("button");
-      add.type = "button";
-      add.textContent = "Add";
-      add.addEventListener("click", async () => {
-        add.disabled = true;
-        await fetch("api/ships", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mmsi: r.mmsi, name: r.name }),
-        });
+      const choose = async (url, button) => {
+        li.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+        button.textContent = "Adding…";
+        await api(url, { method: "POST", body: { mmsi: r.mmsi, name: r.name } });
         $("ship-search").value = "";
         list.replaceChildren();
         await loadState();
         await loadTails();
-      });
-      li.append(grow, add);
+      };
+      const follow = document.createElement("button");
+      follow.type = "button";
+      follow.textContent = "Follow";
+      follow.title = "Show on the map with its latest trip";
+      follow.addEventListener("click", () => choose("api/follow", follow));
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "primary";
+      add.textContent = "Add";
+      add.title = "Alerts and stats, like the ferries";
+      add.addEventListener("click", () => choose("api/ships", add));
+      li.append(grow, follow, add);
       return li;
     });
     if (/^\d{9}$/.test(q) && !rows.length && !ships.has(Number(q))) {
@@ -990,6 +1061,7 @@
   async function loadStats() {
     const [data] = await Promise.all([api("api/stats"), loadPassages()]);
     statsData = data;
+    statsLoadedAt = Date.now();
     const years = new Set(data.passages.map(([ts]) => new Date(ts * 1000).getFullYear()));
     years.add(new Date().getFullYear());
     const sorted = [...years].sort((a, b) => b - a);
@@ -1145,10 +1217,20 @@
       const members = fleet.members.map((mmsi) => ships.get(mmsi)?.info).filter(Boolean);
       const seen = members.filter((info) => info.position && now() - info.position.ts < FLEET_HIDE_SECONDS);
       const moving = seen.filter((info) => !info.in_port && info.position.sog > 2);
-      count.textContent = fleet.members.length
-        ? `${fleet.members.length} ships${fleet.enabled ? `, ${moving.length} under way` : ""}`
-        : "None found yet";
+      const followed = fleet.id === "followed";
+      const n = fleet.members.length;
+      count.textContent = n
+        ? `${n} ${n === 1 ? "ship" : "ships"}${fleet.enabled ? `, ${moving.length} under way` : ""}`
+        : (followed ? "None yet" : "None found yet");
+      if (followed && !n) {
+        const note = document.createElement("p");
+        note.className = "small muted";
+        note.textContent = "Search for a ship in the Ships tab and choose Follow to show it here.";
+        section.append(note);
+      }
       if (!fleet.enabled) return section;
+      // Followed ships are listed even when they haven't been heard from.
+      if (followed) seen.splice(0, seen.length, ...members);
 
       seen.sort((a, b) => Number(Boolean(a.fleet)) - Number(Boolean(b.fleet)) || a.name.localeCompare(b.name));
       const list = document.createElement("ul");
@@ -1165,9 +1247,21 @@
         n.textContent = info.fleet ? info.name : `${info.name} (my ship)`;
         const sub = document.createElement("span");
         sub.className = "small muted";
-        sub.textContent = isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info);
+        sub.textContent = !info.position ? "No position yet" : isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info);
         grow.append(n, sub);
         li.append(d, grow);
+        if (followed) {
+          const stop = document.createElement("button");
+          stop.type = "button";
+          stop.textContent = "Stop following";
+          stop.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            stop.disabled = true;
+            await api(`api/follow/${info.mmsi}`, { method: "DELETE" });
+            await loadState();
+          });
+          li.append(stop);
+        }
         li.addEventListener("click", () => {
           $("ships-dialog").close();
           focusShip(info.mmsi);

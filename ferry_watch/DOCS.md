@@ -38,11 +38,16 @@ sidebar.
 
 ## Fleets
 
-The **Fleets** tab in the menu shows the Tallink Silja, Viking Line and
-Finnlines fleets. Each fleet has a switch: when it's on, its ships appear on the
-map as smaller markers with a short tail, and tapping one shows its whole
-current voyage. **Add to my ships** on a fleet ship's card makes it one of your
-ships, with alerts, stats and a photo.
+The **Fleets** tab in the menu shows the Tallink Silja, Viking Line, Finnlines
+and Finferries fleets (Finferries includes Utö, Kökar and Tuuli on the Utö
+route). Each fleet has a switch: when it's on, its ships appear on the map as
+smaller markers with a short tail, and tapping one shows its whole current
+voyage and a photo when Wikipedia has one. **Add to my ships** on a fleet ship's
+card makes it one of your ships, with alerts and stats.
+
+To show any other ship, search for it under **Add a ship** and choose
+**Follow**. Followed ships are listed under **Followed ships** in the Fleets tab
+and are kept like fleet ships: only their latest trip is stored.
 
 Ships are matched by name once a day from Digitraffic's vessel list, so new
 ships join by themselves; a sold ship drops out once it's renamed. Ships that
@@ -123,6 +128,6 @@ by name.
 ## Data sources
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
-- Maps: © OpenStreetMap contributors, © CARTO; imagery © Esri; sea marks © OpenSeaMap;
+- Maps and imagery © Esri, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart © Traficom.
 - Ship photos: Wikipedia / Wikimedia Commons, credited on each photo.

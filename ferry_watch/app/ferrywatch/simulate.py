@@ -42,6 +42,7 @@ SCENARIOS = [
 HELSINKI_WEST = (60.1560, 24.9200)
 TALLINN = [(60.1300, 24.9100), (60.0500, 24.8800), (59.8000, 24.8300), (59.5500, 24.7800), (59.4440, 24.7700)]
 VUOSAARI = (60.2050, 25.1900)
+UTO_ROUTE = [(60.1630, 22.1380), (60.0900, 21.9500), (59.9700, 21.7600), (59.8600, 21.5300), (59.7830, 21.3700)]
 VUOSAARI_WEST = [(60.1500, 25.2000), (60.0500, 25.1000), (59.8500, 24.7000), (59.7000, 23.8000), (59.5500, 22.5000)]
 
 # Fleet ships for the Fleets tab (made-up MMSIs), plus the four ferries' fleets.
@@ -51,6 +52,7 @@ FLEET_MEMBERS = {
     276000103: {"fleet": "viking", "name": "Viking XPRS"},
     230000104: {"fleet": "finnlines", "name": "Finnstar"},
     230000105: {"fleet": "finnlines", "name": "Finnmaid"},
+    230000106: {"fleet": "finferries", "name": "Utö"},
     230184000: {"fleet": "tallink", "name": "Silja Serenade"},
     265004000: {"fleet": "tallink", "name": "Silja Symphony"},
     230713000: {"fleet": "viking", "name": "Viking Cinderella"},
@@ -62,6 +64,7 @@ FLEET_SCENARIOS = [
     (276000103, [TALLINN[-1], *reversed(TALLINN[:-1]), HELSINKI_KATAJANOKKA], 45 * 60, -20 * 60, 22.0),
     (230000104, [VUOSAARI, *VUOSAARI_WEST], 2 * 3600, -180 * 60, 21.0),
     (230000105, [VUOSAARI], 10**6, 0, 0.0),
+    (230000106, UTO_ROUTE, 30 * 60, -90 * 60, 11.0),
 ]
 
 

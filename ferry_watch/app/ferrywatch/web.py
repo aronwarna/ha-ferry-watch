@@ -86,6 +86,8 @@ class Web:
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
+        r.add_post("/api/follow", self.follow)
+        r.add_delete("/api/follow/{mmsi}", self.unfollow)
         r.add_static("/static/", STATIC, append_version=False)
 
     # --- pages -----------------------------------------------------------
@@ -142,7 +144,7 @@ class Web:
 
     async def upload_photo(self, request: web.Request) -> web.Response:
         mmsi = _mmsi(request)
-        if not self.fw.store.ship(mmsi):
+        if not self.fw.store.ship(mmsi) and mmsi not in self.fw.fleets.members:
             raise web.HTTPNotFound()
         reader = await request.multipart()
         part = await reader.next()
@@ -156,7 +158,8 @@ class Web:
         await self.broadcast_ships()
         return web.json_response({"ok": True})
 
-    async def add_ship(self, request: web.Request) -> web.Response:
+    @staticmethod
+    async def _ship_body(request: web.Request) -> tuple[int, str]:
         body = await request.json()
         try:
             mmsi = int(body["mmsi"])
@@ -164,8 +167,22 @@ class Web:
             raise web.HTTPBadRequest(text="Invalid MMSI") from None
         if not 100_000_000 <= mmsi <= 999_999_999:
             raise web.HTTPBadRequest(text="An MMSI has 9 digits")
-        name = str(body.get("name") or "").strip() or f"MMSI {mmsi}"
+        return mmsi, str(body.get("name") or "").strip()[:60] or f"MMSI {mmsi}"
+
+    async def add_ship(self, request: web.Request) -> web.Response:
+        mmsi, name = await self._ship_body(request)
+        if mmsi in self.fw.fleets.followed:
+            await self.fw.unfollow(mmsi)
         await self.fw.add_ship(mmsi, name)
+        return web.json_response({"ok": True})
+
+    async def follow(self, request: web.Request) -> web.Response:
+        mmsi, name = await self._ship_body(request)
+        await self.fw.follow(mmsi, name)
+        return web.json_response({"ok": True})
+
+    async def unfollow(self, request: web.Request) -> web.Response:
+        await self.fw.unfollow(_mmsi(request))
         return web.json_response({"ok": True})
 
     async def remove_ship(self, request: web.Request) -> web.Response:

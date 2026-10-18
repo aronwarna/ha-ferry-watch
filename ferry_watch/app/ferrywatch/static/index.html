@@ -50,10 +50,15 @@
       <p class="card-line" id="card-voyage"></p>
       <p class="card-line muted" id="card-seen"></p>
       <p class="card-line muted" id="card-fleet" hidden></p>
+      <div class="card-stats" id="card-stats" hidden>
+        <div class="tiles" id="card-stat-tiles"></div>
+        <p class="small muted" id="card-stat-note"></p>
+      </div>
       <div class="card-actions">
         <button type="button" id="card-zoom">Show whole track</button>
         <label class="link-button" id="card-photo-label">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
         <button type="button" class="link-button" id="card-follow" hidden>Add to my ships</button>
+        <button type="button" class="link-button" id="card-unfollow" hidden>Stop following</button>
       </div>
     </div>
   </section>
@@ -108,6 +113,7 @@
     <div data-pane="ships" role="tabpanel">
       <ul id="ships-list" class="ships-list"></ul>
       <h3>Add a ship</h3>
+      <p class="small muted">Add gives a ship alerts and stats like the ferries. Follow just shows it on the map with its latest trip.</p>
       <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
       <ul id="search-results" class="ships-list results"></ul>
       <h3>Notifications</h3>

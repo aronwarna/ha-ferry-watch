@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- Map and Chart showed "API key required": CARTO's map tiles now need a key, so
+  the map uses Esri's free tiles (the same service as the satellite view). The
+  alert picture uses them too.
+- Finferries fleet, including the Utö route ferries (Utö, Kökar, Tuuli).
+- Follow any ship: search under Add a ship and choose Follow to show it on the
+  map with its latest trip, without alerts or stats.
+- Fleet and followed ships get a photo from Wikipedia (English, Finnish or
+  Swedish) when there is one; you can also set your own.
+- Tapping one of your ships shows its inner-route numbers: this month, this
+  year, the inner-route share, the last inner passage and the usual times.
+- The menu shows which chart layer is in use.
+
 ## 0.4.2
 
 - Tapping an alert opened a "404: Not Found" page; it now opens the Ferry Watch panel.
