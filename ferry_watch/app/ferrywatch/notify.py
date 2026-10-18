@@ -227,7 +227,8 @@ class Notifier:
             ) as resp:
                 resp.raise_for_status()
                 info = (await resp.json())["data"]
-            self.panel_url = f"/hassio/ingress/{info['slug']}"
+            # HA registers an app's sidebar panel at /<slug> (needs "Show in sidebar" on).
+            self.panel_url = f"/{info['slug']}"
         except (aiohttp.ClientError, asyncio.TimeoutError, KeyError) as err:
             _LOGGER.warning("Could not look up the panel URL: %s", err)
         return self.panel_url

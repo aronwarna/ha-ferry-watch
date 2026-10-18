@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- Tapping an alert opened a "404: Not Found" page; it now opens the Ferry Watch panel.
+
 ## 0.4.1
 
 - Area editor: draw an inner-route line at each end of the inner route; the
