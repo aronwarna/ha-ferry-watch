@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.3
+
+- The ship cards along the bottom respond to a click anywhere on them. They
+  were rebuilt on every position report, so a click often landed on a card
+  that had just been replaced.
+
 ## 0.11.2
 
 - Drawn chart: no more "Map data not yet available" around the chart. Esri's

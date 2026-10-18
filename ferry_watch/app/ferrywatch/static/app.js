@@ -797,28 +797,42 @@
 
   // --- bottom strip -------------------------------------------------------------
 
+  // The chips are updated in place rather than rebuilt: rebuilt on every position
+  // report, a click often landed on a chip that had already been replaced.
+  const chips = new Map(); // mmsi -> { button, dot, name, sub }
+
   function renderStrip() {
     const strip = $("strip");
     const items = [...ships.values()].map((e) => e.info).filter((info) => !info.fleet);
-    strip.replaceChildren(...items.map((info) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "chip panel" + (isStale(info) ? " stale" : "");
-      const dot = document.createElement("span");
-      dot.className = "dot";
-      dot.style.background = info.color;
-      const text = document.createElement("span");
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = info.name;
-      const sub = document.createElement("span");
-      sub.className = "sub";
-      sub.textContent = info.position ? (isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info)) : "No position yet";
-      text.append(name, document.createElement("br"), sub);
-      b.append(dot, text);
-      b.addEventListener("click", () => focusShip(info.mmsi));
-      return b;
-    }));
+    const wanted = new Set(items.map((info) => info.mmsi));
+    for (const [mmsi, chip] of chips) {
+      if (!wanted.has(mmsi)) { chip.button.remove(); chips.delete(mmsi); }
+    }
+    items.forEach((info, i) => {
+      let chip = chips.get(info.mmsi);
+      if (!chip) {
+        const button = document.createElement("button");
+        button.type = "button";
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        const text = document.createElement("span");
+        const name = document.createElement("span");
+        name.className = "name";
+        const sub = document.createElement("span");
+        sub.className = "sub";
+        text.append(name, document.createElement("br"), sub);
+        button.append(dot, text);
+        button.addEventListener("click", () => focusShip(info.mmsi));
+        chip = { button, dot, name, sub };
+        chips.set(info.mmsi, chip);
+      }
+      chip.button.className = "chip panel" + (isStale(info) ? " stale" : "");
+      chip.dot.style.background = info.color;
+      chip.name.textContent = info.name;
+      chip.sub.textContent = info.position
+        ? (isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info)) : "No position yet";
+      if (strip.children[i] !== chip.button) strip.insertBefore(chip.button, strip.children[i] || null);
+    });
   }
 
   // --- status -------------------------------------------------------------------
