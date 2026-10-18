@@ -4,6 +4,7 @@
 
   const TAIL_MINUTES = 60;
   const STALE_SECONDS = 30 * 60;
+  const PORT_STALE_SECONDS = 24 * 3600;
   const FLEET_HIDE_SECONDS = 7 * 86400; // fleet ships not heard from in a week are left off the map
   const DEFAULT_VIEW = { center: [60.02, 24.45], zoom: 9 };
 
@@ -133,7 +134,10 @@
   function motionText(info) {
     const p = info.position;
     if (!p) return "No position yet";
-    if (info.in_port) return `In port${info.port ? ` in ${info.port}` : ""}`;
+    if (info.in_port) {
+      const since = info.stopped_since ? ` since ${clock(info.stopped_since)}` : "";
+      return `In port${info.port ? ` in ${info.port}` : ""}${since}`;
+    }
     const parts = [];
     if (p.sog != null) parts.push(`${p.sog.toFixed(1)} kn`);
     const dir = compass(p.heading ?? p.cog);
@@ -166,7 +170,10 @@
     return `to ${placeName(legs[legs.length - 1] || raw)}`;
   }
 
-  const isStale = (info) => !info.position || now() - info.position.ts > STALE_SECONDS;
+  // Moored ships can go hours without a new AIS position, so a ship in port only counts
+  // as out of contact after a day.
+  const isStale = (info) => !info.position
+    || now() - info.position.ts > (info.in_port ? PORT_STALE_SECONDS : STALE_SECONDS);
 
   // --- markers ----------------------------------------------------------------
 

@@ -204,11 +204,18 @@ class Tracker:
     def ship_summary(self, mmsi: int) -> dict[str, Any]:
         state = self.ships[mmsi]
         last = state.last
+        in_port, port = state.in_port, state.port
+        if not in_port and last and last.sog is not None and last.sog < STOP_SPEED:
+            # Moored ships may stop reporting before the stop is long enough to count;
+            # stopped at a known port is in port.
+            port = nearest_port(last.lat, last.lon)
+            in_port = port is not None
         return {
             "mmsi": mmsi,
             "position": last.as_dict() if last else None,
-            "in_port": state.in_port,
-            "port": state.port,
+            "in_port": in_port,
+            "port": port,
+            "stopped_since": state.stopped_since,
             "voyage_start": self.voyage_start(mmsi),
             "voyage_from": state.voyage_from,
             "destination": state.meta.get("destination"),

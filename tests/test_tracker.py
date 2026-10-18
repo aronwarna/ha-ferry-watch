@@ -108,3 +108,17 @@ def test_track_returns_since_voyage(tmp_path):
         tracker.on_location(MMSI, loc(1000 + i, sog=15))
     pts = store.track(MMSI, tracker.voyage_start(MMSI))
     assert len(pts) == 20 and pts[0][2] == 1000
+
+
+def test_stopped_at_a_port_counts_as_in_port_right_away(tmp_path):
+    from ferrywatch.store import Store
+    from ferrywatch.tracker import Tracker
+    store = Store(tmp_path / "t.db")
+    store.add_ship(1, "Ship", "#111111")
+    tracker = Tracker(store)
+    tracker.load()
+    # One report alongside in Helsinki South Harbour, then silence.
+    tracker.on_location(1, {"time": 1000, "lat": 60.1655, "lon": 24.9555, "sog": 0.0, "cog": 0, "heading": 0})
+    summary = tracker.ship_summary(1)
+    assert summary["in_port"] and summary["port"] == "Helsinki"
+    assert summary["stopped_since"] == 1000

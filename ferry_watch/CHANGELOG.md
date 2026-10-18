@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.3
+
+- Ships moored in port no longer show as "Last seen 4 h ago": moored ships
+  often send few or no new AIS positions, so a ship stopped at a known port
+  shows "In port in Helsinki since 10:31" and only counts as out of contact
+  after a day.
+
 ## 0.6.2
 
 - Chart: the nautical chart flashed and was then covered by the normal map; the
