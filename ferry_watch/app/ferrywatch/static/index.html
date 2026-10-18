@@ -25,7 +25,7 @@
       <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
       </button>
-      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships and notifications" title="Ships and notifications">
+      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships, stats and notifications" title="Ships, stats and notifications">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
       </button>
     </div>
@@ -56,6 +56,18 @@
     </div>
   </section>
 
+  <section id="replay" class="replay panel" hidden aria-live="polite">
+    <span class="dot" id="replay-dot"></span>
+    <div class="grow">
+      <strong id="replay-title"></strong>
+      <span class="small" id="replay-when"></span>
+      <span class="small muted" id="replay-note"></span>
+    </div>
+    <button type="button" class="icon-button plain" id="replay-close" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </section>
+
   <section id="areas" class="sheet panel" hidden aria-label="Areas">
     <div class="sheet-head">
       <h2>Areas</h2>
@@ -80,23 +92,41 @@
   </section>
 
   <dialog id="ships-dialog">
-    <form method="dialog" class="dialog-head">
-      <h2>Ships</h2>
-      <button class="icon-button plain" aria-label="Close">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </form>
-    <ul id="ships-list" class="ships-list"></ul>
-    <h3>Add a ship</h3>
-    <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
-    <ul id="search-results" class="ships-list results"></ul>
-    <h3>Notifications</h3>
-    <p class="small muted" id="notify-status"></p>
-    <button type="button" id="notify-test">Send a test notification</button>
-    <p class="small" id="notify-result" role="status"></p>
-    <h3>Recent passages</h3>
-    <ul id="passages-list" class="ships-list passages"></ul>
-    <p class="muted small" id="version"></p>
+    <div class="dialog-head">
+      <div class="segmented tabs" role="tablist" aria-label="Menu">
+        <button type="button" role="tab" data-tab="ships">Ships</button>
+        <button type="button" role="tab" data-tab="stats">Stats</button>
+      </div>
+      <form method="dialog">
+        <button class="icon-button plain" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </form>
+    </div>
+    <div data-pane="ships" role="tabpanel">
+      <ul id="ships-list" class="ships-list"></ul>
+      <h3>Add a ship</h3>
+      <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
+      <ul id="search-results" class="ships-list results"></ul>
+      <h3>Notifications</h3>
+      <p class="small muted" id="notify-status"></p>
+      <button type="button" id="notify-test">Send a test notification</button>
+      <p class="small" id="notify-result" role="status"></p>
+      <p class="muted small" id="version"></p>
+    </div>
+    <div data-pane="stats" role="tabpanel" hidden>
+      <div class="stats-head">
+        <h3 id="stats-title">Inner route passages</h3>
+        <select id="stats-year" aria-label="Year" hidden></select>
+      </div>
+      <p class="small muted" id="stats-summary"></p>
+      <div id="stats-chart" class="stats-chart"></div>
+      <p class="small muted" id="stats-scope"></p>
+      <ul id="stats-ships" class="ships-list stats-ships"></ul>
+      <h3>Recent passages</h3>
+      <ul id="passages-list" class="ships-list passages"></ul>
+      <p class="small"><a id="stats-csv" href="api/passages.csv" download="ferry-watch-passages.csv">Download all passages (CSV)</a></p>
+    </div>
   </dialog>
 
   <script src="static/vendor/leaflet/leaflet.js"></script>

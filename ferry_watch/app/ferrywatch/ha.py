@@ -61,6 +61,11 @@ class HAClient:
                                      json=data, timeout=self.timeout) as resp:
             resp.raise_for_status()
 
+    async def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
+        async with self.session.post(f"{config.HA_API}/events/{event_type}", headers=self.headers,
+                                     json=data, timeout=self.timeout) as resp:
+            resp.raise_for_status()
+
     async def phone_location(self, entity: str, notify_service: str,
                              max_age: float) -> tuple[float, float, float] | None:
         """(lat, lon, age in seconds) of the phone, asking it for a fresh fix if needed."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -23,8 +24,15 @@ _LOGGER = logging.getLogger(__name__)
 TRACK_MINUTES = 40  # track shown in the notification picture
 PHONE_IN_PICTURE_M = 25_000
 FEED_SILENCE = 30 * 60
+FEED_WARN_FROM, FEED_WARN_UNTIL = 6, 21  # local hours
 MAX_PASSAGE_AGE = 10 * 60  # don't alert about passages detected from old data
 IMAGE_KEEP_DAYS = 14
+LAST_INNER_ENTITY = "sensor.ferry_watch_last_inner_passage"
+
+
+def feed_warning_hours(now: float | None = None) -> bool:
+    """Feed warnings only go out by day; inner passages happen around 08-10 and 17-19."""
+    return FEED_WARN_FROM <= time.localtime(now).tm_hour < FEED_WARN_UNTIL
 
 
 def clock(ts: float) -> str:
@@ -46,36 +54,87 @@ class Notifier:
         task.add_done_callback(self._tasks.discard)
 
     async def handle(self, passage: dict[str, Any]) -> None:
+        notified, note = await self._alert(passage)
+        self.fw.store.set_passage_result(passage["id"], notified, note)
+        await self.publish_to_ha(passage, notified, note)
+
+    async def _alert(self, passage: dict[str, Any]) -> tuple[bool, str]:
+        """Send the phone alert if this passage calls for one; returns (sent, note)."""
         store = self.fw.store
         try:
             if passage["route"] != "inner":
-                store.set_passage_result(passage["id"], False, "outer route")
-                return
+                return False, "outer route"
             if not self.fw.ha:
-                store.set_passage_result(passage["id"], False, "Home Assistant not connected")
-                return
+                return False, "Home Assistant not connected"
             if time.time() - passage["ts"] > MAX_PASSAGE_AGE:
-                store.set_passage_result(passage["id"], False, "detected late (old data)")
-                return
+                return False, "detected late (old data)"
             opts = self.fw.options
             phone_zones = [z for z in store.zones() if z["role"] == "phone"]
             phone = await self.fw.ha.phone_location(opts.phone_entity, opts.notify_service,
                                                     opts.phone_max_age_minutes * 60)
             if opts.require_phone_area and phone_zones:
                 if not phone:
-                    store.set_passage_result(passage["id"], False, "phone location unknown")
-                    return
+                    return False, "phone location unknown"
                 if not any(point_in_polygon(phone[0], phone[1], z["points"]) for z in phone_zones):
-                    store.set_passage_result(passage["id"], False, "phone outside your area")
-                    return
+                    return False, "phone outside your area"
             await self.send_passage(passage, phone[:2] if phone else None)
-            store.set_passage_result(passage["id"], True, "sent")
+            return True, "sent"
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.error("Notification for passage %s failed: %s", passage.get("id"), err)
-            store.set_passage_result(passage["id"], False, f"sending failed: {err}")
+            return False, f"sending failed: {err}"
         except Exception:  # noqa: BLE001 - never let a notification bug stop tracking
             _LOGGER.exception("Notification for passage %s failed", passage.get("id"))
-            store.set_passage_result(passage["id"], False, "error, see log")
+            return False, "error, see log"
+
+    async def publish_to_ha(self, passage: dict[str, Any], notified: bool, note: str) -> None:
+        """Fire a ferry_watch_passage event, and keep the last-inner-passage sensor current,
+        for anyone who wants their own automations."""
+        if not self.fw.ha:
+            return
+        ship = self.fw.store.ship(passage["mmsi"])
+        data = {
+            "ship": ship["name"] if ship else f"MMSI {passage['mmsi']}",
+            "mmsi": passage["mmsi"],
+            "route": passage["route"],
+            "direction": DIRECTION_LABELS.get(passage["direction"], passage["direction"]),
+            "time": datetime.fromtimestamp(passage["ts"], timezone.utc).isoformat(),
+            "speed_kn": passage.get("sog"),
+            "latitude": passage.get("lat"),
+            "longitude": passage.get("lon"),
+            "alert_sent": notified,
+            "alert_note": note,
+        }
+        try:
+            await self.fw.ha.fire_event("ferry_watch_passage", data)
+            if passage["route"] == "inner":
+                await self.publish_last_inner(data)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.warning("Could not send the passage to Home Assistant: %s", err)
+
+    async def publish_last_inner(self, data: dict[str, Any] | None = None) -> None:
+        """sensor.ferry_watch_last_inner_passage; with no data, restore it from the database
+        (states set through the API don't survive a Home Assistant restart)."""
+        if data is None:
+            rows = self.fw.store.passages(limit=1, route="inner")
+            if not rows:
+                return
+            row = rows[0]
+            ship = self.fw.store.ship(row["mmsi"])
+            data = {
+                "ship": ship["name"] if ship else f"MMSI {row['mmsi']}",
+                "mmsi": row["mmsi"],
+                "direction": DIRECTION_LABELS.get(row["direction"], row["direction"]),
+                "time": datetime.fromtimestamp(row["ts"], timezone.utc).isoformat(),
+                "speed_kn": row["sog"],
+                "alert_sent": bool(row["notified"]),
+            }
+        attrs = {
+            "friendly_name": "Ferry Watch last inner passage",
+            "device_class": "timestamp",
+            "icon": "mdi:ferry",
+            **{k: data[k] for k in ("ship", "mmsi", "direction", "speed_kn", "alert_sent") if k in data},
+        }
+        await self.fw.ha.set_state(LAST_INNER_ENTITY, data["time"], attrs)
 
     def build_message(self, passage: dict[str, Any], phone: tuple[float, float] | None,
                       now: float | None = None) -> tuple[str, str]:
@@ -210,7 +269,7 @@ class Notifier:
             last = feed.last_message_ts or started
             silent = time.time() - last > FEED_SILENCE
             try:
-                if silent and not self.feed_warned:
+                if silent and not self.feed_warned and feed_warning_hours():
                     await self._feed_message(
                         "Ferry Watch: no ship data",
                         f"No ship positions since {clock(last)}. Passages can't be detected until it's back.")

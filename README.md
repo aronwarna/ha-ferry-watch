@@ -25,7 +25,8 @@ FW_DEV=1 FW_SIMULATE=1 FW_DATA_DIR=/tmp/fw python -m ferrywatch
 # open http://localhost:8099
 ```
 
-Add `FW_FAKE_HA=1` to try notifications without Home Assistant (calls are
+Add `FW_SIM_HISTORY=1` for made-up passage history in the stats, and
+`FW_FAKE_HA=1` to try notifications without Home Assistant (calls are
 logged instead of sent). Leave out `FW_SIMULATE=1` to use the live Digitraffic
 feed. Tests:
 
