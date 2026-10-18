@@ -5,8 +5,8 @@ import aiohttp
 
 from ferrywatch import vchart
 from ferrywatch.simulate import fake_chart_layer
-from ferrywatch.vchart import (VectorChart, _depth_band, blocks_for, clip_line, clip_ring, lonlat_to_mercator,
-                               make_tile, simplify)
+from ferrywatch.vchart import (VectorChart, _depth_band, block_bounds, blocks_for, clip_line, clip_ring,
+                               lonlat_to_mercator, near_finland, simplify)
 
 
 def tile_at(lat, lon, z):
@@ -35,8 +35,8 @@ def test_depth_bands():
 
 
 def test_blocks_for_zoom():
-    assert blocks_for(12, 2330, 1180) == [(582, 295)]
-    assert len(blocks_for(9, 290, 147)) == 4
+    assert blocks_for(12, 2330, 1180) == [(1165, 590)]
+    assert len(blocks_for(10, 582, 295)) == 4
 
 
 def test_tiles_from_simulated_data(tmp_path):
@@ -45,7 +45,7 @@ def test_tiles_from_simulated_data(tmp_path):
     async def run():
         t12, ok12 = await chart.tile(*tile_at(60.005, 24.4, 12))
         t14, _ = await chart.tile(*tile_at(59.99, 24.47, 13))
-        t9, ok9 = await chart.tile(*tile_at(60.0, 24.4, 9))
+        t9, ok9 = await chart.tile(*tile_at(60.0, 24.4, 10))
         return t12, ok12, t14, t9, ok9
 
     t12, ok12, t14, t9, ok9 = asyncio.run(run())
@@ -58,7 +58,7 @@ def test_tiles_from_simulated_data(tmp_path):
     lighthouse = [a for a in t12["aid"] if a[2] == "m"]
     assert lighthouse and lighthouse[0][4] == 1 and lighthouse[0][5] == "Porkkala majakka"
     assert "sounding" in t14 and "sounding" not in t12 and "aid" not in t9
-    assert chart.status()["blocks"] == 4  # the zoom-9 tile's four blocks (the others share them)
+    assert chart.status()["blocks"] == 4  # the zoom-10 tile's four blocks (the others share them)
 
 
 def test_failed_fairway_data_still_draws_depths(tmp_path):
@@ -89,3 +89,92 @@ def test_land_only_where_finland_is(tmp_path):
     assert "land" not in tile
     x, y = lonlat_to_mercator(24.4, 60.0)
     assert abs(x - 2716195.6) < 1 and abs(y - 8399737.9) < 1
+
+
+def test_only_fetches_near_finland(tmp_path):
+    asked = []
+
+    async def fetch(key, bbox):
+        asked.append(key)
+        return await fake_chart_layer(key, bbox)
+
+    _, bx, by = tile_at(59.0, 15.0, 11)  # off the Swedish mainland
+    assert not near_finland(block_bounds(bx, by))
+    _, fx, fy = tile_at(60.0, 24.4, 11)
+    assert near_finland(block_bounds(fx, fy))
+    chart = VectorChart(tmp_path, None, fetch)
+    tile, ok = asyncio.run(chart.tile(11, bx, by))
+    assert ok and asked == [] and "land" not in tile
+
+
+def test_oversized_response_is_refused(tmp_path):
+    class Content:
+        async def iter_chunked(self, n):
+            for _ in range(400):
+                yield b"x" * 65536
+
+    class Resp:
+        status = 200
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def get(self, *a, **kw):
+            return Resp()
+
+    chart = VectorChart(tmp_path, Session())
+    try:
+        asyncio.run(chart._fetch_wfs("sounding", (0, 0, 1, 1)))
+    except ValueError as err:
+        assert "MB of sounding data" in str(err)
+    else:
+        raise AssertionError("expected the response to be refused")
+
+
+def test_slow_tile_answers_pending_and_finishes_in_background(tmp_path):
+    release = None
+
+    async def fetch(key, bbox):
+        await release.wait()
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        nonlocal release
+        release = asyncio.Event()
+        chart = VectorChart(tmp_path, None, fetch)
+        coords = tile_at(60.005, 24.4, 12)
+        assert await chart.tile(*coords, wait=0.05) is None  # still downloading
+        release.set()
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not chart._pending:
+                break
+        result = await chart.tile(*coords, wait=0.05)
+        assert result is not None and result[1] and result[0]["depth"]
+
+    asyncio.run(run())
+
+
+def test_queued_block_nobody_wants_is_skipped(tmp_path, monkeypatch):
+    asked = []
+
+    async def fetch(key, bbox):
+        asked.append(key)
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fetch)
+        z, x, y = tile_at(60.005, 24.4, 12)
+        key = blocks_for(z, x, y)[0]
+        async with chart._limit:  # another block is downloading
+            assert await chart.tile(z, x, y, wait=0.01) is None
+            chart._wanted[key] -= vchart.FORGET_AFTER + 1  # the map has moved on
+        await asyncio.sleep(0.05)
+        assert asked == [] and not chart._pending and key not in chart._failed
+
+    asyncio.run(run())

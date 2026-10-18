@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.2
+
+- Fixes the panel (and sometimes Home Assistant itself) spinning forever on the
+  drawn chart. Chart requests used to wait up to half a minute while an area's
+  data downloaded, and a browser only opens a few connections at once, so
+  everything else queued behind them. Now they answer at once, the chart fills
+  in as each area arrives, and "Downloading chart data…" shows meanwhile.
+- Areas are smaller (about 10 km) and download one at a time, data is parsed
+  off the web server's thread, each download is capped at 20 MB, areas far
+  from Finnish waters aren't downloaded at all, and an area the map has moved
+  away from is skipped. The drawn chart starts at zoom 10 (the overview chart
+  covers wider views).
+
 ## 0.9.1
 
 - The drawn chart keeps at most 6 areas' data in memory (was 12), to stay light

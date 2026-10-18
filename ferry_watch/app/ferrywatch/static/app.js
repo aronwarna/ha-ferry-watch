@@ -88,7 +88,7 @@
       return L.layerGroup([
         oceanBase(),
         ...(overview ? [L.tileLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
-          minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 8, zIndex: 2,
+          minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 9, zIndex: 2,
         })] : []),
         FerryChart.layer({ attribution: "Depths © Traficom · Fairways © Väylävirasto · not for navigation", zIndex: 3 }),
         oceanLabels(6),
@@ -120,9 +120,13 @@
     renderChartStyle();
   }
 
+  let chartWaiting = 0;
+  FerryChart.onWaiting((n) => { chartWaiting = n; renderChartStyle(); });
+
   function renderChartStyle() {
     const box = $("chart-style");
     box.hidden = activeLayer !== layers.chart;
+    $("chart-loading").hidden = box.hidden || chartStyle !== "drawn" || chartWaiting === 0;
     box.querySelectorAll("[data-style]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === chartStyle)));
   }
 

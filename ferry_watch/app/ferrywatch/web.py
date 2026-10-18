@@ -22,6 +22,8 @@ from .config import DEV
 from .fleets import FLEET_IDS
 from .vchart import MIN_Z
 
+TILE_WAIT = 0.3  # s a drawn-chart tile request may wait for its data before answering "pending"
+
 if TYPE_CHECKING:
     from .__main__ import FerryWatch
 
@@ -173,7 +175,12 @@ class Web:
             raise web.HTTPBadRequest() from None
         if not (MIN_Z <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()
-        tile, complete = await self.fw.vchart.tile(z, x, y)
+        result = await self.fw.vchart.tile(z, x, y, wait=TILE_WAIT)
+        if result is None:
+            # Still downloading: answer now and let the panel ask again, so no
+            # request sits open long enough to block the browser's other ones.
+            return web.json_response({"pending": True}, status=202, headers={"Cache-Control": "no-store"})
+        tile, complete = result
         # A tile missing a block that couldn't be fetched is asked for again next time.
         cache = "max-age=86400" if complete else "no-store"
         return web.Response(body=json.dumps(tile, separators=(",", ":")), content_type="application/json",

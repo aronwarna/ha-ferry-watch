@@ -8,7 +8,7 @@ like Luotsi do, from:
 - Väylävirasto's fairway data (fairway lines and areas, leading lines, buoys,
   beacons and lights).
 
-Data is fetched lazily in blocks (zoom-10 map tiles, about 20 km across) the
+Data is fetched lazily in blocks (zoom-11 map tiles, about 10 km across) the
 first time part of the map is viewed, kept on the NAS for a month, and cut into
 small map tiles on request. Land is whatever isn't water: the panel paints the
 Finnish area in the land colour and draws the depth areas over it, so islands
@@ -40,8 +40,8 @@ VAYLA_WFS = "https://avoinapi.vaylapilvi.fi/vaylatiedot/vesivaylatiedot/wfs"
 ATTRIBUTION = ("Chart data: Traficom (depths), Väylävirasto (fairways, aids). "
                "Not for navigation.")
 
-BLOCK_Z = 10
-MIN_Z = 9  # below this the panel shows Traficom's overview chart
+BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
+MIN_Z = 10  # below this the panel shows Traficom's overview chart
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
@@ -49,7 +49,9 @@ POINT_BUFFER = 64  # wider for points: symbols, light sectors and soundings reac
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
 PAGE = 20000
+MAX_RESPONSE = 20 * 1024 * 1024  # bytes; more than this from one request is refused, to spare RAM
 MEMORY_BLOCKS = 6  # parsed blocks kept in RAM; the rest are read from disk when needed
+FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # What to fetch: layer key -> (service, type name, kind, properties to keep)
@@ -73,7 +75,7 @@ AID_TYPES = {
 }
 
 # Zoom from which each layer is drawn.
-LAYER_MIN_Z = {"depth": MIN_Z, "contour": 10, "sounding": 13, "farea": 11, "fline": MIN_Z,
+LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 13, "farea": 11, "fline": MIN_Z,
                "lead": 11, "aid": 11, "sector": 12}
 
 
@@ -227,6 +229,28 @@ def lonlat_to_mercator(lon: float, lat: float) -> tuple[float, float]:
 
 
 FINNISH_WATERS_M = [lonlat_to_mercator(lon, lat) for lon, lat in FINNISH_WATERS]
+NEAR_M = 30000  # Finnish chart data reaches a little past FINNISH_WATERS
+
+
+def near_finland(bounds: tuple[float, float, float, float]) -> bool:
+    """Whether a block could hold Finnish chart data (it touches FINNISH_WATERS, give or take)."""
+    minx, miny, maxx, maxy = bounds[0] - NEAR_M, bounds[1] - NEAR_M, bounds[2] + NEAR_M, bounds[3] + NEAR_M
+    poly = FINNISH_WATERS_M
+    if any(minx <= x <= maxx and miny <= y <= maxy for x, y in poly):
+        return True
+    for i in range(5):
+        for j in range(5):
+            px, py = minx + (maxx - minx) * i / 4, miny + (maxy - miny) * j / 4
+            inside = False
+            k = len(poly) - 1
+            for n, (xi, yi) in enumerate(poly):
+                xj, yj = poly[k]
+                if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+                    inside = not inside
+                k = n
+            if inside:
+                return True
+    return False
 
 
 def _num(value: Any) -> float | None:
@@ -267,7 +291,7 @@ def build_block(bx: int, by: int, layers: dict[str, list[dict]]) -> dict[str, li
     """Clip each layer's features to the block (with a margin) and keep only what the
     panel draws. Areas: [props, bbox, rings]; lines: [props, bbox, line]; points: [props, x, y]."""
     project = to_block(bx, by)
-    margin = UNITS * TILE_BUFFER / EXTENT  # a zoom-10 tile's buffer, the largest needed
+    margin = UNITS * TILE_BUFFER / EXTENT  # a block-sized tile's buffer, the largest needed
     lo, hi = -margin, UNITS + margin
     plo, phi = -UNITS * POINT_BUFFER / EXTENT, UNITS * (1 + POINT_BUFFER / EXTENT)
     out: dict[str, list] = {}
@@ -397,7 +421,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     else:
                         out.append([*props, *rings])
                 else:
-                    if key == "contour" and z < 11 and (_num(props[0]) or 0) < 10:
+                    if key == "contour" and z < 12 and (_num(props[0]) or 0) < 10:
                         continue
                     if key == "fline" and z < 11 and props[0] is None:
                         continue  # boat routes only once zoomed in
@@ -473,6 +497,10 @@ def blocks_for(z: int, x: int, y: int) -> list[tuple[int, int]]:
 Fetcher = Callable[[str, tuple[float, float, float, float]], "asyncio.Future[list[dict]]"]
 
 
+class _Skipped(Exception):
+    pass
+
+
 class VectorChart:
     def __init__(self, directory: Path, session: aiohttp.ClientSession | None,
                  fetch_layer: Callable[[str, tuple[float, float, float, float]], Any] | None = None):
@@ -480,8 +508,10 @@ class VectorChart:
         self.session = session
         self.fetch_layer = fetch_layer or self._fetch_wfs
         self._memory: OrderedDict[tuple[int, int], dict] = OrderedDict()
-        self._pending: dict[tuple[int, int], asyncio.Future] = {}
-        self._limit = asyncio.Semaphore(2)  # be gentle with the public services
+        self._pending: dict[tuple[int, int], asyncio.Task] = {}
+        self._wanted: dict[tuple[int, int], float] = {}  # when a block was last asked for
+        self._limit = asyncio.Semaphore(1)  # one block at a time: gentle on the services and on RAM
+        self._cutting = asyncio.Semaphore(1)
         self._failed: dict[tuple[int, int], float] = {}
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
@@ -494,32 +524,51 @@ class VectorChart:
         return {"blocks": len(files), "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
                 "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z}
 
-    async def tile(self, z: int, x: int, y: int) -> tuple[dict[str, Any], bool]:
-        """The tile, and whether every block it needs was available."""
+    async def tile(self, z: int, x: int, y: int,
+                   wait: float | None = None) -> tuple[dict[str, Any], bool] | None:
+        """The tile, and whether every block it needs was available.
+
+        With ``wait``, gives up after that many seconds and returns None while the
+        blocks keep downloading in the background: a browser only opens a few
+        connections to Home Assistant, and a tile request held open for half a
+        minute would stall the rest of the panel (and Home Assistant's own UI).
+        """
         keys = blocks_for(z, x, y)
-        loaded = await asyncio.gather(*(self.block(*key) for key in keys))
+        now = time.monotonic()
+        for key in keys:
+            self._wanted[key] = now
+        tasks = [self._block_task(key) for key in keys]
+        pending = [t for t in tasks if not t.done()]
+        if pending:
+            done, still = await asyncio.wait([asyncio.shield(t) for t in pending], timeout=wait)
+            if still:
+                return None
+        loaded = [t.result() for t in tasks]
         blocks = dict(zip(keys, loaded))
-        return await asyncio.to_thread(make_tile, z, x, y, blocks), all(b is not None for b in loaded)
+        async with self._cutting:  # one tile cut at a time keeps the web server responsive
+            tile = await asyncio.to_thread(make_tile, z, x, y, blocks)
+        return tile, all(b is not None for b in loaded)
 
     async def block(self, bx: int, by: int) -> dict | None:
-        key = (bx, by)
+        self._wanted[(bx, by)] = time.monotonic()
+        return await asyncio.shield(self._block_task((bx, by)))
+
+    def _block_task(self, key: tuple[int, int]) -> "asyncio.Future[dict | None]":
         if key in self._memory:
             self._memory.move_to_end(key)
-            return self._memory[key]
-        if key in self._pending:
-            return await asyncio.shield(self._pending[key])
-        future = asyncio.get_running_loop().create_future()
-        self._pending[key] = future
-        try:
-            data = await self._load(bx, by)
-        except BaseException:
-            future.cancel()
-            raise
-        else:
-            future.set_result(data)
-            return data
-        finally:
-            del self._pending[key]
+            future = asyncio.get_running_loop().create_future()
+            future.set_result(self._memory[key])
+            return future
+        task = self._pending.get(key)
+        if task is None:
+            task = asyncio.create_task(self._load(*key))
+            self._pending[key] = task
+            task.add_done_callback(lambda _t, key=key: self._done(key))
+        return task
+
+    def _done(self, key: tuple[int, int]) -> None:
+        self._pending.pop(key, None)
+        self._wanted.pop(key, None)
 
     async def _load(self, bx: int, by: int) -> dict | None:
         path = self._path(bx, by)
@@ -535,7 +584,10 @@ class VectorChart:
         if cached is None:
             if time.time() - self._failed.get((bx, by), 0) < FAILED_RETRY:
                 return None
-            fresh = await self._fetch_block(bx, by)
+            try:
+                fresh = await self._fetch_block(bx, by)
+            except _Skipped:
+                return None
             if fresh is None:
                 self._failed[(bx, by)] = time.time()
                 try:
@@ -554,13 +606,17 @@ class VectorChart:
         size = bounds[2] - bounds[0]
         pad = size * POINT_BUFFER / EXTENT
         bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
-        layers: dict[str, list[dict]] = {}
+        built: dict[str, list] = {}
         missing: list[str] = []
-        started = time.monotonic()
+        if not near_finland(bounds):
+            built = {key: [] for key in SOURCES}  # nothing to fetch out there
         async with self._limit:
-            for key in SOURCES:
+            if not built and time.monotonic() - self._wanted.get((bx, by), time.monotonic()) > FORGET_AFTER:
+                raise _Skipped  # the map moved on while this block waited its turn
+            started = time.monotonic()
+            for key in SOURCES if not built else ():
                 try:
-                    layers[key] = await self.fetch_layer(key, bbox)
+                    features = await self.fetch_layer(key, bbox)
                     self.errors.pop(key, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
                     msg = str(err) or type(err).__name__
@@ -569,9 +625,11 @@ class VectorChart:
                     self.errors[key] = msg
                     if key == "depth":
                         return None  # without depths there's no chart to draw
-                    layers[key] = []
+                    features = []
                     missing.append(key)
-        built = await asyncio.to_thread(build_block, bx, by, layers)
+                # One layer at a time, so only one layer's raw data is ever in memory.
+                built.update(await asyncio.to_thread(build_block, bx, by, {key: features}))
+                del features
         data = {"v": 1, "missing": missing, "layers": built}
         await asyncio.to_thread(_write, self._path(bx, by), data)
         self.blocks_fetched += 1
@@ -594,11 +652,19 @@ class VectorChart:
             params["startIndex"] = str(start)
             async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
                                         timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                body = await resp.read()
+                chunks, size = [], 0
+                async for chunk in resp.content.iter_chunked(65536):
+                    size += len(chunk)
+                    if size > MAX_RESPONSE:
+                        raise ValueError(f"more than {MAX_RESPONSE // 1048576} MB of {key} data for one area")
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+                del chunks
                 if resp.status != 200 or not body.lstrip().startswith(b"{"):
                     raise aiohttp.ClientError(
                         f"HTTP {resp.status}: {body[:200].decode('utf-8', 'replace').strip()}")
-                page = json.loads(body)
+            page = await asyncio.to_thread(json.loads, body)  # off the event loop
+            del body
             got = page.get("features") or []
             features += got
             total = page.get("numberMatched", page.get("totalFeatures"))

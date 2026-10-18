@@ -438,6 +438,15 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
   right: 10px;
 }
 .chart-style button { font-size: 12px; padding: 4px 9px; }
+.chart-loading {
+  position: fixed;
+  z-index: 1000;
+  top: calc(max(10px, env(safe-area-inset-top)) + 92px);
+  right: 10px;
+  font-size: 12px;
+  padding: 4px 9px;
+  color: var(--muted);
+}
 .aid-popup .leaflet-popup-content { margin: 8px 12px; font-size: 13px; line-height: 1.4; }
 
 /* Stats: grouping buttons and the month calendar */

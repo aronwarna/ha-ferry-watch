@@ -387,9 +387,12 @@
   // --- the Leaflet layer -------------------------------------------------------------
 
   const tileAids = new Map(); // tile key -> [{ latlng, aid }]
+  const RETRY_MS = 2500;
+  let waitingTiles = 0; // tiles whose data is still downloading
+  let waitingChanged = null;
 
   const ChartLayer = L.GridLayer.extend({
-    options: { minZoom: 9, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
+    options: { minZoom: 10, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
 
     createTile(coords, done) {
       const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -397,14 +400,35 @@
       canvas.width = canvas.height = 256 * dpr;
       const controller = new AbortController();
       canvas._abort = controller;
-      fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}`, { signal: controller.signal })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((data) => {
-          drawTile(canvas, data, coords.z, dpr);
-          this._rememberAids(coords, data);
-          done(null, canvas);
-        })
-        .catch((err) => done(err.name === "AbortError" ? null : err, canvas));
+      let waiting = false;
+      const setWaiting = (on) => {
+        if (on === waiting) return;
+        waiting = on;
+        waitingTiles += on ? 1 : -1;
+        waitingChanged?.(waitingTiles);
+      };
+      controller.signal.addEventListener("abort", () => setWaiting(false));
+      // The server answers 202 while an area's data is still downloading; ask again shortly.
+      const load = () => {
+        fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}`, { signal: controller.signal })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((data) => {
+            if (data.pending) {
+              setWaiting(true);
+              canvas._retry = setTimeout(load, RETRY_MS);
+              return;
+            }
+            setWaiting(false);
+            drawTile(canvas, data, coords.z, dpr);
+            this._rememberAids(coords, data);
+            done(null, canvas);
+          })
+          .catch((err) => {
+            setWaiting(false);
+            done(err.name === "AbortError" ? null : err, canvas);
+          });
+      };
+      load();
       return canvas;
     },
 
@@ -422,6 +446,7 @@
     onAdd(map) {
       L.GridLayer.prototype.onAdd.call(this, map);
       this.on("tileunload", (e) => {
+        clearTimeout(e.tile._retry);
         e.tile._abort?.abort();
         tileAids.delete(this._tileCoordsToKey(e.coords));
       });
@@ -453,5 +478,6 @@
     layer: (options) => new ChartLayer(options),
     aidAt,
     colors: C,
+    onWaiting: (fn) => { waitingChanged = fn; },
   };
 })();
