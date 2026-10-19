@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.0
+
+- **Drawn chart restyled** to look like Traficom's scanned chart: depth tints
+  and a crisp coastline, dotted 3 m and dashed 6 m contours, deep-water routes
+  in grey with the green route band, draughts like "(9,0)", red leading-line
+  bearings, black aid silhouettes with topmarks, light flares and sectors,
+  light characters such as "Fl(2)WRG.10s", speed limits and restricted areas,
+  and chart-style names.
+- **Wrecks and coastal heritage** from Museovirasto's registers: wrecks and
+  underwater sites, plus bunkers, trenches and gun positions on the coast and
+  islands (from zoom 13). Tap one for its dating and a link to the register.
+  hylyt.net isn't open data, so it isn't used.
+- **Next passage**: each ferry's chip and card show when it reaches the
+  Porkkala lines and how often it has taken the inner route lately; there is
+  also a `sensor.ferry_watch_next_passage`.
+- **Sea conditions**: wind, gusts, visibility, sea temperature and sunset from
+  FMI in a pill under the top bar, and in the alert text.
+- **You are here**: your phone's position on the map and the distance to each
+  ferry.
+- **Other ships** nearby (off by default), **faulty lights and buoys** on the
+  chart, and new groups: Eckerö Line, Suomenlinna ferries, cruise ships,
+  pilot boats and tugs.
+- Menu reorganised into Ships, On the map, Stats and Settings, with the memory
+  in use shown under Settings. Better layout on phones.
+- Much less memory for the drawn chart: chart data is stored compactly with
+  three levels of detail, so the worst case dropped from about 1 GB to under
+  80 MB. Existing chart files are converted once on first use.
+
 ## 0.11.3
 
 - The ship cards along the bottom respond to a click anywhere on them. They

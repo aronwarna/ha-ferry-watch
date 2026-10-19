@@ -157,13 +157,17 @@
     renderFaults();
   }
 
-  // Tap a buoy, beacon or light on the drawn chart to see what it is.
+  // Tap a buoy, beacon, light, wreck or heritage site on the drawn chart to see what it is.
   map.on("click", (e) => {
     if (activeLayer !== layers.chart || chartStyle !== "drawn" || map.getZoom() < 11) return;
     const hit = FerryChart.aidAt(map, e.latlng);
     if (!hit) return;
+    const link = hit.link && /^https:\/\//.test(hit.link.href || hit.link) &&
+      `<a href="${esc(hit.link.href || hit.link)}" target="_blank" rel="noopener">${esc(hit.link.text || "Register entry")}</a>`;
     const lines = [hit.name && `<strong>${esc(hit.name)}</strong>`, hit.description && esc(hit.description),
-      hit.sub && hit.sub !== hit.description && `<span class="muted">${esc(hit.sub)}</span>`].filter(Boolean);
+      ...(hit.lines || []).filter(Boolean).map((l) => `<span class="muted">${esc(l)}</span>`),
+      hit.sub && !(hit.lines || []).length && hit.sub !== hit.description && `<span class="muted">${esc(hit.sub)}</span>`,
+      link].filter(Boolean);
     L.popup({ className: "aid-popup", offset: [0, -6] })
       .setLatLng(hit.latlng)
       .setContent(lines.join("<br>"))
