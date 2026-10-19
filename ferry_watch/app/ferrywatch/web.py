@@ -185,9 +185,9 @@ class Web:
         tile, complete = result
         # A tile missing a block that couldn't be fetched is asked for again next time.
         cache = "max-age=86400" if complete else "no-store"
-        resp = web.Response(body=json.dumps(tile, separators=(",", ":")), content_type="application/json",
-                            headers={"Cache-Control": cache})
-        if len(resp.body) > 4096:
+        body = json.dumps(tile, separators=(",", ":")).encode()
+        resp = web.Response(body=body, content_type="application/json", headers={"Cache-Control": cache})
+        if len(body) > 4096:
             resp.enable_compression()  # zoomed-out tiles shrink to about a quarter
         return resp
 
