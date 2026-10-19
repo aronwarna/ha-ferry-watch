@@ -11,7 +11,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ships (
@@ -75,7 +75,26 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vessels (
+    mmsi INTEGER PRIMARY KEY,
+    name TEXT,
+    norm TEXT,
+    type INTEGER,
+    length INTEGER,
+    destination TEXT,
+    updated INTEGER
+);
+CREATE INDEX IF NOT EXISTS vessels_norm ON vessels (norm);
 """
+
+# Columns added after the first release: (table, column, type).
+ADDED_COLUMNS = [
+    ("passages", "wind_ms", "REAL"),
+    ("passages", "gust_ms", "REAL"),
+    ("passages", "wind_dir", "REAL"),
+    ("meta", "eta_ts", "INTEGER"),
+    ("meta", "draught", "REAL"),
+]
 
 
 @dataclass
@@ -108,6 +127,10 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        for table, column, kind in ADDED_COLUMNS:
+            have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         self.db.commit()
 
     def close(self) -> None:
@@ -231,6 +254,13 @@ class Store:
         )
         self.db.commit()
 
+    def voyages_from(self, mmsi: int, port: str, since_ts: int) -> int:
+        """How many voyages the ship started from a port since a time."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM voyages WHERE mmsi = ? AND from_port = ? AND start_ts >= ?",
+            (mmsi, port, since_ts),
+        ).fetchone()[0]
+
     def current_voyage(self, mmsi: int) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT * FROM voyages WHERE mmsi = ? ORDER BY start_ts DESC LIMIT 1", (mmsi,)
@@ -241,11 +271,11 @@ class Store:
 
     def upsert_meta(self, mmsi: int, meta: dict[str, Any]) -> None:
         self.db.execute(
-            "INSERT INTO meta (mmsi, name, destination, imo, call_sign, ship_type, updated_ts) "
-            "VALUES (:mmsi, :name, :destination, :imo, :call_sign, :ship_type, :updated_ts) "
+            "INSERT INTO meta (mmsi, name, destination, imo, call_sign, ship_type, updated_ts, eta_ts, draught) "
+            "VALUES (:mmsi, :name, :destination, :imo, :call_sign, :ship_type, :updated_ts, :eta_ts, :draught) "
             "ON CONFLICT(mmsi) DO UPDATE SET name=excluded.name, destination=excluded.destination, "
             "imo=excluded.imo, call_sign=excluded.call_sign, ship_type=excluded.ship_type, "
-            "updated_ts=excluded.updated_ts",
+            "updated_ts=excluded.updated_ts, eta_ts=excluded.eta_ts, draught=excluded.draught",
             {
                 "mmsi": mmsi,
                 "name": meta.get("name"),
@@ -254,6 +284,8 @@ class Store:
                 "call_sign": meta.get("call_sign"),
                 "ship_type": meta.get("ship_type"),
                 "updated_ts": meta.get("updated_ts") or int(time.time()),
+                "eta_ts": meta.get("eta_ts"),
+                "draught": meta.get("draught"),
             },
         )
         self.db.commit()
@@ -311,6 +343,25 @@ class Store:
                         (int(notified), note, passage_id))
         self.db.commit()
 
+    def set_passage_wind(self, passage_id: int, wind_ms: float | None, gust_ms: float | None,
+                         wind_dir: float | None) -> None:
+        self.db.execute("UPDATE passages SET wind_ms = ?, gust_ms = ?, wind_dir = ? WHERE id = ?",
+                        (wind_ms, gust_ms, wind_dir, passage_id))
+        self.db.commit()
+
+    def recent_passages_for(self, mmsi: int, limit: int = 12) -> list[dict[str, Any]]:
+        """Latest passages, the ship's own first, then the other ships' (for predictions)."""
+        rows = self.db.execute(
+            "SELECT * FROM passages ORDER BY mmsi = ? DESC, ts DESC LIMIT ?", (mmsi, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_passages(self, mmsi: int, route: str, direction: str, since_ts: int) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM passages WHERE mmsi = ? AND route = ? AND direction = ? AND ts >= ?",
+            (mmsi, route, direction, since_ts),
+        ).fetchone()[0]
+
     def last_passage(self, mmsi: int, route: str) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT * FROM passages WHERE mmsi = ? AND route = ? ORDER BY ts DESC LIMIT 1", (mmsi, route)
@@ -337,6 +388,50 @@ class Store:
         """Every passage as (ts, mmsi, route, direction), oldest first, for the stats."""
         return [tuple(r) for r in self.db.execute(
             "SELECT ts, mmsi, route, direction FROM passages ORDER BY ts").fetchall()]
+
+    # --- vessel directory ------------------------------------------------
+    # Digitraffic's list of every vessel seen in Finnish waters, refreshed daily. Kept here
+    # rather than in memory, for ship search and for naming the ships in "Other ships".
+
+    def replace_vessels(self, rows: Iterable[tuple]) -> int:
+        """Replace the directory with (mmsi, name, norm, type, length, destination, updated)
+        rows. They may come from a generator; nothing changes if it fails part way."""
+        with self.db:
+            self.db.execute("DELETE FROM vessels")
+            cur = self.db.executemany("INSERT OR REPLACE INTO vessels VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        return cur.rowcount
+
+    def vessel_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM vessels").fetchone()[0]
+
+    def search_vessels(self, norm: str, limit: int = 15) -> list[dict[str, Any]]:
+        """Vessels whose normalised name contains `norm` (or whose MMSI starts with it):
+        exact matches first, then names starting with it."""
+        if not norm:
+            return []
+        like = norm.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        sql = "SELECT mmsi, name, type, length, destination FROM vessels WHERE norm LIKE ? ESCAPE '!'"
+        args: list[Any] = [f"%{like}%"]
+        if norm.isdigit():
+            sql += " OR CAST(mmsi AS TEXT) LIKE ?"
+            args.append(f"{norm}%")
+        sql += " ORDER BY norm = ? DESC, norm LIKE ? ESCAPE '!' DESC, norm LIMIT ?"
+        args += [norm, f"{like}%", limit]
+        return [dict(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def vessels_named(self, norm: str) -> list[int]:
+        return [r[0] for r in self.db.execute("SELECT mmsi FROM vessels WHERE norm = ?", (norm,))]
+
+    def vessel_info(self, mmsis: Iterable[int]) -> dict[int, dict[str, Any]]:
+        mmsis = list(mmsis)
+        out: dict[int, dict[str, Any]] = {}
+        for i in range(0, len(mmsis), 500):
+            chunk = mmsis[i:i + 500]
+            rows = self.db.execute(
+                "SELECT mmsi, name, type, length, destination FROM vessels "
+                f"WHERE mmsi IN ({','.join('?' * len(chunk))})", chunk).fetchall()
+            out.update({r["mmsi"]: dict(r) for r in rows})
+        return out
 
     # --- key/value -------------------------------------------------------
 

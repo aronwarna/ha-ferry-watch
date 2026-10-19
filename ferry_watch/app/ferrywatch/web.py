@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
+FLEET_PUSH_SECONDS = 5
 
 
 @web.middleware
@@ -68,6 +69,8 @@ class Web:
     def __init__(self, fw: FerryWatch):
         self.fw = fw
         self.sockets: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
+        self._fleet_pushed: dict[int, float] = {}  # mmsi -> when its last position went out
+        self._fleet_pending: set[int] = set()
         self.app = web.Application(middlewares=[ingress_only], client_max_size=10 * 1024 * 1024)
         r = self.app.router
         r.add_get("/", self.index)
@@ -251,7 +254,7 @@ class Web:
         return web.json_response({"ok": True})
 
     async def search(self, request: web.Request) -> web.Response:
-        return web.json_response(await self.fw.feed.search(request.query.get("q", "")))
+        return web.json_response(self.fw.feed.search(request.query.get("q", "")[:60]))
 
     # --- zones and passages ---------------------------------------------
 
@@ -372,8 +375,27 @@ class Web:
             self._send({"type": kind, "ship": payload})
 
     def on_fleet_event(self, kind: str, payload: dict[str, Any]) -> None:
-        if self.sockets:
-            self._send({"type": kind, "ship": self.fw.fleet_summary(payload["mmsi"])})
+        # Fleet ships report every few seconds; the panel gets at most one position per ship
+        # per FLEET_PUSH_SECONDS (the latest one, once the time is up). My own ships, and so
+        # the alert ferries, go through on_event at full rate.
+        if not self.sockets:
+            return
+        mmsi = payload["mmsi"]
+        if kind == "position":
+            wait = self._fleet_pushed.get(mmsi, 0.0) + FLEET_PUSH_SECONDS - time.monotonic()
+            if wait > 0:
+                if mmsi not in self._fleet_pending:
+                    self._fleet_pending.add(mmsi)
+                    asyncio.get_running_loop().call_later(wait, self._push_fleet, mmsi, kind)
+                return
+        self._push_fleet(mmsi, kind)
+
+    def _push_fleet(self, mmsi: int, kind: str) -> None:
+        self._fleet_pending.discard(mmsi)
+        if mmsi not in self.fw.fleet_tracker.ships:
+            return
+        self._fleet_pushed[mmsi] = time.monotonic()
+        self._send({"type": kind, "ship": self.fw.fleet_summary(mmsi)})
 
     def broadcast_aircraft(self, aircraft: list[dict[str, Any]]) -> None:
         self._send({"type": "aircraft", "aircraft": aircraft})

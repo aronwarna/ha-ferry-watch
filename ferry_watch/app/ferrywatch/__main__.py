@@ -16,7 +16,7 @@ from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
-from .fleets import FleetManager, match_fleets
+from .fleets import FleetManager, FleetMatcher
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
 from .ha import HAClient, HAPublisher
@@ -124,9 +124,11 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import FLEET_MEMBERS, run_simulation, seed_history, simulate_aircraft
+            from .simulate import FLEET_MEMBERS, fake_vessel_list, run_simulation, seed_history, simulate_aircraft
             if os.environ.get("FW_SIM_HISTORY") == "1":
                 seed_history(self.store)
+            self.feed.vessel_list_source = fake_vessel_list
+            await self.feed.refresh_directory()
             self.fleets.update(FLEET_MEMBERS)
             self.fleet_tracker.load()
             self.tasks.append(asyncio.create_task(run_simulation(self.tracker, self.fleet_tracker)))
@@ -157,17 +159,21 @@ class FerryWatch:
 
     async def _refresh_fleets_daily(self) -> None:
         while True:
-            if time.time() - self.fleets.updated_ts >= FLEET_REFRESH:
+            if time.time() - self.fleets.updated_ts >= FLEET_REFRESH or not self.store.vessel_count():
                 await self.refresh_fleets()
             await asyncio.sleep(3600)
 
     async def refresh_fleets(self) -> None:
-        """Work out fleet membership from Digitraffic's vessel list."""
+        """Work out fleet membership from Digitraffic's vessel list, which also refreshes
+        the vessel directory used by ship search."""
+        matcher = FleetMatcher()
         try:
-            members = match_fleets(await self.feed.vessels(cache=False))
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            count = await self.feed.refresh_directory(matcher)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
             _LOGGER.warning("Could not update the fleets: %s", err)
             return
+        _LOGGER.info("Vessel directory: %s vessels", count)
+        members = matcher.result()
         if self.fleets.update(members):
             _LOGGER.info("Fleets: %s ships", len(members))
             await self.fleets_changed()

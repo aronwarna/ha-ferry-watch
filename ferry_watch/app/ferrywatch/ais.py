@@ -1,7 +1,8 @@
 """Digitraffic AIS feed: one live MQTT-over-websocket connection plus REST lookups.
 
 The live stream pushes positions as ships send them, so there is no polling.
-REST is only used at startup (latest known positions) and for ship search.
+REST is used at startup (latest known positions) and once a day for the vessel
+list, which goes straight into the SQLite vessel directory used by ship search.
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ import json
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, Iterator
 
 import aiohttp
 import paho.mqtt.client as mqtt
 
 from .config import USER_AGENT
+from .fleets import FleetMatcher, normalize, vessel_length
 from .store import Store
 from .tracker import Tracker
 
@@ -25,7 +27,39 @@ _LOGGER = logging.getLogger(__name__)
 HOST = "meri.digitraffic.fi"
 REST = f"https://{HOST}/api/ais/v1"
 HEADERS = {"Digitraffic-User": "ha-ferry-watch", "User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}
-VESSEL_LIST_TTL = 24 * 3600
+_SKIP = " \t\r\n,"
+
+
+def iter_json_array(text: str) -> Iterator[Any]:
+    """The items of a JSON array one at a time. Digitraffic's vessel list parses into
+    about 15 MB of Python objects at once; decoded item by item only one is alive."""
+    decoder = json.JSONDecoder()
+    i, n = text.index("[") + 1, len(text)
+    while True:
+        while i < n and text[i] in _SKIP:
+            i += 1
+        if i >= n or text[i] == "]":
+            return
+        item, i = decoder.raw_decode(text, i)
+        yield item
+
+
+def directory_row(v: dict[str, Any]) -> tuple | None:
+    """A vessel-list entry as a row of the vessel directory, or None if unusable."""
+    try:
+        mmsi = int(v["mmsi"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    name = " ".join(str(v.get("name") or "").replace("@", " ").split())
+    destination = " ".join(str(v.get("destination") or "").replace("@", " ").split()) or None
+    ts = v.get("timestamp")
+    ship_type = v.get("shipType")
+    return (mmsi, name or None, normalize(name) or None, ship_type if isinstance(ship_type, int) else None,
+            vessel_length(v) or None, destination, int(ts / 1000) if isinstance(ts, (int, float)) else None)
+
+
+def display(name: str | None) -> str | None:
+    return name.title() if name and name.isupper() else name
 
 
 class DigitrafficFeed:
@@ -41,8 +75,9 @@ class DigitrafficFeed:
         self.connected = False
         self.last_message_ts: float | None = None
         self.message_count = 0
-        self._vessels: list[dict[str, Any]] = []
-        self._vessels_ts = 0.0
+        self._directory_lock = asyncio.Lock()
+        # Stands in for the vessel list download in simulation (FW_SIMULATE=1).
+        self.vessel_list_source = None
 
     # --- lifecycle -------------------------------------------------------
 
@@ -171,43 +206,44 @@ class DigitrafficFeed:
         self._dispatch(mmsi, kind, data)
         self.last_message_ts, self.message_count = last, count
 
-    async def vessels(self, cache: bool = True) -> list[dict[str, Any]]:
-        """All vessel metadata Digitraffic knows. Cached for a day for searching; the
-        daily fleet update passes cache=False so the big list isn't kept in memory."""
-        if self._vessels and time.time() - self._vessels_ts < VESSEL_LIST_TTL:
-            return self._vessels
-        data = await self._get_json(f"{REST}/vessels")
-        if not isinstance(data, list):
-            return self._vessels
-        if cache:
-            self._vessels = data
-            self._vessels_ts = time.time()
-        return data
+    async def _vessel_list_text(self) -> str:
+        if self.vessel_list_source:
+            return self.vessel_list_source()
+        async with self.session.get(f"{REST}/vessels", headers=HEADERS,
+                                    timeout=aiohttp.ClientTimeout(total=120)) as resp:
+            resp.raise_for_status()
+            return await resp.text()
 
-    async def search(self, query: str, limit: int = 15) -> list[dict[str, Any]]:
-        query = query.strip()
-        if not query:
-            return []
-        try:
-            vessels = await self.vessels()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-            _LOGGER.warning("Vessel search failed: %s", err)
-            return []
-        q = query.lower()
-        results = []
-        for v in vessels:
-            name = (v.get("name") or "").strip()
-            mmsi = v.get("mmsi")
-            if q.isdigit() and str(mmsi).startswith(q) or q in name.lower():
-                results.append({
-                    "mmsi": mmsi,
-                    "name": name.title() if name.isupper() else name,
-                    "destination": (v.get("destination") or "").strip() or None,
-                    "ship_type": v.get("shipType"),
-                })
-        # Exact and prefix matches first.
-        results.sort(key=lambda r: (r["name"].lower() != q, not r["name"].lower().startswith(q), r["name"]))
-        return results[:limit]
+    async def refresh_directory(self, matcher: FleetMatcher | None = None) -> int:
+        """Download Digitraffic's vessel list into the vessel directory, handing each vessel
+        to `matcher` on the way. Returns the number of vessels. Raises on network errors, and
+        ValueError if the answer isn't a JSON array (the old directory then stays)."""
+        async with self._directory_lock:
+            text = await self._vessel_list_text()
+
+            def rows():
+                for v in iter_json_array(text):
+                    if not isinstance(v, dict):
+                        continue
+                    if matcher:
+                        matcher.add(v)
+                    row = directory_row(v)
+                    if row:
+                        yield row
+            count = self.store.replace_vessels(rows())
+            self.store.kv_set("vessels_ts", time.time())
+            return count
+
+    def search(self, query: str, limit: int = 15) -> list[dict[str, Any]]:
+        """Ship search in the vessel directory: name contains the query, or MMSI starts with it."""
+        rows = self.store.search_vessels(normalize(query.strip()), limit)
+        return [{
+            "mmsi": r["mmsi"],
+            "name": display(r["name"]) or f"MMSI {r['mmsi']}",
+            "destination": r["destination"],
+            "ship_type": r["type"],
+            "length": r["length"],
+        } for r in rows]
 
     async def resolve_reflagged(self) -> None:
         """Fix default ships whose MMSI has no data by matching their exact name."""
@@ -225,16 +261,15 @@ class DigitrafficFeed:
                 missing.append(ship)
         if not missing:
             return
-        try:
-            vessels = await self.vessels()
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            return
+        if not self.store.vessel_count():
+            try:
+                await self.refresh_directory()
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                return
         for ship in missing:
-            matches = [v for v in vessels
-                       if (v.get("name") or "").strip().lower() == ship["name"].lower()
-                       and v.get("mmsi") != ship["mmsi"]]
+            matches = [m for m in self.store.vessels_named(normalize(ship["name"])) if m != ship["mmsi"]]
             if len(matches) == 1:
-                new = int(matches[0]["mmsi"])
+                new = matches[0]
                 _LOGGER.warning("%s: MMSI %s has no data, switching to %s (matched by name)",
                                 ship["name"], ship["mmsi"], new)
                 self.store.change_mmsi(ship["mmsi"], new)

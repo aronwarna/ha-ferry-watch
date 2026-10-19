@@ -54,6 +54,10 @@ FLEET_MEMBERS = {
     230000105: {"fleet": "finnlines", "name": "Finnmaid"},
     230000106: {"fleet": "finferries", "name": "Utö"},
     230000107: {"fleet": "rescue", "name": "PV Turva"},
+    276000108: {"fleet": "eckero", "name": "Finlandia"},
+    311000109: {"fleet": "cruise", "name": "Nordic Aurora"},
+    230000110: {"fleet": "harbour", "name": "Luotsi Porkkala"},
+    230000111: {"fleet": "suomenlinna", "name": "Suokki"},
     230184000: {"fleet": "tallink", "name": "Silja Serenade"},
     265004000: {"fleet": "tallink", "name": "Silja Symphony"},
     230713000: {"fleet": "viking", "name": "Viking Cinderella"},
@@ -67,6 +71,10 @@ FLEET_SCENARIOS = [
     (230000105, [VUOSAARI], 10**6, 0, 0.0),
     (230000106, UTO_ROUTE, 30 * 60, -90 * 60, 11.0),
     (230000107, [(59.98, 24.60), (59.93, 24.30), (59.90, 23.90)], 10 * 60, -30 * 60, 8.0),
+    (276000108, [*reversed(TALLINN), (60.1500, 24.9150)], 30 * 60, -55 * 60, 24.0),
+    (311000109, [(60.1490, 24.9230)], 10**6, 0, 0.0),
+    (230000110, [(60.0450, 24.4200), (59.9700, 24.3300), (59.9300, 24.3600)], 5 * 60, -10 * 60, 14.0),
+    (230000111, [(60.1680, 24.9530), (60.1450, 24.9850)], 5 * 60, -5 * 60, 7.0),
 ]
 
 
@@ -109,8 +117,8 @@ async def run_simulation(tracker: Tracker, fleet_tracker: Tracker | None = None,
     start = time.time()
     plans = [(tracker, m, p, d, start + rel, s) for m, p, d, rel, s in SCENARIOS]
     if fleet_tracker:
-        plans += [(fleet_tracker, m, p, d, start + rel, s) for m, p, d, rel, s in FLEET_SCENARIOS
-                  if m in fleet_tracker.ships]
+        # Ships of fleets switched on later join in then (the tracker ignores the others).
+        plans += [(fleet_tracker, m, p, d, start + rel, s) for m, p, d, rel, s in FLEET_SCENARIOS]
     metas = {
         230184000: "STOCKHOLM", 265004000: "HELSINKI", 230713000: "STOCKHOLM", 230361000: "STOCKHOLM",
     }
@@ -201,6 +209,120 @@ async def simulate_aircraft(watcher, step: float = 5.0) -> None:
             watcher.update(rows, time.time())
             watcher.publish(watcher.snapshot())
         await asyncio.sleep(step)
+
+
+# --- other ships, the vessel directory, sea conditions and faults ----------------------
+
+# Made-up general traffic for the "Other ships" layer: (mmsi, AIS name, AIS type, length,
+# destination, path, speed kn). Ships go to the end of their path and back.
+_WEST_LANE = [(59.93, 26.60), (59.88, 25.60), (59.83, 24.60), (59.80, 23.80), (59.70, 22.80)]
+_EAST_LANE = [(59.74, 22.80), (59.76, 23.80), (59.79, 24.60), (59.84, 25.60), (59.89, 26.60)]
+TRAFFIC = [
+    (219000201, "NORDIC LIGHT", 70, 190, "RUULU", _WEST_LANE, 13.0),
+    (636000202, "BALTIC TRADER", 79, 140, "DEHAM", _WEST_LANE, 11.5),
+    (255000203, "AMBER STAR", 80, 183, "FIPOR", list(reversed(_WEST_LANE)), 12.0),
+    (244000204, "MARE NOSTRUM", 70, 120, "FIKTK", _EAST_LANE, 10.5),
+    (230000205, "KILPI TANKER", 89, 228, "FIPOR", [(59.75, 23.0), (59.86, 24.8), (60.05, 25.45), (60.28, 25.55)], 12.5),
+    (538000206, "OCEAN GRACE", 70, 225, "FIHEL", [(59.70, 22.80), (59.86, 24.70), (60.13, 25.05), (60.19, 25.17)], 12.0),
+    (230000207, "KALASTAJA", 30, 24, None, [(59.88, 23.95), (59.92, 24.05), (59.90, 24.15)], 6.0),
+    (230000208, "MERITUULI", 30, 18, None, [(60.02, 24.75), (59.97, 24.85)], 5.0),
+    (230000209, "AALLOTAR", 36, 12, None, [(60.05, 24.42), (60.00, 24.55), (59.97, 24.40)], 5.5),
+    (230000210, "HELMI", 37, 9, None, [(60.12, 24.60), (60.08, 24.75)], 7.0),
+    (276000211, "TALLINK SHUTTLE", 60, 212, "EETLL", [(60.15, 24.92), (59.80, 24.83), (59.45, 24.76)], 24.0),
+    (273000212, "VOLGO BALT", 70, 139, "RUULU", _EAST_LANE, 9.5),
+    (230000213, "TURVA II", 33, 40, None, [(59.98, 24.25), (59.95, 24.45)], 4.0),
+    (999000214, "", 70, 0, None, [(59.84, 24.10), (59.86, 24.60)], 10.0),  # not in the directory
+]
+_EXTRA_VESSELS = [  # only for trying ship search
+    (230000301, "ARANDA", 58, 60, "FIHEL"), (230000302, "GEOMARI", 58, 30, "FIHEL"),
+    (230000303, "SILJA STAR", 37, 12, None), (265000304, "SERENADE OF THE SEAS", 60, 293, "SESTO"),
+]
+
+
+def _shuttle(path, metres: float):
+    """Position and bearing `metres` along a path that is sailed there and back forever."""
+    loop = [*path, *reversed(path[:-1])]
+    total = sum(distance_m(*a, *b) for a, b in zip(loop, loop[1:]))
+    (lat, lon), brg, _ = _point_along(loop, metres % total if total else 0)
+    return lat, lon, brg
+
+
+def fake_traffic(lat: float, lon: float, radius_km: float, now: float | None = None) -> dict[str, Any]:
+    """Stand-in for Digitraffic's /locations?latitude&longitude&radius: GeoJSON features."""
+    now = now or time.time()
+    features = []
+    for i, (mmsi, _name, _type, _length, _dest, path, speed) in enumerate(TRAFFIC):
+        plat, plon, brg = _shuttle(path, now * speed * KNOTS + i * 7919)
+        if distance_m(lat, lon, plat, plon) > radius_km * 1000:
+            continue
+        ts_ms = int(now * 1000) - i * 3000
+        features.append({
+            "mmsi": mmsi, "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [plon, plat]},
+            "properties": {"mmsi": mmsi, "sog": speed, "cog": round(brg, 1), "navStat": 0, "rot": 0,
+                           "posAcc": True, "raim": False, "heading": int(brg), "timestamp": 30,
+                           "timestampExternal": ts_ms},
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
+def fake_vessel_list() -> str:
+    """Stand-in for Digitraffic's vessel list (JSON text), for the vessel directory."""
+    import json
+    now_ms = int(time.time() * 1000)
+    rows = [(m, info["name"].upper(), 60, 200, None) for m, info in FLEET_MEMBERS.items()]
+    rows += [(m, n, t, length, d) for m, n, t, length, d, _p, _s in TRAFFIC if n]
+    rows += _EXTRA_VESSELS
+    return json.dumps([{"mmsi": m, "name": n, "shipType": t, "referencePointA": length // 2,
+                        "referencePointB": length - length // 2, "referencePointC": 10, "referencePointD": 10,
+                        "posType": 1, "draught": 60, "imo": 0, "callSign": "", "eta": 0,
+                        "timestamp": now_ms, "destination": d or ""} for m, n, t, length, d in rows])
+
+
+def fake_faults() -> dict[str, Any]:
+    """Stand-in for Digitraffic's aids-to-navigation faults: two near the made-up chart."""
+    day = 86400
+    now = time.time()
+    rows = [
+        (24.62, 59.975, "Unlit", now - 16 * day, "Kallbådan", "Kallbådan", "Sector light", "Porkkala–Helsinki"),
+        (24.47, 59.958, "Buoy missing", now - 3 * day, "Porkala W", "Porkala V", "Spar buoy", "Porkkala inner route"),
+    ]
+    return {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
+        "properties": {"id": i, "entry_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since)),
+                       "fixed_timestamp": None, "type": kind, "domain": "C_NAVIGATION", "state": "Avoin",
+                       "fixed": False, "aton_id": 1000 + i, "aton_name_fi": fi, "aton_name_sv": sv,
+                       "aton_type": aton, "fairway_number": 5000 + i, "fairway_name_fi": fairway,
+                       "fairway_name_sv": fairway, "area_number": 1, "area_description": "Gulf of Finland"},
+    } for i, (lon, lat, kind, since, fi, sv, aton, fairway) in enumerate(rows)]}
+
+
+def fake_fmi(params: dict[str, Any]) -> str:
+    """Stand-in for an FMI open data request: a 'simple' WFS answer with plausible values
+    that drift slowly, one element per parameter and time like the real thing."""
+    now = time.time()
+    t = now - now % 600 - 600
+    drift = math.sin(now / 5400)
+    values = {
+        "ws_10min": 6.5 + 2.5 * drift, "wg_10min": 9.0 + 3 * drift, "wd_10min": 215 + 20 * drift, "t2m": 9.4,
+        "vis": 24000.0 - 4000 * drift, "wawa": 0.0, "n_man": 6.0,
+        "WATLEV": 160.0 + 30 * drift, "TW_PT1H_AVG": 12.7,
+        "WaveHs": 0.8 + 0.3 * drift, "ModalWDi": 220.0, "TWATER": 12.4,
+    }
+    members = []
+    for step in (2, 1, 0):
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t - step * 600))
+        for name in str(params.get("parameters", "")).split(","):
+            value = values.get(name)
+            members.append(
+                "<wfs:member><BsWfs:BsWfsElement><BsWfs:Location><gml:Point><gml:pos>59.92 24.35 </gml:pos>"
+                f"</gml:Point></BsWfs:Location><BsWfs:Time>{ts}</BsWfs:Time>"
+                f"<BsWfs:ParameterName>{name}</BsWfs:ParameterName>"
+                f"<BsWfs:ParameterValue>{'NaN' if value is None else round(value, 1)}</BsWfs:ParameterValue>"
+                "</BsWfs:BsWfsElement></wfs:member>")
+    return ('<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection '
+            'xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" '
+            'xmlns:BsWfs="http://xml.fmi.fi/schema/wfs/2.0">' + "".join(members) + "</wfs:FeatureCollection>")
 
 
 # --- a made-up archipelago for the vector chart ----------------------------------------
