@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 import weakref
 from pathlib import Path
@@ -44,6 +45,8 @@ async def ingress_only(request: web.Request, handler):
 
 
 ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
+MAX_ROUTES = 100
+MAX_ROUTE_POINTS = 200
 
 
 def _points(value: Any, minimum: int) -> list[list[float]]:
@@ -104,6 +107,13 @@ class Web:
         r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
+        r.add_get("/api/routes", self.routes)
+        r.add_post("/api/routes", self.save_route)
+        r.add_delete("/api/routes/{route_id}", self.delete_route)
+        r.add_get("/api/autoroute", self.autoroute)
+        r.add_get("/api/stations", self.stations)
+        r.add_get("/api/stations/{fmisid}/history", self.station_history)
+        r.add_get("/api/harbours", self.harbours)
         r.add_static("/static/", STATIC, append_version=False)
 
     # --- pages -----------------------------------------------------------
@@ -112,7 +122,7 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/vchart.js", "static/app.js", "static/app.css"):
+        for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -370,6 +380,105 @@ class Web:
             return web.json_response({"ok": False, "error": error})
         self.fw.set_mml_key(key)
         return web.json_response({"ok": True})
+
+    # --- routes, weather stations and harbours -----------------------------
+
+    async def routes(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.store.kv_get("routes", []))
+
+    async def save_route(self, request: web.Request) -> web.Response:
+        """A new route, or changes to a saved one (by id): its name, points, speed or whether it's shown."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected a route")
+        routes = self.fw.store.kv_get("routes", [])
+        route = None
+        if "id" in body:
+            route = next((r for r in routes if r["id"] == body["id"]), None)
+            if route is None:
+                raise web.HTTPNotFound()
+        elif "points" not in body:
+            raise web.HTTPBadRequest(text="A route needs points")
+        elif len(routes) >= MAX_ROUTES:
+            raise web.HTTPBadRequest(text=f"At most {MAX_ROUTES} routes can be saved")
+        else:
+            route = {"id": max((r["id"] for r in routes), default=0) + 1, "shown": True, "speed": 25.0,
+                     "created": int(time.time())}
+            routes.append(route)
+        if "points" in body:
+            points = _points(body["points"], 2)
+            if len(points) > MAX_ROUTE_POINTS:
+                raise web.HTTPBadRequest(text=f"At most {MAX_ROUTE_POINTS} points")
+            route["points"] = [[round(lat, 6), round(lon, 6)] for lat, lon in points]
+        if "name" in body or "name" not in route:
+            route["name"] = str(body.get("name") or "").strip()[:60] or f"Route {route['id']}"
+        if "speed" in body:
+            try:
+                speed = float(body["speed"])
+            except (TypeError, ValueError):
+                speed = math.nan
+            if not 0.5 <= speed <= 60:
+                raise web.HTTPBadRequest(text="Speed must be 0.5–60 kn")
+            route["speed"] = round(speed, 1)
+        if "shown" in body:
+            route["shown"] = bool(body["shown"])
+        self.fw.store.kv_set("routes", routes)
+        return web.json_response(route)
+
+    async def delete_route(self, request: web.Request) -> web.Response:
+        try:
+            route_id = int(request.match_info["route_id"])
+        except ValueError:
+            raise web.HTTPNotFound() from None
+        routes = self.fw.store.kv_get("routes", [])
+        kept = [r for r in routes if r["id"] != route_id]
+        if len(kept) == len(routes):
+            raise web.HTTPNotFound()
+        self.fw.store.kv_set("routes", kept)
+        return web.json_response({"ok": True})
+
+    async def autoroute(self, request: web.Request) -> web.Response:
+        def point(name: str) -> tuple[float, float]:
+            try:
+                lat, lon = (float(v) for v in request.query[name].split(","))
+            except (KeyError, ValueError):
+                raise web.HTTPBadRequest(text="from and to are needed as lat,lon") from None
+            if not (-85 <= lat <= 85 and -180 <= lon <= 180):
+                raise web.HTTPBadRequest(text="Point out of range")
+            return lat, lon
+
+        start, end = point("from"), point("to")
+        try:
+            draught = float(request.query.get("draught", 1.5))
+        except ValueError:
+            draught = math.nan
+        if not 0 <= draught <= 15:
+            raise web.HTTPBadRequest(text="Draught must be 0–15 m")
+        return web.json_response(await self.fw.autoroute.route(start, end, draught))
+
+    async def stations(self, request: web.Request) -> web.Response:
+        stations = await self.fw.stations.latest()
+        return web.json_response({"stations": stations, "error": self.fw.stations.error,
+                                  "fetched": self.fw.stations.fetched or None})
+
+    async def station_history(self, request: web.Request) -> web.Response:
+        try:
+            fmisid = int(request.match_info["fmisid"])
+        except ValueError:
+            raise web.HTTPNotFound() from None
+        points = await self.fw.stations.history(fmisid)
+        if points is None:
+            raise web.HTTPNotFound()
+        return web.json_response({"points": points})
+
+    async def harbours(self, request: web.Request) -> web.Response:
+        try:
+            west, south, east, north = (float(v) for v in request.query["bbox"].split(","))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox=west,south,east,north is needed") from None
+        if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
+            raise web.HTTPBadRequest(text="The box is too big; zoom in")
+        return web.json_response(self.fw.harbours.in_view(south, west, north, east))
 
     async def test_notification(self, request: web.Request) -> web.Response:
         try:
