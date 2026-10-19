@@ -229,6 +229,15 @@ def _spread_islands(islands):
 SIM_ISLANDS = list(_spread_islands(SIM_ISLANDS))
 SIM_FAIRWAY = [(24.95, 60.05), (24.62, 59.975), (24.38, 59.945), (24.0, 59.935)]
 SIM_BOAT_ROUTE = [(24.37, 60.06), (24.395, 60.032), (24.445, 60.0), (24.5, 59.98)]
+SIM_SMALL_ROUTE = [(24.5, 59.98), (24.53, 60.0), (24.56, 60.03)]
+# Wrecks and underwater sites: lon, lat, register id, name, class, sub-type, dating, accuracy
+SIM_HERITAGE = [
+    (24.416, 59.930, 1181, "Salmö 2", 0, "hylyt (puu)", "historiallinen", "Ohjeellinen (10 - 100 m)"),
+    (24.58, 60.0005, 1203, "Falken", 0, "hylyt (puu)", "historiallinen", "Tarkka (< 10 m)"),
+    (24.52, 59.990, 1310, "Alku", 1, "hylyt (metalli)", "moderni", "Tarkka (< 10 m)"),
+    (24.455, 59.975, 1422, None, 3, "hylyt (puu)", "ajoittamaton", "Suuntaa antava (100 - 1000 m)"),
+    (24.48, 60.012, 1501, "Ankkurilöytö", 4, "löytöpaikat", "historiallinen", "Ohjeellinen (10 - 100 m)"),
+]
 
 
 def _sim_ring(lon: float, lat: float, radius: float, scale: float, wobble: float = 0.22):
@@ -281,24 +290,39 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
                           "properties": {"DEPTH": round(rnd.uniform(4, 60), 1)}})
     elif key == "fline":
         feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(SIM_FAIRWAY)},
-                      "properties": {"mitoitussyvays": 10.0}})
+                      "properties": {"mitoitussyvays": 10.0, "jnro": 4070}})
         feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(SIM_BOAT_ROUTE)},
-                      "properties": {"mitoitussyvays": None}})
+                      "properties": {"mitoitussyvays": 2.4, "jnro": 4007}})
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(SIM_SMALL_ROUTE)},
+                      "properties": {"mitoitussyvays": None, "jnro": 4050}})
+    elif key == "route":
+        for line, vl, jnro in ((SIM_FAIRWAY, 1, 4070), (SIM_BOAT_ROUTE, 4, 4007), (SIM_SMALL_ROUTE, 6, 4050)):
+            feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(line)},
+                          "properties": {"vaylaluokkakoodi": vl, "jnro": jnro}})
     elif key == "farea":
         line = _sim_line(SIM_FAIRWAY)
         left = [[x, y + 700] for x, y in line]
         right = [[x, y - 700] for x, y in line][::-1]
         feats.append({"geometry": {"type": "Polygon", "coordinates": [left + right + [left[0]]]},
-                      "properties": {"tyyppikoodi": 1, "mitoitussyvays": 10.0}})
+                      "properties": {"tyyppikoodi": 1, "mitoitussyvays": 10.0, "jnro": 4070}})
+        feats.append({"geometry": {"type": "Polygon", "coordinates": [_sim_ring(24.53, 60.015, 300, 1.0, 0.05)]},
+                      "properties": {"tyyppikoodi": 2, "mitoitussyvays": None, "jnro": None}})
+    elif key == "restrict":
+        feats.append({"geometry": {"type": "Polygon", "coordinates": [_sim_ring(24.385, 60.02, 600, 1.0, 0.1)]},
+                      "properties": {"rajoitustyypit": "01", "suuruus": 10}})
     elif key == "lead":
-        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line([(24.62, 59.975), (24.66, 59.99)])},
-                      "properties": {}})
+        feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line([(24.66, 59.99), (24.62, 59.975), (24.52, 59.938)])},
+                      "properties": {"suunta": 234.8}})
     elif key == "sector":
         from .vchart import lonlat_to_mercator
         x, y = lonlat_to_mercator(24.62, 59.975)
         for a, b, colour in ((200, 238, "vi"), (238, 246, "v"), (246, 290, "p"), (40, 70, "v")):
             feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
                           "properties": {"alkukulma": a, "loppukulma": b, "vari": colour}})
+        # Plain lights have one all-round "sector" that gives their colour.
+        for lon, lat, colour in ((24.40, 60.005, "v"), (24.80, 60.020, "vi"), (24.66, 59.99, "v"), (24.70, 59.992, "v")):
+            feats.append({"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))},
+                          "properties": {"alkukulma": 0, "loppukulma": 360, "vari": colour}})
     elif key == "aid":
         from .vchart import lonlat_to_mercator
         aids = [
@@ -337,7 +361,16 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
                               "properties": {"kohdeluokka": rnd.choice((38511, 38511, 38512, 38513))}})
     elif key == "rockarea":
         feats.append({"geometry": {"type": "Polygon", "coordinates": [_sim_ring(24.505, 60.005, 250, 1.0)]},
-                      "properties": {}})
+                      "properties": {"kohdeluokka": 38511}})
+    elif key == "heritage":
+        from .vchart import lonlat_to_mercator
+        for lon, lat, site, name, cls, sub, dating, acc in SIM_HERITAGE:
+            x, y = lonlat_to_mercator(lon, lat)
+            if minx <= x <= maxx and miny <= y <= maxy:
+                feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
+                              "properties": {"mjtunnus": site, "kohdenimi": name, "_class": cls,
+                                             "tyyppi": "alusten hylyt" if "hylyt" in sub else sub,
+                                             "alatyyppi": sub, "ajoitus": dating, "paikannustarkkuus": acc}})
     elif key == "wreck":
         from .vchart import lonlat_to_mercator
         for lon, lat, code in ((24.58, 60.0, 16721), (24.35, 60.0, 16722), (24.49, 59.995, 16712)):
