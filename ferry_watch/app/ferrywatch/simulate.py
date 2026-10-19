@@ -122,8 +122,12 @@ async def run_simulation(tracker: Tracker, fleet_tracker: Tracker | None = None,
     metas = {
         230184000: "STOCKHOLM", 265004000: "HELSINKI", 230713000: "STOCKHOLM", 230361000: "STOCKHOLM",
     }
-    for mmsi, dest in metas.items():
-        tracker.on_metadata(mmsi, {"destination": dest, "timestamp": int(start * 1000)})
+    for i, (mmsi, dest) in enumerate(metas.items()):
+        # The crew-entered ETA, packed as AIS sends it (UTC month, day, hour, minute).
+        eta = time.gmtime(start + (5 + 4 * i) * 3600)
+        packed = eta.tm_mon << 16 | eta.tm_mday << 11 | eta.tm_hour << 6 | (eta.tm_min // 15 * 15)
+        tracker.on_metadata(mmsi, {"destination": dest, "eta": packed, "draught": 68 + i,
+                                   "timestamp": int(start * 1000)})
 
     # Backfill history in 10 s steps (only the docked period before departure counts as port).
     ts = start - backfill_hours * 3600
