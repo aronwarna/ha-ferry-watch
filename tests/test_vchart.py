@@ -57,7 +57,9 @@ def test_tiles_from_simulated_data(tmp_path):
         assert all(-vchart.TILE_BUFFER - 1 <= v <= vchart.EXTENT + vchart.TILE_BUFFER + 1 for r in rings for v in r)
     lighthouse = [a for a in t12["aid"] if a[2] == "m"]
     assert lighthouse and lighthouse[0][4] == 1 and lighthouse[0][5] == "Porkkala majakka"
-    assert "sounding" in t14 and "sounding" not in t12 and "aid" not in t9
+    # Soundings from zoom 12, sparser than at 13; zoomed out only the major lights.
+    assert "sounding" in t14 and 0 < len(t12["sounding"]) <= 36 and "sounding" not in t9  # one a 128-unit cell
+    assert all(a[2] in vchart.MAJOR_AIDS for a in t9["aid"])
     assert chart.status()["blocks"] == 4  # the zoom-10 tile's four blocks (the others share them)
 
 
@@ -200,8 +202,10 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
             if chart.keep_status and not chart.keep_status["running"]:
                 break
         assert chart.keep_status == {"total": 2, "done": 2, "running": False}
-        # No key: no MML part. Heritage sites come once for the whole region.
-        assert len(asked) == 2 * (len(vchart.PARTS[""]) + len(vchart.PARTS["fw"]) + len(vchart.PARTS["more"])) + 1
+        # No key: no Land Survey parts. Each source once a block; heritage sites once for the region.
+        per_block = sum(len(vchart.source_names(key)) for part in chart._parts() for key in vchart.PARTS[part])
+        assert {p for p in vchart.PARTS if p not in vchart.MML_PARTS} == set(chart._parts())
+        assert len(asked) == 2 * per_block + 1
         assert asked.count("heritage") == 1
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -228,8 +232,11 @@ def test_rocks_wrecks_names_and_lights(tmp_path):
         assert names.index("Rönnskari") < names.index("Rönnskär")
         assert ["LFl(2) 15s"] == [t for *_, t in tile["light"] if t.startswith("LFl")]
         zoomed_out, _ = await chart.tile(*tile_at(60.005, 24.4, 11))
-        assert "rock" not in zoomed_out and all(n[3] == "s" for n in zoomed_out.get("name", []))
-        assert chart.status()["rev"].endswith("mm")
+        assert "rock" not in zoomed_out and all(n[2] in vchart.COASTAL_TOWNS | vchart.BIG_WATERS
+                                                for n in zoomed_out.get("name", []))
+        rev = chart.status()["rev"]
+        chart.set_mml_key("")
+        assert chart.status()["rev"] != rev  # tiles cached without the key's layers are dropped
 
     asyncio.run(run())
 
@@ -250,7 +257,10 @@ def test_adding_a_key_fetches_only_the_new_part(tmp_path):
         chart.set_mml_key("abc")
         tile, ok = await chart.tile(*coords)
         assert ok and tile["rock"]
-        assert sorted(set(asked)) == sorted(vchart.PARTS["mml"])
+        # Only the Land Survey's parts, each source once.
+        expected = [key if tag is None else f"{key}.{tag}" for part in vchart.MML_PARTS
+                    for key in vchart.PARTS[part] for tag, _ in vchart.source_names(key)]
+        assert sorted(asked) == sorted(expected)
 
     asyncio.run(run())
 
@@ -301,18 +311,24 @@ def test_unlit_marks_hidden_when_zoomed_out(tmp_path):
     asyncio.run(run())
 
 
-def test_mml_features_are_converted_to_mercator():
+def test_mml_features_are_projected_from_lonlat():
     page = {"features": [
         {"geometry": {"type": "Point", "coordinates": [24.4, 60.0]}, "properties": {"teksti": "Rönnskär", "kieli": "swe"}},
         {"geometry": {"type": "Point", "coordinates": [24.5, 60.1]}, "properties": {"nimi": "Mäkiluoto"}},
         {"geometry": None, "properties": {}},
     ]}
     feats = vchart._mml_features(page)
-    assert len(feats) == 2
-    x, y = feats[0]["geometry"]["coordinates"]
-    assert (round(x), round(y)) == tuple(round(v) for v in lonlat_to_mercator(24.4, 60.0))
-    assert feats[1]["properties"]["teksti"] == "Mäkiluoto"
-    lon, lat = vchart.mercator_to_lonlat(x, y)
+    first = next(feats)
+    assert first["properties"]["teksti"] == "Rönnskär"
+    rest = list(feats)
+    assert len(rest) == 1 and rest[0]["properties"]["teksti"] == "Mäkiluoto"
+    assert page["features"] == []  # taken out of the page as they're used, so it's never held twice
+    _, bx, by = tile_at(60.0, 24.4, 11)
+    b = vchart.LayerBuilder("point")
+    vchart.build_into(b, bx, by, "name", [first], lonlat=True)
+    x, y = vchart.to_block(bx, by)(*lonlat_to_mercator(24.4, 60.0))
+    assert (b.layer.co[0], b.layer.co[1]) == (round(x), round(y))
+    lon, lat = vchart.mercator_to_lonlat(*lonlat_to_mercator(24.4, 60.0))
     assert abs(lon - 24.4) < 1e-9 and abs(lat - 60.0) < 1e-9
 
 
