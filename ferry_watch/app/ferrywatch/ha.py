@@ -95,16 +95,31 @@ class HAClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.warning("Could not read %s: %s", entity, err)
             return None
-        if not state:
+        fix = _fix(state)
+        return (fix["lat"], fix["lon"], time.time() - fix["ts"]) if fix else None
+
+    async def phone_state(self, entity: str) -> dict[str, Any] | None:
+        """The phone's last reported position for the map ({lat, lon, ts, accuracy}), without
+        asking it for a new one. Quiet on errors: the panel asks every minute."""
+        try:
+            return _fix(await self.get_state(entity))
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("Could not read %s: %s", entity, err)
             return None
-        attrs = state.get("attributes", {})
-        lat, lon = attrs.get("latitude"), attrs.get("longitude")
-        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-            return None
-        # last_reported moves even when the phone reports the same position again.
-        seen = [t for t in (_parse_ts(state.get("last_reported")), _parse_ts(state.get("last_updated"))) if t]
-        age = time.time() - max(seen) if seen else float("inf")
-        return float(lat), float(lon), age
+
+
+def _fix(state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not state:
+        return None
+    attrs = state.get("attributes", {})
+    lat, lon = attrs.get("latitude"), attrs.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    # last_reported moves even when the phone reports the same position again.
+    seen = [t for t in (_parse_ts(state.get("last_reported")), _parse_ts(state.get("last_updated"))) if t]
+    accuracy = attrs.get("gps_accuracy")
+    return {"lat": float(lat), "lon": float(lon), "ts": max(seen) if seen else 0.0,
+            "accuracy": accuracy if isinstance(accuracy, (int, float)) else None}
 
 
 NEXT_PASSAGE_ENTITY = "sensor.ferry_watch_next_passage"

@@ -193,6 +193,9 @@ class FakeHA:
     async def phone_location(self, entity: str, notify_service: str, max_age: float):
         return self.phone[0], self.phone[1], 30.0
 
+    async def phone_state(self, entity: str):
+        return {"lat": self.phone[0], "lon": self.phone[1], "ts": time.time() - 30, "accuracy": 15}
+
     async def call_service(self, service: str, data: dict[str, Any]) -> None:
         self.calls.append((service, data))
         _LOGGER.info("FAKE %s: %s", service, data)
@@ -340,6 +343,10 @@ def fake_fmi(params: dict[str, Any]) -> str:
     return ('<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection '
             'xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" '
             'xmlns:BsWfs="http://xml.fmi.fi/schema/wfs/2.0">' + "".join(members) + "</wfs:FeatureCollection>")
+
+
+async def fake_fmi_fetch(params: dict[str, Any]) -> str:
+    return fake_fmi(params)
 
 
 # --- a made-up archipelago for the vector chart ----------------------------------------

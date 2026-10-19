@@ -19,8 +19,9 @@ from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .fleets import FleetManager, FleetMatcher
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
+from .geo import sun_info
 from .ha import HAClient, HAPublisher, NextPassageSensor
-from .notify import Notifier
+from .notify import Notifier, sun_place
 from .passages import Detector
 from .photos import PhotoCache
 from .predict import Predictor
@@ -28,12 +29,14 @@ from .store import Store
 from .tilecache import TileCache
 from .tracker import Tracker
 from .vchart import VectorChart
+from .weather import SeaWeather
 from .web import Web
 
 _LOGGER = logging.getLogger("ferrywatch")
 
 HOUSEKEEPING_INTERVAL = 6 * 3600
 HA_SENSOR_INTERVAL = 30 * 60
+PANEL_TICK = 60  # s between sea-condition checks and phone reads while a panel is open
 FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
 FLEET_REFRESH = 24 * 3600
 SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
@@ -70,6 +73,10 @@ class FerryWatch:
         self.tiles: TileCache | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
+        self.weather: SeaWeather | None = None
+        self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
+        self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
+        self._wakers: list[asyncio.Event] = []
         self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
         self._keep_task: asyncio.Task | None = None
         self.tasks: list[asyncio.Task] = []
@@ -96,9 +103,11 @@ class FerryWatch:
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
-        fake_chart = None
+        fake_chart = fake_fmi = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
+            from .simulate import fake_fmi_fetch as fake_fmi
+        self.weather = SeaWeather(self.session, fake_fmi)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
@@ -146,6 +155,8 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:
             self._start_keeping()
 
@@ -228,6 +239,56 @@ class FerryWatch:
             self._keep_task.cancel()
             self._keep_task = None
             self._start_keeping()
+
+    # --- while a panel is open: sea conditions and the phone's position ----------------
+
+    def panel_opened(self) -> None:
+        """A panel connected: check the sea conditions and the phone now, not in a minute."""
+        for wake in self._wakers:
+            wake.set()
+
+    async def _while_panel_open(self, tick) -> None:
+        wake = asyncio.Event()
+        self._wakers.append(wake)
+        while True:
+            if self.web.sockets:
+                try:
+                    await tick()
+                except Exception:  # noqa: BLE001 - keep the loop alive
+                    _LOGGER.exception("Panel update failed")
+            try:
+                await asyncio.wait_for(wake.wait(), PANEL_TICK)
+            except asyncio.TimeoutError:
+                pass
+            wake.clear()
+
+    async def _weather_tick(self) -> None:
+        if not self.weather_enabled:
+            return
+        before = self.weather.fetched
+        await self.weather.latest()
+        if self.weather.fetched != before:
+            self.web.broadcast({"type": "weather", "weather": self.weather_state()})
+
+    async def _phone_tick(self) -> None:
+        if not self.ha or not self.options.phone_entity:
+            return
+        fix = await self.ha.phone_state(self.options.phone_entity)
+        phone = {**fix, "max_age": self.options.phone_max_age_minutes * 60} if fix else None
+        if phone != self.phone:
+            self.phone = phone
+            self.web.broadcast({"type": "phone", "phone": phone})
+
+    def weather_state(self) -> dict[str, Any]:
+        cond = self.weather.conditions() if self.weather and self.weather_enabled else {}
+        return {**cond, "enabled": self.weather_enabled, "sun": sun_info(*sun_place(self.store))}
+
+    async def set_weather(self, on: bool) -> None:
+        self.weather_enabled = on
+        self.store.kv_set("weather_enabled", on)
+        if on:
+            self.panel_opened()
+        self.web.broadcast({"type": "weather", "weather": self.weather_state()})
 
     async def set_aircraft(self, on: bool) -> None:
         self.aircraft_enabled = on
@@ -333,6 +394,9 @@ class FerryWatch:
             "vchart": self.vchart.status() if self.vchart else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
+            "weather": self.weather_state(),
+            "phone": self.phone,
+            "memory_mb": memory_mb(),
             "aircraft": {
                 "enabled": self.aircraft_enabled,
                 "error": self.aircraft.error if self.aircraft else None,
@@ -404,6 +468,18 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.feed.sync_subscriptions()
         await self.web.broadcast_ships()
+
+
+def memory_mb() -> float | None:
+    """This process's resident memory (VmRSS), for the panel's settings."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 async def main() -> None:

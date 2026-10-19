@@ -42,7 +42,7 @@ def to_csv(store: Store) -> str:
     names = ship_names(store)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert"])
+    writer.writerow(["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert", "wind_ms", "wind_dir"])
     for row in store.passages(limit=1_000_000):
         writer.writerow([
             time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"])),
@@ -52,5 +52,7 @@ def to_csv(store: Store) -> str:
             DIRECTION_LABELS.get(row["direction"], row["direction"]),
             f"{row['sog']:.1f}" if row["sog"] is not None else "",
             "sent" if row["notified"] else (row["note"] or ""),
+            f"{row['wind_ms']:.1f}" if row["wind_ms"] is not None else "",
+            f"{row['wind_dir']:.0f}" if row["wind_dir"] is not None else "",
         ])
     return out.getvalue()

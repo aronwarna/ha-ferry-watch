@@ -97,6 +97,7 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
+        r.add_post("/api/weather", self.set_weather)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
@@ -330,6 +331,11 @@ class Web:
         await self.fw.set_aircraft(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
+    async def set_weather(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        await self.fw.set_weather(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()
         await self.fw.set_vchart_keep(bool(body.get("enabled")))
@@ -362,6 +368,7 @@ class Web:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         self.sockets.add(ws)
+        self.fw.panel_opened()
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.ERROR:
@@ -399,6 +406,10 @@ class Web:
 
     def broadcast_aircraft(self, aircraft: list[dict[str, Any]]) -> None:
         self._send({"type": "aircraft", "aircraft": aircraft})
+
+    def broadcast(self, message: dict[str, Any]) -> None:
+        if self.sockets:
+            self._send(message)
 
     async def broadcast_ships(self) -> None:
         self._send({"type": "reload"})
