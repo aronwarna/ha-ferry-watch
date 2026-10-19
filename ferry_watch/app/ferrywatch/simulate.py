@@ -317,6 +317,14 @@ def fake_faults() -> dict[str, Any]:
     } for i, (lon, lat, kind, since, fi, sv, aton, fairway) in enumerate(rows)]}
 
 
+async def fake_faults_fetch() -> dict[str, Any]:
+    return fake_faults()
+
+
+async def fake_traffic_fetch(lat: float, lon: float, radius_km: int, from_ms: int) -> dict[str, Any]:
+    return fake_traffic(lat, lon, radius_km)
+
+
 def fake_fmi(params: dict[str, Any]) -> str:
     """Stand-in for an FMI open data request: a 'simple' WFS answer with plausible values
     that drift slowly, one element per parameter and time like the real thing."""

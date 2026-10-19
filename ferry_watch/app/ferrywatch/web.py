@@ -98,6 +98,8 @@ class Web:
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
         r.add_post("/api/weather", self.set_weather)
+        r.add_get("/api/faults", self.faults)
+        r.add_get("/api/traffic", self.traffic)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
@@ -338,6 +340,20 @@ class Web:
         body = await request.json()
         await self.fw.set_weather(bool(body.get("enabled")))
         return web.json_response({"ok": True})
+
+    async def faults(self, request: web.Request) -> web.Response:
+        return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
+
+    async def traffic(self, request: web.Request) -> web.Response:
+        try:
+            lat, lon = float(request.query["lat"]), float(request.query["lon"])
+            radius = float(request.query.get("r", 30))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="lat, lon and r are needed")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or radius != radius:
+            raise web.HTTPBadRequest(text="lat, lon and r are needed")
+        ships = await self.fw.traffic.around(lat, lon, radius)
+        return web.json_response({"ships": ships, "error": self.fw.traffic.error})
 
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()

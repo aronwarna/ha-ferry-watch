@@ -16,6 +16,7 @@ from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
+from .faults import Faults
 from .fleets import FleetManager, FleetMatcher
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
@@ -28,6 +29,7 @@ from .predict import Predictor
 from .store import Store
 from .tilecache import TileCache
 from .tracker import Tracker
+from .traffic import Traffic
 from .vchart import VectorChart
 from .weather import SeaWeather
 from .web import Web
@@ -103,11 +105,17 @@ class FerryWatch:
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
-        fake_chart = fake_fmi = None
+        fake_chart = fake_fmi = fake_faults = fake_traffic = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
             from .simulate import fake_fmi_fetch as fake_fmi
+            from .simulate import fake_faults_fetch as fake_faults
+            from .simulate import fake_traffic_fetch as fake_traffic
         self.weather = SeaWeather(self.session, fake_fmi)
+        # Both only answer the panel's requests: nothing runs while no one looks.
+        self.faults = Faults(self.session, fake_faults)
+        self.traffic = Traffic(self.session, self.store,
+                               lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)

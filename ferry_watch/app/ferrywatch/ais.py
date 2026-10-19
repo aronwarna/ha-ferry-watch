@@ -58,8 +58,14 @@ def directory_row(v: dict[str, Any]) -> tuple | None:
             vessel_length(v) or None, destination, int(ts / 1000) if isinstance(ts, (int, float)) else None)
 
 
+_ROMAN = {"Ii", "Iii", "Iv", "Vi", "Vii", "Viii", "Ix", "Xi", "Xii"}
+
+
 def display(name: str | None) -> str | None:
-    return name.title() if name and name.isupper() else name
+    """'TURVA II' as 'Turva II'."""
+    if not name or not name.isupper():
+        return name
+    return " ".join(w.upper() if w in _ROMAN else w for w in name.title().split(" "))
 
 
 class DigitrafficFeed:
