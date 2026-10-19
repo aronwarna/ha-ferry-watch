@@ -19,6 +19,16 @@
     set(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } },
   };
 
+  // Position reports arrive every few seconds; only touch the page where something changed.
+  function setText(el, text) {
+    if (el.textContent !== text) el.textContent = text;
+  }
+
+  // Faulty lights and buoys (see below); declared here because the chart view asks for them at once.
+  let faultsOn = store.get("fw-faults") !== "0";
+  let faultsData = null, faultsAt = 0, faultsLayer = null, faultsLoading = false;
+  const FAULTS_REFRESH = 30 * 60 * 1000;
+
   // --- map and layers -------------------------------------------------------
 
   const map = L.map("map", { zoomControl: false, attributionControl: true, worldCopyJump: true })
@@ -143,6 +153,8 @@
     box.hidden = activeLayer !== layers.chart;
     $("chart-loading").hidden = box.hidden || chartStyle !== "drawn" || chartWaiting === 0;
     box.querySelectorAll("[data-style]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === chartStyle)));
+    $("chart-style-select").value = chartStyle;
+    renderFaults();
   }
 
   // Tap a buoy, beacon or light on the drawn chart to see what it is.
@@ -150,9 +162,11 @@
     if (activeLayer !== layers.chart || chartStyle !== "drawn" || map.getZoom() < 11) return;
     const hit = FerryChart.aidAt(map, e.latlng);
     if (!hit) return;
+    const lines = [hit.name && `<strong>${esc(hit.name)}</strong>`, hit.description && esc(hit.description),
+      hit.sub && hit.sub !== hit.description && `<span class="muted">${esc(hit.sub)}</span>`].filter(Boolean);
     L.popup({ className: "aid-popup", offset: [0, -6] })
       .setLatLng(hit.latlng)
-      .setContent(`${hit.name ? `<strong>${esc(hit.name)}</strong><br>` : ""}${esc(hit.description)}`)
+      .setContent(lines.join("<br>"))
       .openOn(map);
   });
 
@@ -174,6 +188,7 @@
   document.querySelectorAll("#chart-style [data-style]").forEach((b) => {
     b.addEventListener("click", () => setChartStyle(b.dataset.style));
   });
+  $("chart-style-select").addEventListener("change", (e) => setChartStyle(e.target.value));
   setLayer(store.get("fw-layer") || "map");
 
   function updateChart(info) {
@@ -262,9 +277,9 @@
     </svg>`;
   }
 
+  const rotationOf = (info) => (info.position ? (info.position.heading ?? info.position.cog ?? 0) : 0);
+
   function markerIcon(info, dimmed) {
-    const p = info.position;
-    const rotation = p ? (p.heading ?? p.cog ?? 0) : 0;
     const classes = ["ship-icon"];
     if (dimmed) classes.push("dimmed");
     if (isStale(info)) classes.push("stale");
@@ -272,10 +287,27 @@
     const size = info.fleet ? 20 : 28;
     return L.divIcon({
       className: classes.join(" "),
-      html: shipSvg(info.color, rotation, size),
+      html: shipSvg(info.color, rotationOf(info), size),
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     });
+  }
+
+  function refreshIcon(entry, dimmed) {
+    const info = entry.info;
+    const key = `${info.color}|${dimmed}|${isStale(info)}|${Boolean(info.fleet)}`;
+    if (entry.iconKey !== key) {
+      entry.iconKey = key;
+      entry.rotation = rotationOf(info);
+      entry.marker.setIcon(markerIcon(info, dimmed));
+      return;
+    }
+    const rotation = rotationOf(info);
+    if (rotation !== entry.rotation) {
+      entry.rotation = rotation;
+      const svg = entry.marker.getElement()?.querySelector("svg");
+      if (svg) svg.style.transform = `rotate(${rotation}deg)`;
+    }
   }
 
   // --- aircraft (adsb.fi) ----------------------------------------------------------
@@ -456,12 +488,15 @@
     if (info.fleet && now() - p.ts > FLEET_HIDE_SECONDS) {
       entry.marker?.remove();
       entry.tail?.remove();
-      entry.marker = entry.tail = null;
+      entry.marker = entry.tail = entry.iconKey = null;
       return entry;
     }
     const dimmed = focused && focused.mmsi !== info.mmsi;
     if (!entry.marker) {
       // Fleet ships are smaller, sit below the main ships and are named on hover only.
+      entry.iconKey = `${info.color}|${dimmed}|${isStale(info)}|${Boolean(info.fleet)}`;
+      entry.rotation = rotationOf(info);
+      entry.label = info.fleet ? info.name : shortName(info.name);
       entry.marker = L.marker([p.lat, p.lon], {
         icon: markerIcon(info, dimmed), keyboard: true, title: info.name, zIndexOffset: info.fleet ? -500 : 0,
       })
@@ -474,11 +509,13 @@
         color: info.color, weight: info.fleet ? 1.5 : 2.5, opacity: tailOpacity(info), interactive: false,
       }).addTo(map);
     } else {
-      entry.marker.setLatLng([p.lat, p.lon]);
-      entry.marker.setIcon(markerIcon(info, dimmed));
-      entry.marker.getTooltip()?.setContent(info.fleet ? info.name : shortName(info.name));
+      const ll = entry.marker.getLatLng();
+      if (ll.lat !== p.lat || ll.lng !== p.lon) entry.marker.setLatLng([p.lat, p.lon]);
+      refreshIcon(entry, dimmed);
+      const label = info.fleet ? info.name : shortName(info.name);
+      if (label !== entry.label) { entry.label = label; entry.marker.getTooltip()?.setContent(label); }
     }
-    entry.tail.setStyle({ color: info.color });
+    if (entry.tail.options.color !== info.color) entry.tail.setStyle({ color: info.color });
     entry.marker.getTooltip()?.getElement()?.classList.toggle("dimmed", Boolean(dimmed));
     return entry;
   }
@@ -588,8 +625,9 @@
     const entry = ships.get(mmsi);
     if (!entry || editing) return;
     clearReplay();
-    if (focused) focused.line.remove();
-    focused = { mmsi, line: null, points: [] };
+    focused?.line?.remove();
+    const mine = { mmsi, line: null, points: [] };
+    focused = mine;
     applyDimming();
     renderCard();
     $("strip").hidden = true;
@@ -602,9 +640,9 @@
       console.error(err);
       return;
     }
-    if (focused?.mmsi !== mmsi) return;
-    focused.points = data.points;
-    focused.line = speedTrack(data.points).addTo(map);
+    if (focused !== mine) return; // closed or another ship chosen meanwhile
+    mine.points = data.points;
+    mine.line = speedTrack(data.points).addTo(map);
     entry.marker?.setZIndexOffset(1000);
     renderCard();
     if (fit) zoomToTrack();
@@ -653,12 +691,73 @@
     for (const entry of ships.values()) {
       const dimmed = Boolean(focused && focused.mmsi !== entry.info.mmsi);
       if (entry.marker) {
-        entry.marker.setIcon(markerIcon(entry.info, dimmed));
+        refreshIcon(entry, dimmed);
         entry.marker.getTooltip()?.getElement()?.classList.toggle("dimmed", dimmed);
       }
       entry.tail?.setStyle({ opacity: dimmed ? 0.15 : tailOpacity(entry.info) });
       if (focused && focused.mmsi === entry.info.mmsi) entry.tail?.setStyle({ opacity: 0 });
     }
+  }
+
+  function showLine(el, text) {
+    el.hidden = !text;
+    setText(el, text || "");
+  }
+
+  // "Reaches the Porkkala lines ≈18:42 (in 23 min) · inner route 9 of last 14 sailings"
+  const NEXT_HORIZON = 3 * 3600;
+  function nextPassage(info) {
+    const n = info.next_passage;
+    if (!n || info.fleet) return null;
+    const left = n.eta_ts - now();
+    return left > -120 && left < NEXT_HORIZON ? { ...n, left } : null;
+  }
+
+  function nextPassageText(info) {
+    const n = nextPassage(info);
+    if (!n) return "";
+    const when = n.left < 60 ? "now" : `≈${clock(n.eta_ts)} (in ${duration(n.left)})`;
+    const habit = n.of ? ` · inner route ${n.inner} of last ${n.of} ${n.of === 1 ? "sailing" : "sailings"}` : "";
+    return `Reaches the Porkkala lines ${when}${habit}`;
+  }
+
+  // The crew's own ETA from AIS, with the draught: "ETA Stockholm 09:45 (AIS) · draught 7.1 m"
+  function etaText(info) {
+    const parts = [];
+    if (info.eta_ais) {
+      const d = new Date(info.eta_ais * 1000);
+      const sameDay = d.toDateString() === new Date(now() * 1000).toDateString();
+      const day = sameDay ? "" : `${d.toLocaleDateString("en-GB", { weekday: "short" })} `;
+      const legs = (info.destination || "").split(/<>|\s*-?>\s*/).filter(Boolean);
+      const place = legs.length ? placeName(legs[legs.length - 1]) : "";
+      parts.push(`ETA ${place ? `${place} ` : ""}${day}${clock(info.eta_ais)} (AIS)`);
+    }
+    if (info.draught) parts.push(`${parts.length ? "draught" : "Draught"} ${info.draught.toFixed(1)} m`);
+    return parts.join(" · ");
+  }
+
+  // Distance from the phone, and how close the ship comes on its present course.
+  function phoneFix() {
+    const ph = lastState?.phone;
+    return ph && now() - ph.ts <= (ph.max_age || 1800) ? ph : null;
+  }
+
+  function phoneText(info) {
+    const ph = phoneFix(), p = info.position;
+    if (!ph || !p || isStale(info)) return "";
+    const kx = 111320 * Math.cos((ph.lat * Math.PI) / 180), ky = 110540;
+    const rx = (p.lon - ph.lon) * kx, ry = (p.lat - ph.lat) * ky;
+    const dist = Math.hypot(rx, ry);
+    const km = (m) => (m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`);
+    let text = `${km(dist)} from you`;
+    if (!info.in_port && p.sog > 2 && p.cog != null) {
+      const v = p.sog * 0.5144, a = (p.cog * Math.PI) / 180;
+      const vx = v * Math.sin(a), vy = v * Math.cos(a);
+      const t = -(rx * vx + ry * vy) / (v * v);
+      if (t <= 0) text += " · moving away";
+      else if (t < 2 * 3600) text += ` · closest ${km(Math.hypot(rx + vx * t, ry + vy * t))} at ${clock(p.ts + t)}`;
+    }
+    return text;
   }
 
   function renderCard() {
@@ -667,9 +766,12 @@
     if (!entry) return;
     const info = entry.info;
     $("card").hidden = false;
-    $("card-name").textContent = info.name;
+    setText($("card-name"), info.name);
     $("card-dot").style.background = info.color;
-    $("card-motion").textContent = motionText(info);
+    setText($("card-motion"), motionText(info));
+    showLine($("card-next"), nextPassageText(info));
+    showLine($("card-eta"), etaText(info));
+    showLine($("card-phone"), phoneText(info));
 
     let voyage = "";
     if (info.voyage_start) {
@@ -679,8 +781,8 @@
         voyage = `Track since ${new Date(info.voyage_start * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short", hour12: false })}`;
       }
     }
-    $("card-voyage").textContent = voyage;
-    $("card-seen").textContent = info.position ? `Last report ${ago(info.position.ts)}` : "Waiting for the first report";
+    setText($("card-voyage"), voyage);
+    setText($("card-seen"), info.position ? `Last report ${ago(info.position.ts)}` : "Waiting for the first report");
     const speeds = (focused.points || []).map((p) => p[3]).filter((v) => v != null);
     $("card-speed").hidden = speeds.length < 2;
     if (speeds.length >= 2) {
@@ -826,13 +928,23 @@
         chip = { button, dot, name, sub };
         chips.set(info.mmsi, chip);
       }
-      chip.button.className = "chip panel" + (isStale(info) ? " stale" : "");
-      chip.dot.style.background = info.color;
-      chip.name.textContent = info.name;
-      chip.sub.textContent = info.position
-        ? (isStale(info) ? `Last seen ${ago(info.position.ts)}` : motionText(info)) : "No position yet";
+      const cls = "chip panel" + (isStale(info) ? " stale" : "");
+      if (chip.button.className !== cls) chip.button.className = cls;
+      if (chip.color !== info.color) { chip.color = info.color; chip.dot.style.background = info.color; }
+      setText(chip.name, info.name);
+      setText(chip.sub, chipText(info));
       if (strip.children[i] !== chip.button) strip.insertBefore(chip.button, strip.children[i] || null);
     });
+  }
+
+  // "Porkkala in 23 min · 17.5 kn" when a passage is coming up, otherwise speed and heading.
+  function chipText(info) {
+    if (!info.position) return "No position yet";
+    if (isStale(info)) return `Last seen ${ago(info.position.ts)}`;
+    const n = nextPassage(info);
+    if (!n) return motionText(info);
+    const speed = info.position.sog != null ? ` · ${info.position.sog.toFixed(1)} kn` : "";
+    return `Porkkala ${n.left < 60 ? "now" : `in ${duration(n.left)}`}${speed}`;
   }
 
   // --- status -------------------------------------------------------------------
@@ -840,6 +952,7 @@
   let lastState = null;
   let socketOpen = false;
 
+  let statusText = "Connecting";
   function renderStatus() {
     const el = $("status");
     let state = "connecting";
@@ -854,7 +967,11 @@
       state = "offline"; text = "Reconnecting";
     }
     el.dataset.state = state;
-    el.lastElementChild.textContent = text;
+    setText(el.lastElementChild, text);
+    const pill = $("pill-status");
+    pill.dataset.state = state;
+    pill.title = text;
+    statusText = text;
   }
 
   // --- data loading ---------------------------------------------------------------
@@ -880,7 +997,10 @@
     renderNotifyStatus();
     renderChartKeep();
     FerryChart.setRev(state.vchart?.rev);
-    if (!$("ships-dialog").querySelector('[data-pane="fleets"]').hidden) renderFleets();
+    if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    renderConditions();
+    renderPhone();
+    renderSettings();
     const chartSource = state.chart?.layers?.length
       ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
     const vc = state.vchart;
@@ -913,6 +1033,14 @@
       if (msg.type === "position" || msg.type === "meta") onPosition(msg.ship);
       else if (msg.type === "reload") loadState().then(loadTails).catch(console.error);
       else if (msg.type === "aircraft") renderAircraft(msg.aircraft);
+      else if (msg.type === "weather") {
+        if (lastState) lastState.weather = msg.weather;
+        renderConditions();
+      } else if (msg.type === "phone") {
+        if (lastState) lastState.phone = msg.phone;
+        renderPhone();
+        renderCard();
+      }
     };
     ws.onclose = () => {
       socketOpen = false;
@@ -925,7 +1053,13 @@
   setInterval(() => {
     renderStrip();
     renderCard();
-    fetch("api/state").then((r) => r.json()).then((s) => { lastState = s; renderStatus(); }).catch(() => {});
+    fetch("api/state").then((r) => r.json()).then((s) => {
+      lastState = s;
+      renderStatus();
+      renderConditions();
+      renderPhone();
+      renderSettings();
+    }).catch(() => {});
   }, 30000);
 
   // --- ships dialog -------------------------------------------------------------
@@ -1039,7 +1173,8 @@
   $("ships-button").addEventListener("click", () => {
     renderShipsList();
     $("notify-result").textContent = "";
-    setTab(["stats", "fleets"].includes(store.get("fw-tab")) ? store.get("fw-tab") : "ships");
+    const saved = store.get("fw-tab") === "fleets" ? "layers" : store.get("fw-tab");
+    setTab(["stats", "layers", "settings"].includes(saved) ? saved : "ships");
     $("ships-dialog").showModal();
   });
 
@@ -1480,7 +1615,8 @@
     document.querySelectorAll("[data-pane]").forEach((pane) => { pane.hidden = pane.dataset.pane !== name; });
     store.set("fw-tab", name);
     if (name === "stats") loadStats().catch(console.error);
-    if (name === "fleets") renderFleets();
+    if (name === "layers") renderLayers();
+    if (name === "settings") renderSettings();
   }
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
 
@@ -1839,8 +1975,490 @@
       }
       return section;
     }));
-    box.append(renderAircraftSection());
   }
+
+  // --- "On the map": layer switches ------------------------------------------------
+
+  function switchRow({ title, color, checked, count = "", note, extra, onChange }) {
+    const section = document.createElement("section");
+    section.className = "fleet";
+    const head = document.createElement("label");
+    head.className = "fleet-head";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = color;
+    const name = document.createElement("span");
+    name.className = "grow strong";
+    name.textContent = title;
+    const counter = document.createElement("span");
+    counter.className = "small muted";
+    counter.textContent = count;
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "switch";
+    toggle.checked = checked;
+    toggle.addEventListener("change", async () => {
+      toggle.disabled = true;
+      try {
+        await onChange(toggle.checked);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    head.append(dot, name, counter, toggle);
+    section.append(head);
+    if (note) {
+      const p = document.createElement("p");
+      p.className = "small muted";
+      p.textContent = note;
+      section.append(p);
+    }
+    if (extra) section.append(extra);
+    return section;
+  }
+
+  function trafficLegend() {
+    const ul = document.createElement("ul");
+    ul.className = "legend small";
+    for (const [label, color] of AIS_CLASSES) {
+      const li = document.createElement("li");
+      const i = document.createElement("i");
+      i.style.background = color;
+      li.append(i, label);
+      ul.append(li);
+    }
+    return ul;
+  }
+
+  function renderLayers() {
+    const w = lastState?.weather || {};
+    const weatherOn = w.enabled !== false;
+    const faultCount = faultsData?.faults?.length;
+    $("layers-list").replaceChildren(
+      switchRow({
+        title: "Sea conditions", color: "#0ea5e9", checked: weatherOn,
+        note: weatherOn && w.error
+          ? `Couldn't reach the Finnish Meteorological Institute just now (${w.error}). It tries again in a few minutes.`
+          : "Wind, sea temperature, waves and visibility from FMI stations near Porkkala, read while the map is open. Shown at the top of the map; tap it for details.",
+        onChange: async (on) => { await api("api/weather", { method: "POST", body: { enabled: on } }); await loadState(); },
+      }),
+      switchRow({
+        title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
+        note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
+        extra: trafficOn ? trafficLegend() : null,
+        onChange: async (on) => { setTraffic(on); renderLayers(); },
+      }),
+      renderAircraftSection(),
+      switchRow({
+        title: "Faulty lights and buoys", color: "#dc2626", checked: faultsOn,
+        count: faultsOn && faultCount != null ? `${faultCount} nearby` : "",
+        note: "Unlit, damaged or missing buoys, beacons and lights, from Digitraffic. Shown on the chart view.",
+        onChange: async (on) => { faultsOn = on; store.set("fw-faults", on ? "1" : "0"); renderFaults(); renderLayers(); },
+      }),
+      switchRow({
+        title: "Wrecks and coastal heritage", color: "#92400e", checked: heritageOn,
+        note: "Wrecks, and bunkers, trenches and gun positions on the shore and islands (from zoom 13), from Museovirasto's registers. Shown on the drawn chart.",
+        onChange: async (on) => { heritageOn = on; store.set("fw-heritage", on ? "1" : "0"); applyHeritage(); },
+      }),
+    );
+    renderFleets();
+  }
+
+  // --- settings -------------------------------------------------------------------
+
+  function renderSettings() {
+    const mb = lastState?.memory_mb;
+    setText($("memory"), mb ? `Memory in use: ${Math.round(mb)} MB` : "");
+  }
+
+  // --- wrecks and coastal heritage on the drawn chart ---------------------------------
+
+  let heritageOn = store.get("fw-heritage") !== "0";
+  function applyHeritage() {
+    try {
+      window.FerryChart?.setOptions?.({ heritage: heritageOn });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  applyHeritage();
+
+  // --- conditions pill and sheet (FMI observations, the sun, the feed) -----------------
+
+  const WEATHER_STALE = 3 * 3600; // older observations stay off the pill
+  const fresh = (v) => v && now() - v.ts < WEATHER_STALE;
+  const visibilityText = (km) => (km >= 10 ? `${Math.round(km)} km` : `${km.toFixed(1)} km`);
+
+  function nextSun(sun) {
+    if (!sun) return null;
+    const t = now();
+    if (sun.rise && t < sun.rise) return { kind: "rise", ts: sun.rise };
+    if (sun.set && t < sun.set) return { kind: "set", ts: sun.set };
+    return sun.next_rise ? { kind: "rise", ts: sun.next_rise } : null;
+  }
+
+  function renderConditions() {
+    const w = lastState?.weather || {};
+    const on = w.enabled !== false;
+    const wind = on && fresh(w.wind) ? w.wind : null;
+    const pw = $("pill-wind");
+    pw.hidden = !wind;
+    if (wind) {
+      setText(pw.lastElementChild, `${Math.round(wind.ms)} m/s`);
+      const arrow = pw.firstElementChild;
+      arrow.style.transform = `rotate(${((wind.dir ?? 0) + 180) % 360}deg)`; // points where it blows to
+      arrow.style.visibility = wind.dir == null ? "hidden" : "";
+      pw.title = `Wind ${compass(wind.dir)} ${wind.ms.toFixed(1)} m/s`.replace("  ", " ");
+    }
+    const water = on && fresh(w.water) ? w.water : null;
+    $("pill-water").hidden = !water;
+    if (water) {
+      setText($("pill-water"), `Sea ${Math.round(water.c)}°`);
+      $("pill-water").title = `Sea temperature ${water.c.toFixed(1)} °C`;
+    }
+    const sun = nextSun(w.sun);
+    const ps = $("pill-sun");
+    ps.hidden = !sun;
+    if (sun) {
+      setText(ps.lastElementChild, `${sun.kind === "rise" ? "↑" : "↓"}${clock(sun.ts)}`);
+      ps.classList.toggle("rise", sun.kind === "rise");
+      ps.title = `${sun.kind === "rise" ? "Sunrise" : "Sunset"} ${clock(sun.ts)}`;
+    }
+    $("conditions").setAttribute("aria-label", `Conditions: ${[statusText, pw.hidden ? "" : pw.title,
+      $("pill-water").hidden ? "" : $("pill-water").title, ps.hidden ? "" : ps.title].filter(Boolean).join(", ")}`);
+    if (!$("conditions-sheet").hidden) renderConditionsSheet();
+  }
+
+  function renderConditionsSheet() {
+    const w = lastState?.weather || {};
+    const rows = [];
+    const at = (v) => `${v.where}, ${clock(v.ts)}${now() - v.ts > 86400 ? ` ${new Date(v.ts * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : ""}`;
+    if (w.enabled !== false) {
+      if (w.wind) {
+        const gust = w.wind.gust != null ? `, gusts ${Math.round(w.wind.gust)}` : "";
+        rows.push(["Wind", `${compass(w.wind.dir)} ${w.wind.ms.toFixed(1)} m/s${gust}`.trim(), at(w.wind)]);
+      }
+      if (w.air) rows.push(["Air", `${w.air.c.toFixed(1)} °C`, at(w.air)]);
+      if (w.visibility) {
+        rows.push(["Visibility", `${visibilityText(w.visibility.km)}${w.visibility.weather ? `, ${w.visibility.weather}` : ""}`, at(w.visibility)]);
+      }
+      if (w.water) rows.push(["Sea temperature", `${w.water.c.toFixed(1)} °C`, at(w.water)]);
+      if (w.sea_level) rows.push(["Sea level", `${w.sea_level.cm > 0 ? "+" : ""}${w.sea_level.cm} cm`, `${at(w.sea_level)} · against the long-term mean`]);
+      if (w.waves) rows.push(["Waves", `${w.waves.m.toFixed(1)} m${w.waves.dir != null ? ` from ${compass(w.waves.dir)}` : ""}`, at(w.waves)]);
+    }
+    const sun = w.sun || {};
+    if (sun.rise || sun.set) {
+      rows.push(["Sun", [sun.rise && `rises ${clock(sun.rise)}`, sun.set && `sets ${clock(sun.set)}`].filter(Boolean).join(" · "),
+        sun.dusk ? `Dark from ${clock(sun.dusk)}${sun.next_rise ? ` · next sunrise ${clock(sun.next_rise)}` : ""}` : ""]);
+    }
+    const ph = lastState?.phone;
+    if (ph) {
+      rows.push(["Your phone", phoneFix() ? "Shown on the map" : "Not recent enough to show",
+        `Located ${ago(ph.ts)}${ph.accuracy ? ` · within ${Math.round(ph.accuracy)} m` : ""}`]);
+    }
+    const feed = lastState?.feed || {};
+    rows.push(["Ship positions", statusText, feed.last_message_ts ? `Last AIS message ${ago(feed.last_message_ts)}` : "Digitraffic"]);
+    $("conditions-list").replaceChildren(...rows.flatMap(([label, value, meta]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      if (meta) {
+        const m = document.createElement("span");
+        m.className = "small muted";
+        m.textContent = meta;
+        dd.append(m);
+      }
+      return [dt, dd];
+    }));
+    let note = "Observations: Finnish Meteorological Institute (CC BY 4.0), read every 10 minutes while the map is open.";
+    if (w.enabled === false) note = "Sea conditions are switched off. Switch them on under Menu › On the map.";
+    else if (w.error) note = `Couldn't reach FMI just now (${w.error}); showing the last values. ${note}`;
+    else if (!w.fetched) note = `Reading the first observations… ${note}`;
+    setText($("conditions-note"), note);
+  }
+
+  function toggleConditions(open = $("conditions-sheet").hidden) {
+    $("conditions-sheet").hidden = !open;
+    document.body.classList.toggle("conditions-open", open); // the chips give way on a phone
+    $("conditions").setAttribute("aria-expanded", String(open));
+    if (open) renderConditionsSheet();
+  }
+  $("conditions").addEventListener("click", () => toggleConditions());
+  $("conditions-close").addEventListener("click", () => toggleConditions(false));
+
+  // --- you are here: the phone's position from Home Assistant ----------------------------
+
+  let phoneLayer = null; // { group, halo, dot }
+
+  function renderPhone() {
+    const ph = phoneFix();
+    if (!ph) {
+      phoneLayer?.group.remove();
+      phoneLayer = null;
+      return;
+    }
+    const ll = [ph.lat, ph.lon];
+    if (!phoneLayer) {
+      const halo = L.circle(ll, { radius: 0, color: "#2563eb", weight: 1, opacity: 0.35, fillOpacity: 0.08, interactive: false });
+      const dot = L.circleMarker(ll, { radius: 7, color: "#fff", weight: 2.5, fillColor: "#2563eb", fillOpacity: 1 })
+        .bindTooltip("", { direction: "top", offset: [0, -6] });
+      phoneLayer = { group: L.layerGroup([halo, dot]).addTo(map), halo, dot };
+    }
+    phoneLayer.halo.setLatLng(ll).setRadius(Math.min(ph.accuracy || 0, 2000));
+    phoneLayer.dot.setLatLng(ll).setTooltipContent(`You · ${ago(ph.ts)}`);
+  }
+
+  // --- other ships: all AIS traffic around the view, only while switched on -----------------
+
+  const TRAFFIC_MIN_ZOOM = 8; // the server keeps the circle within 60 km anyway
+  const TRAFFIC_POLL = 30000;
+  const AIS_CLASSES = [
+    ["Passenger", "#2563eb", (t) => t >= 60 && t <= 69],
+    ["Cargo", "#16a34a", (t) => t >= 70 && t <= 79],
+    ["Tanker", "#dc2626", (t) => t >= 80 && t <= 89],
+    ["High speed", "#ca8a04", (t) => t >= 40 && t <= 49],
+    ["Tug, pilot, service", "#0891b2", (t) => (t >= 31 && t <= 35) || (t >= 50 && t <= 59)],
+    ["Fishing", "#ea580c", (t) => t === 30],
+    ["Sailing, pleasure", "#c026d3", (t) => t === 36 || t === 37],
+    ["Other or unknown", "#6b7280", () => true],
+  ];
+  const aisColor = (type) => AIS_CLASSES.find(([, , test]) => test(type ?? -1))[1];
+  const AIS_TYPES = { 30: "Fishing vessel", 31: "Towing", 32: "Towing", 33: "Dredger", 34: "Diving support", 35: "Military",
+    36: "Sailing boat", 37: "Pleasure craft", 50: "Pilot boat", 51: "Search and rescue", 52: "Tug", 53: "Port tender",
+    54: "Anti-pollution", 55: "Law enforcement", 58: "Medical transport" };
+  function aisType(type) {
+    if (AIS_TYPES[type]) return AIS_TYPES[type];
+    if (type >= 40 && type <= 49) return "High-speed craft";
+    if (type >= 60 && type <= 69) return "Passenger ship";
+    if (type >= 70 && type <= 79) return "Cargo ship";
+    if (type >= 80 && type <= 89) return "Tanker";
+    return "Ship";
+  }
+
+  // A small triangle along the course (a dot when still), drawn on one canvas for all of them.
+  const Boat = L.CircleMarker.extend({
+    _updatePath() {
+      const r = this._renderer;
+      if (!r._drawing || this._empty()) return;
+      const p = this._point, ctx = r._ctx, size = this._radius;
+      ctx.beginPath();
+      if (this.options.course == null) {
+        ctx.arc(p.x, p.y, size * 0.55, 0, Math.PI * 2);
+      } else {
+        const a = (this.options.course * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+        const pt = (dx, dy) => [p.x + dx * cos - dy * sin, p.y + dx * sin + dy * cos];
+        ctx.moveTo(...pt(0, -size * 1.15));
+        ctx.lineTo(...pt(size * 0.65, size * 0.8));
+        ctx.lineTo(...pt(-size * 0.65, size * 0.8));
+        ctx.closePath();
+      }
+      r._fillStroke(ctx, this);
+    },
+  });
+
+  let trafficOn = store.get("fw-traffic") === "1";
+  const traffic = new Map(); // mmsi -> Boat
+  let trafficLayer = null, trafficCanvas = null, trafficTimer = null, trafficMoveTimer = null;
+  let trafficBusy = false, trafficNote = "", trafficCount = "";
+
+  function clearTraffic() {
+    trafficLayer?.clearLayers();
+    traffic.clear();
+  }
+
+  function setTraffic(on) {
+    trafficOn = on;
+    store.set("fw-traffic", on ? "1" : "0");
+    trafficNote = "";
+    trafficCount = "";
+    if (on) pollTraffic();
+    else { clearTimeout(trafficTimer); clearTraffic(); }
+  }
+
+  async function pollTraffic() {
+    clearTimeout(trafficTimer);
+    if (!trafficOn || document.hidden) return;
+    trafficTimer = setTimeout(pollTraffic, TRAFFIC_POLL);
+    if (trafficBusy) return;
+    if (map.getZoom() < TRAFFIC_MIN_ZOOM) {
+      clearTraffic();
+      trafficNote = "Zoom in to see other ships.";
+      trafficCount = "";
+      return;
+    }
+    const c = map.getCenter();
+    const radius = Math.ceil(map.distance(c, map.getBounds().getNorthEast()) / 1000);
+    trafficBusy = true;
+    try {
+      const data = await api(`api/traffic?lat=${c.lat.toFixed(3)}&lon=${c.lng.toFixed(3)}&r=${radius}`);
+      if (!trafficOn) return;
+      drawTraffic(data.ships || []);
+      trafficNote = data.error ? `Couldn't reach Digitraffic just now (${data.error}).` : "";
+      trafficCount = `${traffic.size} in view`;
+    } catch (err) {
+      trafficNote = String(err.message || err);
+    } finally {
+      trafficBusy = false;
+    }
+  }
+
+  function drawTraffic(rows) {
+    if (!trafficLayer) {
+      trafficCanvas = L.canvas({ padding: 0.3 });
+      trafficLayer = L.layerGroup().addTo(map);
+    }
+    const seen = new Set();
+    for (const row of rows) {
+      const [mmsi, lat, lon, sog, cog, heading, , type] = row;
+      if (ships.has(mmsi)) continue; // already on the map as one of mine or a fleet ship
+      seen.add(mmsi);
+      const course = sog != null && sog >= 0.5 ? (heading ?? cog) : null;
+      const color = aisColor(type);
+      let boat = traffic.get(mmsi);
+      if (!boat) {
+        boat = new Boat([lat, lon], { renderer: trafficCanvas, radius: 7, color: "#fff", weight: 1, opacity: 0.9,
+          fillColor: color, fillOpacity: 0.85, course });
+        boat.bindPopup(() => trafficPopup(boat), { className: "aid-popup", offset: [0, -4] });
+        boat.addTo(trafficLayer);
+        traffic.set(mmsi, boat);
+      } else {
+        const changed = boat.options.course !== course || boat.options.fillColor !== color;
+        boat.options.course = course;
+        if (changed) boat.setStyle({ fillColor: color });
+        const ll = boat.getLatLng();
+        if (ll.lat !== lat || ll.lng !== lon) boat.setLatLng([lat, lon]);
+        else if (changed) boat.redraw();
+      }
+      boat.row = row;
+    }
+    for (const [mmsi, boat] of traffic) {
+      if (seen.has(mmsi) || boat.isPopupOpen()) continue;
+      boat.remove();
+      traffic.delete(mmsi);
+    }
+  }
+
+  function trafficPopup(boat) {
+    const [mmsi, , , sog, cog, heading, name, type, length, dest] = boat.row;
+    const el = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = name || `MMSI ${mmsi}`;
+    el.append(title);
+    const dir = compass(heading ?? cog);
+    const lines = [
+      [aisType(type), length ? `${length} m` : null].filter(Boolean).join(" · "),
+      sog == null ? "" : sog < 0.5 ? "Stopped" : `${sog.toFixed(1)} kn${dir ? ` heading ${dir}` : ""}`,
+      dest ? (() => { const t = destinationText(dest); return t[0].toUpperCase() + t.slice(1); })() : "",
+    ];
+    for (const text of lines.filter(Boolean)) {
+      el.append(document.createElement("br"), text);
+    }
+    const follow = document.createElement("button");
+    follow.type = "button";
+    follow.className = "link-button popup-action";
+    follow.textContent = "Follow";
+    follow.title = "Show it on the map with its latest trip";
+    follow.addEventListener("click", async () => {
+      follow.disabled = true;
+      follow.textContent = "Following…";
+      try {
+        await api("api/follow", { method: "POST", body: { mmsi, name } });
+        map.closePopup();
+        boat.remove();
+        traffic.delete(mmsi);
+        await loadState();
+        await loadTails();
+      } catch (err) {
+        follow.textContent = String(err.message || err);
+      }
+    });
+    el.append(document.createElement("br"), follow);
+    return el;
+  }
+
+  map.on("moveend", () => {
+    if (!trafficOn) return;
+    clearTimeout(trafficMoveTimer);
+    trafficMoveTimer = setTimeout(pollTraffic, 1000);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearTimeout(trafficTimer);
+    else if (trafficOn) pollTraffic();
+  });
+
+  // --- faulty lights and buoys (Digitraffic), on the chart view ----------------------------
+
+  const faultIcon = () => L.divIcon({ className: "fault-icon", html: "<span>!</span>", iconSize: [22, 22], iconAnchor: [11, 11] });
+
+  function renderFaults() {
+    if (!faultsOn || activeLayer !== layers.chart) {
+      faultsLayer?.remove();
+      return;
+    }
+    if (!faultsData || Date.now() - faultsAt > FAULTS_REFRESH) loadFaults();
+    if (faultsLayer && !map.hasLayer(faultsLayer)) faultsLayer.addTo(map);
+  }
+
+  async function loadFaults() {
+    if (faultsLoading) return;
+    faultsLoading = true;
+    try {
+      faultsData = await api("api/faults");
+      faultsAt = Date.now();
+      drawFaults();
+    } catch (err) {
+      console.error(err);
+      faultsAt = Date.now() - FAULTS_REFRESH + 5 * 60000; // try again in five minutes
+    } finally {
+      faultsLoading = false;
+    }
+  }
+
+  function faultPopup(f) {
+    const since = f.since ? new Date(f.since * 1000) : null;
+    const day = since && since.toLocaleDateString("en-GB", {
+      day: "numeric", month: "short", ...(now() - f.since > 300 * 86400 ? { year: "numeric" } : {}),
+    });
+    const what = [f.name, f.aton_type && f.aton_type.toLowerCase()].filter(Boolean).join(", ");
+    return `<strong>${esc(f.type)}${day ? ` since ${esc(day)}` : ""}</strong>`
+      + `${what ? `<br>${esc(what)}` : ""}${f.fairway ? `<br><span class="muted">${esc(f.fairway)}</span>` : ""}`;
+  }
+
+  function drawFaults() {
+    faultsLayer?.remove();
+    faultsLayer = L.layerGroup((faultsData?.faults || []).map((f) => L.marker([f.lat, f.lon], {
+      icon: faultIcon(), keyboard: false, zIndexOffset: 400, title: `${f.type}: ${f.name || ""}`,
+    }).bindPopup(faultPopup(f), { className: "aid-popup", offset: [0, -8] })));
+    if (faultsOn && activeLayer === layers.chart) faultsLayer.addTo(map);
+  }
+
+  // --- keyboard and small things ------------------------------------------------------
+
+  let popupOpen = false;
+  map.on("popupopen", () => { popupOpen = true; });
+  map.on("popupclose", () => { popupOpen = false; });
+
+  // Escape backs out of one thing at a time: drawing, a popup, the sheet, the ship card, a replay.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || $("ships-dialog").open) return;
+    if (drawing) cancelDrawing();
+    else if (popupOpen) map.closePopup();
+    else if (!$("conditions-sheet").hidden) toggleConditions(false);
+    else if (focused) unfocus();
+    else if (replayLayer) clearReplay();
+    else if (editing) setEditing(false);
+  });
+
+  // On a phone the attribution is one line; tap it to read it all.
+  const attribution = map.attributionControl.getContainer();
+  attribution.title = "Map data credits";
+  attribution.addEventListener("click", (e) => {
+    if (e.target.closest("a")) return;
+    document.body.classList.toggle("attribution-open", attribution.classList.toggle("expanded"));
+  });
 
   // --- start --------------------------------------------------------------------
 
@@ -1863,5 +2481,6 @@
     if (target && ships.has(target)) focusShip(target);
     else if (!focusFromNotification()) fitAllShips();
     connectSocket();
+    if (trafficOn) pollTraffic();
   })();
 })();

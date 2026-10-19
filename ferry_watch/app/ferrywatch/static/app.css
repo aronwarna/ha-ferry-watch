@@ -9,6 +9,8 @@
   --warn: #d97706;
   --shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
   --radius: 12px;
+  --topbar-h: 40px;
+  --top: max(10px, env(safe-area-inset-top));
   color-scheme: light;
 }
 
@@ -51,7 +53,7 @@ button { font: inherit; color: inherit; }
 
 .topbar {
   position: fixed;
-  top: max(10px, env(safe-area-inset-top));
+  top: var(--top);
   left: 10px;
   right: 10px;
   display: flex;
@@ -112,7 +114,9 @@ button { font: inherit; color: inherit; }
   overflow-x: auto;
   z-index: 1000;
   scrollbar-width: none;
+  pointer-events: none; /* the gaps between chips leave the map (and its zoom buttons) usable */
 }
+.strip > * { pointer-events: auto; }
 .strip::-webkit-scrollbar { display: none; }
 .chip {
   flex: 0 0 auto;
@@ -200,7 +204,7 @@ button { font: inherit; color: inherit; }
   position: fixed;
   z-index: 1001;
   left: 10px;
-  top: 64px;
+  top: calc(var(--top) + var(--topbar-h) + 48px);
   width: min(360px, calc(100vw - 20px));
   max-height: calc(100vh - 90px);
   overflow-y: auto;
@@ -406,11 +410,8 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 
 /* Rescue aircraft badge */
 .air-badge {
-  position: fixed;
-  z-index: 1000;
-  top: calc(max(10px, env(safe-area-inset-top)) + 54px);
-  left: 10px;
   display: inline-flex;
+  max-width: 100%;
   align-items: center;
   gap: 8px;
   padding: 6px 12px 6px 8px;
@@ -431,18 +432,9 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 .alert-switch { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; color: var(--muted); margin-right: 8px; }
 
 /* Chart style switch, under the map type buttons while the chart is shown */
-.chart-style {
-  position: fixed;
-  z-index: 1000;
-  top: calc(max(10px, env(safe-area-inset-top)) + 54px);
-  right: 10px;
-}
-.chart-style button { font-size: 12px; padding: 4px 9px; }
+.chart-style .segmented button { font-size: 12px; padding: 4px 9px; }
+#chart-style-select { display: none; }
 .chart-loading {
-  position: fixed;
-  z-index: 1000;
-  top: calc(max(10px, env(safe-area-inset-top)) + 92px);
-  right: 10px;
   font-size: 12px;
   padding: 4px 9px;
   color: var(--muted);
@@ -479,3 +471,130 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 /* Land Survey API key */
 .key-form { display: flex; gap: 8px; margin: 6px 0; }
 .key-form input { flex: 1; min-width: 0; }
+
+/* Sub-row under the top bar: conditions pill and aircraft badge on the left, chart style on the right */
+.subbar {
+  position: fixed;
+  z-index: 1000;
+  top: calc(var(--top) + var(--topbar-h) + 8px);
+  left: 10px;
+  right: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+.subbar-left, .subbar-right { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.subbar-left { align-items: flex-start; flex: 1 1 auto; }
+.subbar-right { align-items: flex-end; flex: 0 0 auto; }
+.subbar-left > *, .subbar-right > * { pointer-events: auto; }
+#air-badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.conditions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.conditions:empty { display: none; }
+#pill-status { display: none; }
+.pill-part { display: inline-flex; align-items: center; gap: 4px; }
+.pill-part svg { width: 14px; height: 14px; flex: 0 0 auto; }
+#pill-wind svg { fill: currentColor; transition: transform 0.3s; }
+#pill-sun svg { fill: none; stroke-width: 1.5; stroke-linecap: round; }
+#pill-sun .horizon { stroke: var(--muted); }
+#pill-sun .sun { fill: #f59e0b; stroke: #f59e0b; }
+#pill-sun .ray { stroke: #f59e0b; }
+.conditions-sheet { width: min(340px, calc(100vw - 20px)); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; margin: 10px 0 8px; }
+.facts dt { color: var(--muted); font-size: 12px; padding-top: 2px; }
+.facts dd { margin: 0; font-weight: 600; }
+.facts dd span { display: block; font-weight: 400; }
+
+/* Ship card: the coming passage stands out */
+.card-line.next { color: var(--accent); font-weight: 600; }
+
+/* Faulty lights and buoys: a red ring with "!" */
+.fault-icon span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid #dc2626;
+  background: rgba(255, 255, 255, 0.92);
+  color: #dc2626;
+  font: 800 13px/1 system-ui, sans-serif;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+/* Other ships legend */
+.legend { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.legend li { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.legend i { width: 10px; height: 11px; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.popup-action { margin-top: 6px; }
+.credits { padding-left: 18px; margin: 4px 0; }
+.credits li { margin: 2px 0; }
+
+/* Phones (Galaxy S22: 360 px wide). The brand gives way so the map buttons and menu fit;
+   the connection dot moves into the conditions pill. */
+@media (max-width: 560px) {
+  :root { --topbar-h: 44px; }
+  .brand { display: none; }
+  .tools { flex: 1; justify-content: flex-end; min-width: 0; }
+  .tools .segmented { flex: 1 1 auto; min-width: 0; }
+  .tools .segmented button { flex: 1 1 0; padding: 5px 4px; }
+  #pill-status { display: inline-flex; }
+  .conditions { gap: 8px; padding: 5px 10px; }
+  .chart-style .segmented { display: none; }
+  #chart-style-select {
+    display: block;
+    font: inherit;
+    font-size: 13px;
+    min-height: 36px;
+    padding: 4px 6px;
+    color: var(--text);
+  }
+  .leaflet-control-attribution {
+    max-width: calc(100vw - 16px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .leaflet-control-attribution.expanded { white-space: normal; }
+  dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); padding: 12px; }
+  .dialog-head { gap: 6px; }
+  .tabs { flex: 1 1 auto; min-width: 0; }
+  .tabs button { flex: 1 1 auto; padding: 6px 4px; font-size: 13px; white-space: nowrap; }
+}
+body.attribution-open .strip { visibility: hidden; }
+@media (max-width: 560px) {
+  body.conditions-open .strip { visibility: hidden; }
+  .conditions-sheet { max-height: 70vh; }
+}
+
+/* Touch: everything tappable at least 36 px tall */
+@media (max-width: 560px), (pointer: coarse) {
+  .segmented button, .tabs button, .stats-views button { min-height: 36px; }
+  .icon-button { width: 44px; height: 44px; }
+  .icon-button.plain { width: 36px; height: 36px; }
+  .card-actions { flex-wrap: wrap; row-gap: 0; }
+  .card-actions button, .card-actions .link-button { min-height: 36px; display: inline-flex; align-items: center; }
+  .ships-list button, .zone-actions button, button.primary, .add-zone button, .drawing button, #notify-test,
+  .key-form button, .key-form input, #ship-search, .popup-action { min-height: 36px; }
+  .fleet-head { min-height: 36px; }
+  .air-badge, .conditions { min-height: 36px; }
+  .cal-day { min-height: 44px; }
+}
+.fleet > p.small { margin: 2px 0 0; }

@@ -25,23 +25,53 @@
       <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
       </button>
-      <button type="button" id="ships-button" class="panel icon-button" aria-label="Ships, stats and fleets" title="Ships, stats and fleets">
+      <button type="button" id="ships-button" class="panel icon-button" aria-label="Menu: ships, map layers, stats and settings" title="Menu">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
       </button>
     </div>
   </header>
 
-  <div id="chart-style" class="chart-style segmented panel" role="group" aria-label="Chart style" hidden>
-    <button type="button" data-style="drawn">Drawn</button>
-    <button type="button" data-style="official">Official</button>
-    <button type="button" data-style="scanned">Scanned</button>
+  <!-- Under the top bar: conditions and alerts on the left, chart style on the right. -->
+  <div class="subbar">
+    <div class="subbar-left">
+      <button type="button" id="conditions" class="conditions panel" aria-haspopup="dialog" aria-controls="conditions-sheet">
+        <span id="pill-status" class="status" data-state="connecting"><i></i></span>
+        <span id="pill-wind" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg><span></span></span>
+        <span id="pill-water" class="pill-part" hidden></span>
+        <span id="pill-sun" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="horizon" d="M-7 4 H7"/><path class="sun" d="M-4 4 A4 4 0 0 1 4 4"/><path class="ray" d="M0 -5 V-2.5 M-4.6 -2.8 L-3 -1.2 M4.6 -2.8 L3 -1.2"/></svg><span></span></span>
+      </button>
+      <button type="button" id="air-badge" class="air-badge panel" hidden aria-live="polite">
+        <svg viewBox="-13 -13 26 26" aria-hidden="true"><ellipse cx="0" cy="1" rx="4.5" ry="6"/><path d="M0 6 L0 12 M-3 12 L3 12 M-11 -9 L11 9 M11 -9 L-11 9"/></svg>
+        <span id="air-badge-text"></span>
+      </button>
+    </div>
+    <div class="subbar-right">
+      <div id="chart-style" class="chart-style" hidden>
+        <div class="segmented panel" role="group" aria-label="Chart style">
+          <button type="button" data-style="drawn">Drawn</button>
+          <button type="button" data-style="official">Official</button>
+          <button type="button" data-style="scanned">Scanned</button>
+        </div>
+        <select id="chart-style-select" class="panel" aria-label="Chart style">
+          <option value="drawn">Drawn</option>
+          <option value="official">Official</option>
+          <option value="scanned">Scanned</option>
+        </select>
+      </div>
+      <div id="chart-loading" class="chart-loading panel" role="status" hidden>Loading chart…</div>
+    </div>
   </div>
-  <div id="chart-loading" class="chart-loading panel" role="status" hidden>Downloading chart data…</div>
 
-  <button type="button" id="air-badge" class="air-badge panel" hidden aria-live="polite">
-    <svg viewBox="-13 -13 26 26" aria-hidden="true"><ellipse cx="0" cy="1" rx="4.5" ry="6"/><path d="M0 6 L0 12 M-3 12 L3 12 M-11 -9 L11 9 M11 -9 L-11 9"/></svg>
-    <span id="air-badge-text"></span>
-  </button>
+  <section id="conditions-sheet" class="sheet panel conditions-sheet" hidden aria-label="Conditions">
+    <div class="sheet-head">
+      <h2>Conditions</h2>
+      <button type="button" class="icon-button plain" id="conditions-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <dl id="conditions-list" class="facts"></dl>
+    <p class="small muted" id="conditions-note"></p>
+  </section>
 
   <nav id="strip" class="strip" aria-label="Ships"></nav>
 
@@ -59,6 +89,9 @@
         </button>
       </div>
       <p class="card-line strong" id="card-motion"></p>
+      <p class="card-line next" id="card-next" hidden></p>
+      <p class="card-line" id="card-eta" hidden></p>
+      <p class="card-line" id="card-phone" hidden></p>
       <p class="card-line" id="card-voyage"></p>
       <p class="card-line muted" id="card-seen"></p>
       <div class="speed-legend" id="card-speed" hidden>
@@ -118,8 +151,9 @@
     <div class="dialog-head">
       <div class="segmented tabs" role="tablist" aria-label="Menu">
         <button type="button" role="tab" data-tab="ships">Ships</button>
+        <button type="button" role="tab" data-tab="layers">On the map</button>
         <button type="button" role="tab" data-tab="stats">Stats</button>
-        <button type="button" role="tab" data-tab="fleets">Fleets</button>
+        <button type="button" role="tab" data-tab="settings">Settings</button>
       </div>
       <form method="dialog">
         <button class="icon-button plain" aria-label="Close">
@@ -133,11 +167,19 @@
       <p class="small muted">Add gives a ship alerts and stats like the ferries. Follow just shows it on the map with its latest trip.</p>
       <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
       <ul id="search-results" class="ships-list results"></ul>
+    </div>
+    <div data-pane="layers" role="tabpanel" hidden>
+      <div id="layers-list"></div>
+      <h3>Fleets</h3>
+      <p class="small muted">Switched-on fleets are shown on the map with their latest trip. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
+      <div id="fleets-list"></div>
+    </div>
+    <div data-pane="settings" role="tabpanel" hidden>
       <h3>Notifications</h3>
       <p class="small muted" id="notify-status"></p>
       <button type="button" id="notify-test">Send a test notification</button>
       <p class="small" id="notify-result" role="status"></p>
-      <h3>Chart</h3>
+      <h3>Chart storage</h3>
       <label class="fleet-head">
         <span class="grow strong">Keep chart on the NAS</span>
         <input type="checkbox" class="switch" id="chart-keep">
@@ -150,6 +192,17 @@
         <button type="submit">Save</button>
       </form>
       <p class="small" id="mml-result" role="status"></p>
+      <h3>Data sources</h3>
+      <ul class="credits small muted">
+        <li>Ship positions: <a href="https://www.digitraffic.fi/en/marine-traffic/" target="_blank" rel="noopener">Digitraffic</a> (Fintraffic, CC BY 4.0)</li>
+        <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
+        <li>Sea conditions: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+        <li>Charts: Traficom, Väylävirasto, Maanmittauslaitos; wrecks and coastal heritage: Museovirasto</li>
+        <li>Maps: Esri, OpenSeaMap; rescue aircraft: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a></li>
+        <li>Sunrise and sunset are worked out on the NAS. Not for navigation.</li>
+      </ul>
+      <h3>About</h3>
+      <p class="small" id="memory"></p>
       <p class="muted small" id="version"></p>
     </div>
     <div data-pane="stats" role="tabpanel" hidden>
@@ -172,10 +225,6 @@
       <h3>Recent passages</h3>
       <ul id="passages-list" class="ships-list passages"></ul>
       <p class="small"><a id="stats-csv" href="api/passages.csv" download="ferry-watch-passages.csv">Download all passages (CSV)</a></p>
-    </div>
-    <div data-pane="fleets" role="tabpanel" hidden>
-      <p class="small muted">Switched-on fleets are shown on the map with their latest trip. Switching one off stops following it. Rescue boats, icebreakers and aircraft start switched off.</p>
-      <div id="fleets-list"></div>
     </div>
   </dialog>
 
