@@ -1707,13 +1707,30 @@ class VectorChart:
         cql = (f"(vedenalainen ILIKE 'k' OR tyyppi LIKE '%hyly%') AND "
                f"BBOX(Shape,{x0:.1f},{y0:.1f},{x1:.1f},{y1:.1f},'EPSG:3857')")
         features: list[dict] = []
+        failed: list[str] = []
         for type_name, cls in MV_TYPES.items():
             params = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": type_name,
                       "srsName": "EPSG:3857", "outputFormat": "application/json", "sortBy": "OBJECTID",
                       "propertyName": ",".join(("Shape", *MV_FIELDS)), "CQL_FILTER": cql}
-            for f in await self._paged(MV_WFS, params, "heritage", None):
+            try:
+                try:
+                    got = await self._paged(MV_WFS, params, "heritage", None)
+                except aiohttp.ClientError as err:
+                    if not str(err).startswith("HTTP"):
+                        raise
+                    # A layer without one of the fields refuses the field list: ask for everything.
+                    del params["propertyName"]
+                    got = await self._paged(MV_WFS, params, "heritage", None)
+            except (aiohttp.ClientError, ValueError) as err:
+                failed.append(f"{type_name.split(':')[-1]}: {err}")
+                continue
+            for f in got:
                 f.setdefault("properties", {})["_class"] = cls
                 features.append(f)
+        if failed:
+            if len(failed) == len(MV_TYPES):
+                raise aiohttp.ClientError("; ".join(failed))
+            _LOGGER.info("Some heritage layers were left out: %s", "; ".join(failed))
         return features
 
     def _heritage_layer(self, bx: int, by: int) -> Layer:
