@@ -237,6 +237,11 @@ SIM_HERITAGE = [
     (24.52, 59.990, 1310, "Alku", 1, "hylyt (metalli)", "moderni", "Tarkka (< 10 m)"),
     (24.455, 59.975, 1422, None, 3, "hylyt (puu)", "ajoittamaton", "Suuntaa antava (100 - 1000 m)"),
     (24.48, 60.012, 1501, "Ankkurilöytö", 4, "löytöpaikat", "historiallinen", "Ohjeellinen (10 - 100 m)"),
+    # Defences on land: two on islands, one far inland that the chart leaves out.
+    (24.404, 60.011, 2101, "Porkkalan tykkiasema", 1, "tykkiasemat, taisteluhaudat", "toinen maailmansota",
+     "Tarkka (< 10 m)"),
+    (24.474, 60.023, 2102, "Rönnskär bunkkeri", 2, "bunkkerit", "toinen maailmansota", "Ohjeellinen (10 - 100 m)"),
+    (24.40, 60.30, 2103, "Inland trench", 1, "taisteluhaudat", "toinen maailmansota", "Tarkka (< 10 m)"),
 ]
 
 
@@ -369,7 +374,9 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
             if minx <= x <= maxx and miny <= y <= maxy:
                 feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
                               "properties": {"mjtunnus": site, "kohdenimi": name, "_class": cls,
-                                             "tyyppi": "alusten hylyt" if "hylyt" in sub else sub,
+                                             "tyyppi": "alusten hylyt" if "hylyt" in sub else
+                                             "puolustusvarustukset" if site > 2000 else sub,
+                                             "vedenalainen": "e" if site > 2000 else "k",
                                              "alatyyppi": sub, "ajoitus": dating, "paikannustarkkuus": acc}})
     elif key == "wreck":
         from .vchart import lonlat_to_mercator
