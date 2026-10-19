@@ -8,7 +8,7 @@ like Luotsi do, from:
 - Väylävirasto's fairway data (fairway lines and areas, leading lines, buoys,
   beacons, lights and restricted areas),
 - the National Land Survey's rocks, wrecks and place names (with an API key), and
-- Museovirasto's register of wrecks and underwater heritage sites.
+- Museovirasto's register of wrecks, underwater heritage sites and coastal defences.
 
 Data is fetched lazily in blocks (zoom-11 map tiles, about 10 km across) the
 first time part of the map is viewed, kept on the NAS for a month, and cut into
@@ -52,7 +52,7 @@ MML_API = "https://avoin-paikkatieto.maanmittauslaitos.fi/maastotiedot/features/
 # Finnish Heritage Agency's registers (CC BY 4.0, no key).
 MV_WFS = "https://geoserver.museovirasto.fi/geoserver/rajapinta/wfs"
 ATTRIBUTION = ("Chart data: Traficom (depths), Väylävirasto (fairways, aids), "
-               "Maanmittauslaitos (rocks, names), Museovirasto (wrecks and heritage sites, CC BY 4.0). "
+               "Maanmittauslaitos (rocks, names), Museovirasto (wrecks, heritage sites and defences, CC BY 4.0). "
                "Not for navigation.")
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
@@ -138,11 +138,26 @@ MV_TYPES = {
     "rajapinta:rajapinta_loytopaikka_piste": 4,
     "rajapinta:rajapinta_havaintokohde_piste": 5,
 }
-MV_FIELDS = ("mjtunnus", "kohdenimi", "tyyppi", "alatyyppi", "ajoitus", "paikannustarkkuus")
+MV_FIELDS = ("mjtunnus", "kohdenimi", "tyyppi", "alatyyppi", "ajoitus", "paikannustarkkuus", "vedenalainen")
+# Register sub-types in English, matched by the start of each word; the first match wins.
+MV_SUBTYPES = (
+    ("hylyt (puu)", "wooden wreck"), ("hylyt (metalli)", "metal wreck"), ("hyly", "wreck"),
+    ("löytöpaik", "find spot"), ("taisteluhau", "trenches"), ("juoksuhau", "trenches"),
+    ("tykkiasem", "gun positions"), ("tykkipatter", "gun batteries"), ("patteri", "gun batteries"),
+    ("ampumapes", "firing positions"), ("ampuma-asem", "firing positions"), ("konekivä", "machine-gun nests"),
+    ("bunkk", "bunkers"), ("betonilinn", "concrete bunkers"), ("korsu", "dugouts"),
+    ("linnoit", "fortifications"), ("varustu", "fortifications"), ("linna", "castle"), ("valli", "ramparts"),
+    ("kivirakente", "stone structures"), ("kivilaite", "stone structures"), ("kasarm", "barracks"),
+    ("luola", "caves and tunnels"), ("tunnel", "tunnels"), ("panssariest", "tank obstacles"),
+    ("este", "obstacles"), ("tähysty", "observation posts"), ("kuop", "pits"), ("kaivann", "pits"),
+    ("varikko", "depot"), ("ruutikellar", "powder magazine"), ("kellar", "cellars"),
+)
 HERITAGE_Z = 7  # heritage sites are few, so they're fetched for whole zoom-7 tiles at once
 HERITAGE_REGIONS = 6  # regions kept in RAM
 
 # Zoom from which each layer is drawn.
+DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
+COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 13, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": 11, "sector": 11, "shore": 12, "light": 13,
                "rock": 12, "rockarea": 12, "wreck": 12, "name": 11, "heritage": 11}
@@ -776,8 +791,9 @@ def build_block(bx: int, by: int, layers: dict[str, list[dict]]) -> dict[str, La
 
 
 def heritage_props(feature: dict) -> tuple | None:
-    """A Museovirasto site as (register id, name, class, kind, dating, position accuracy).
-    Kind: 1 wooden wreck, 2 metal wreck, 3 other or unknown wreck, 4 other underwater site."""
+    """A Museovirasto site as (register id, name, class, kind, dating, position accuracy,
+    sub-type in English). Kind: 1 wooden wreck, 2 metal wreck, 3 other or unknown wreck,
+    4 other underwater site, 5 defence site on land (bunkers, trenches, gun positions)."""
     p = {k.lower(): v for k, v in (feature.get("properties") or {}).items()}
     site = _int(p.get("mjtunnus"))
     if site is None:
@@ -790,6 +806,8 @@ def heritage_props(feature: dict) -> tuple | None:
         kind = 2
     elif "hyly" in kinds or "hyly" in sub or "haaksirikko" in sub:
         kind = 3
+    elif "puolustus" in kinds and str(p.get("vedenalainen") or "").lower() != "k":
+        kind = 5
     else:
         kind = 4
 
@@ -797,7 +815,56 @@ def heritage_props(feature: dict) -> tuple | None:
         v = str(p.get(key) or "").strip()
         return v or None
 
-    return site, text("kohdenimi"), int(p.get("_class", 2)), kind, text("ajoitus"), text("paikannustarkkuus")
+    return (site, text("kohdenimi"), int(p.get("_class", 2)), kind, text("ajoitus"), text("paikannustarkkuus"),
+            _subtype(sub))
+
+
+def _subtype(sub: str) -> str | None:
+    """Museovirasto's sub-types ("tykkiasemat, taisteluhaudat") in English."""
+    out: list[str] = []
+    for part in sub.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name = next((en for fi, en in MV_SUBTYPES if fi in part), part)
+        if name not in out:
+            out.append(name)
+    return ", ".join(out) or None
+
+
+def coastal_filter(sites: Layer, depth: Layer | None) -> Layer:
+    """Drop land sites (kind 5) further than COAST_REACH from the sea, so only the coast and
+    islands show defences. Depth area edges mark the shore; edges where a depth area was cut
+    at the block margin are not shore."""
+    if not any(sites.props[sites.pi[i]][3] == 5 for i in range(sites.n)):
+        return sites
+    cell = COAST_REACH // 2
+    shore: set[tuple[int, int]] = set()
+    if depth is not None:
+        margin = UNITS * TILE_BUFFER / EXTENT
+        lo, hi = round(-margin), round(UNITS + margin)
+        co = depth.co
+        for i in range(depth.n):
+            for r in depth.rings(i):
+                v0, v1 = depth.vo[r], depth.vo[r + 1]
+                for v in range(v0, v1):
+                    w = v + 1 if v + 1 < v1 else v0
+                    ax, ay, bx, by = co[2 * v], co[2 * v + 1], co[2 * w], co[2 * w + 1]
+                    if (ax == bx and (ax <= lo or ax >= hi)) or (ay == by and (ay <= lo or ay >= hi)):
+                        continue
+                    steps = max(abs(bx - ax), abs(by - ay)) // cell + 1
+                    for k in range(steps + 1):
+                        shore.add((int(ax + (bx - ax) * k / steps) // cell, int(ay + (by - ay) * k / steps) // cell))
+    b = LayerBuilder("point")
+    for i in range(sites.n):
+        props = sites.props[sites.pi[i]]
+        x, y = sites.co[2 * i], sites.co[2 * i + 1]
+        if props[3] == 5:
+            cx, cy = x // cell, y // cell
+            if not any((cx + dx, cy + dy) in shore for dx in (-2, -1, 0, 1, 2) for dy in (-2, -1, 0, 1, 2)):
+                continue
+        b.point(props, x, y)
+    return b.layer
 
 
 
@@ -1035,19 +1102,23 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
 
 
 def _heritage_rows(rows: list, wrecks, z: int) -> list:
-    """Wrecks and underwater sites: [x, y, id, name, class, kind, dating, accuracy, dup].
-    dup 1: a chart wreck is drawn at the same spot. Thinned when zoomed out, protected
-    wrecks first."""
+    """Wrecks, underwater sites and coastal defences:
+    [x, y, id, name, class, kind, dating, accuracy, dup, sub-type]. dup 1: a chart wreck is
+    drawn at the same spot. Thinned when zoomed out, protected wrecks first."""
     rows = sorted(rows, key=lambda r: (r[2][2] != 0, r[2][3] > 3, r[2][0]))
     out, cells = [], set()
-    for px, py, (site, name, cls, kind, dating, acc) in rows:
+    for px, py, props in rows:
+        site, name, cls, kind, dating, acc = props[:6]
+        sub = props[6] if len(props) > 6 else None
+        if kind == 5 and z < DEFENCE_MIN_Z:
+            continue
         if z <= 11:
             cell = (px // 64, py // 64)
             if cell in cells:
                 continue
             cells.add(cell)
         dup = 1 if kind <= 3 and z >= 12 and any(abs(wx - px) <= 12 and abs(wy - py) <= 12 for wx, wy, _ in wrecks) else 0
-        out.append([px, py, site, name, cls, kind, dating, acc, dup])
+        out.append([px, py, site, name, cls, kind, dating, acc, dup, sub])
     return out
 
 
@@ -1230,6 +1301,7 @@ class VectorChart:
         self._failed: dict[tuple, float] = {}
         self._missing: dict[Path, tuple[float, bool]] = {}  # file -> (mtime, some layer failed)
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
+        self._coast: OrderedDict[tuple[int, int], tuple] = OrderedDict()  # block -> (region, coastal sites)
         self._logged_props: set[str] = set()
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
@@ -1340,7 +1412,7 @@ class VectorChart:
         blocks = {}
         for key, data in zip(keys, loaded):
             if data is not None and z >= LAYER_MIN_Z["heritage"]:
-                data = {**data, "heritage": self._heritage_layer(*key)}
+                data = {**data, "heritage": await self._coastal_sites(key, data)}
             blocks[key] = data
         async with self._cutting:  # one tile cut at a time keeps the web server responsive
             tile = await asyncio.to_thread(make_tile, z, x, y, blocks)
@@ -1646,7 +1718,7 @@ class VectorChart:
 
     async def _load_region(self, rx: int, ry: int) -> bool:
         """Heritage sites of a zoom-7 region into memory, fetched once a month."""
-        path = self.dir / "heritage" / f"{rx}_{ry}.json.gz"
+        path = self.dir / "heritage" / f"{rx}_{ry}.v2.json.gz"  # v2 adds coastal defences
         age = _age(path)
         rows = None
         failed = time.time() - self._failed.get(("heritage", rx, ry), 0) < FAILED_RETRY
@@ -1656,7 +1728,7 @@ class VectorChart:
                 self._failed[("heritage", rx, ry)] = time.time()
             else:
                 try:
-                    await asyncio.to_thread(_write_json, path, {"v": 1, "rows": rows})
+                    await asyncio.to_thread(_write_json, path, {"v": 2, "rows": rows})
                 except OSError as err:
                     _LOGGER.warning("Could not store heritage sites: %s", err)
         if rows is None and age is not None:
@@ -1702,9 +1774,10 @@ class VectorChart:
         return rows
 
     async def _fetch_heritage(self, bbox: tuple[float, float, float, float]) -> list[dict]:
-        """Underwater sites and wrecks from each of Museovirasto's register layers."""
+        """Underwater sites, wrecks and defence sites from each of Museovirasto's register
+        layers. Defences come for land too; the tiles keep only those near the sea."""
         x0, y0, x1, y1 = bbox
-        cql = (f"(vedenalainen ILIKE 'k' OR tyyppi LIKE '%hyly%') AND "
+        cql = (f"(vedenalainen ILIKE 'k' OR tyyppi ILIKE '%hyly%' OR tyyppi ILIKE '%puolustus%') AND "
                f"BBOX(Shape,{x0:.1f},{y0:.1f},{x1:.1f},{y1:.1f},'EPSG:3857')")
         features: list[dict] = []
         failed: list[str] = []
@@ -1732,6 +1805,20 @@ class VectorChart:
                 raise aiohttp.ClientError("; ".join(failed))
             _LOGGER.info("Some heritage layers were left out: %s", "; ".join(failed))
         return features
+
+    async def _coastal_sites(self, key: tuple[int, int], data: dict) -> Layer:
+        """A block's heritage sites with inland defences left out, worked out once per block
+        (and again when its region is reloaded)."""
+        region = self._regions.get(self._region(*key))
+        hit = self._coast.get(key)
+        if hit is not None and hit[0] is region:
+            self._coast.move_to_end(key)
+            return hit[1]
+        layer = await asyncio.to_thread(coastal_filter, self._heritage_layer(*key), data.get("depth"))
+        self._coast[key] = (region, layer)
+        while len(self._coast) > MEMORY_BLOCKS:
+            self._coast.popitem(last=False)
+        return layer
 
     def _heritage_layer(self, bx: int, by: int) -> Layer:
         """A block's heritage sites (block units, with the usual point margin)."""

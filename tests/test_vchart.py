@@ -461,6 +461,40 @@ def test_heritage_sites(tmp_path):
     assert "Museovirasto" in chart.status()["attribution"]
 
 
+def test_coastal_defences(tmp_path):
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+        island13, _ = await chart.tile(*tile_at(60.011, 24.404, 13))
+        island12, _ = await chart.tile(*tile_at(60.011, 24.404, 12))
+        inland, _ = await chart.tile(*tile_at(60.30, 24.40, 13))
+        return island13, island12, inland
+
+    island13, island12, inland = asyncio.run(run())
+    gun = next(h for h in island13["heritage"] if h[2] == 2101)
+    assert gun[5] == 5 and gun[9] == "gun positions, trenches" and gun[8] == 0
+    assert not any(h[5] == 5 for h in island12.get("heritage", ()))  # land sites only up close
+    assert not any(h[2] == 2103 for h in inland.get("heritage", ()))  # far from the sea
+
+
+def test_coastal_filter_keeps_sites_near_the_shore():
+    sea = vchart.layers_from_rows({"depth": [[[5, 10], None, [[(0, 0), (30000, 0), (30000, 65536), (0, 65536)]]]]})["depth"]
+    b = vchart.LayerBuilder("point")
+    shore, inland, wreck = (1, None, 1, 5, None, None, "bunkers"), (2, None, 1, 5, None, None, None), \
+        (3, None, 0, 1, None, None, None)
+    b.point(shore, 31500, 20000)
+    b.point(inland, 60000, 20000)
+    b.point(wreck, 62000, 40000)  # wrecks are kept wherever they are
+    kept = vchart.coastal_filter(b.layer, sea)
+    assert [kept.props[kept.pi[i]][0] for i in range(kept.n)] == [1, 3]
+
+
+def test_subtypes_in_english():
+    assert vchart._subtype("tykkiasemat, taisteluhaudat, tykkiasemat") == "gun positions, trenches"
+    assert vchart._subtype("hylyt (metalli)") == "metal wreck"
+    assert vchart._subtype("kummalliset") == "kummalliset"
+    assert vchart._subtype("") is None
+
+
 def test_too_big_pages_are_asked_for_in_halves(tmp_path):
     counts = []
 
