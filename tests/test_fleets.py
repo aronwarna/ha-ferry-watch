@@ -53,7 +53,7 @@ def test_fleet_manager(tmp_path):
     assert not fm.update({})  # an empty vessel list doesn't wipe the fleets
 
     again = FleetManager(store)  # survives a restart
-    assert again.enabled == {"tallink", "viking", "finferries", "followed"}
+    assert again.enabled == {"tallink", "viking", "finferries", "eckero", "followed"}
     assert set(again.members) == {1, 2, 3}
     summary = {f["id"]: f for f in again.summary()}
     assert summary["tallink"]["members"] == [1, 3] and not summary["finnlines"]["enabled"]
@@ -113,7 +113,7 @@ def test_followed_ships_and_new_fleets(tmp_path):
     store = Store(tmp_path / "t.db")
     store.kv_set("fleets_enabled", ["tallink"])  # saved by an older version
     fm = FleetManager(store)
-    assert fm.enabled == {"tallink", "finferries", "followed"}  # fleets new in this version start on
+    assert fm.enabled == {"tallink", "finferries", "eckero", "followed"}  # fleets new since then start on
     assert fm.updated_ts == 0  # changed fleet lists are matched again right away
     fm.follow(40, "Aranda")
     fm.update({1: {"fleet": "tallink", "name": "Megastar"}})
@@ -141,3 +141,41 @@ def test_rescue_and_icebreakers_are_finnish_and_start_off(tmp_path):
     }
     fm = FleetManager(Store(tmp_path / "t.db"))
     assert "rescue" not in fm.enabled and "icebreakers" not in fm.enabled
+
+
+def sized(mmsi, name, ship_type, length, age_days=0):
+    v = vessel(mmsi, name, ship_type, age_days)
+    v["referencePointA"], v["referencePointB"] = length - 20, 20
+    return v
+
+
+def test_new_groups():
+    members = match_fleets([
+        sized(311000001, "SEABOURN OVATION", 60, 300),  # Bahamas flag: a cruise ship
+        sized(230000002, "BIG FINNISH FERRY", 60, 200),  # Finnish flag: not a cruise ship
+        sized(311000003, "OLD CRUISER", 60, 250, age_days=30),  # not seen for a month
+        sized(311000004, "SMALL CRUISER", 60, 120),  # too small
+        vessel(230000005, "LUOTSI 1", ship_type=50),
+        vessel(230000006, "HECTOR", ship_type=52),
+        vessel(276000007, "FINLANDIA", ship_type=69),
+        vessel(230000008, "FINLANDIA", ship_type=37),  # a yacht of the same name
+        vessel(230000009, "EHRENSVÄRD", ship_type=60),
+        vessel(276000010, "STAR", ship_type=60),
+        vessel(230000011, "STAR", ship_type=37),  # a yacht called Star stays out of Tallink
+        vessel(230000012, "POLARIS", ship_type=52),  # icebreakers come before tugs
+    ])
+    assert members == {
+        311000001: {"fleet": "cruise", "name": "Seabourn Ovation"},
+        230000005: {"fleet": "harbour", "name": "Luotsi 1"},
+        230000006: {"fleet": "harbour", "name": "Hector"},
+        276000007: {"fleet": "eckero", "name": "Finlandia"},
+        230000009: {"fleet": "suomenlinna", "name": "Ehrensvärd"},
+        276000010: {"fleet": "tallink", "name": "Star"},
+        230000012: {"fleet": "icebreakers", "name": "Polaris"},
+    }
+
+
+def test_new_groups_start_off_except_eckero(tmp_path):
+    fm = FleetManager(Store(tmp_path / "t.db"))
+    assert "eckero" in fm.enabled
+    assert not {"cruise", "harbour", "suomenlinna"} & fm.enabled

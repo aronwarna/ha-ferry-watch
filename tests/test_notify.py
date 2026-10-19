@@ -185,3 +185,43 @@ def test_two_inner_lines_alert_once_per_trip_with_direction(tmp_path, monkeypatc
     assert len(fw.ha.calls) == 1 and fw.ha.calls[0][1]["message"].startswith("Towards Stockholm")
     notes = {r["mmsi"]: r["note"] for r in store.passages()}
     assert notes[230000999] == "alerts off for this ship"
+
+
+class StubWeather:
+    def __init__(self, conditions):
+        self.cond = conditions
+        self.refreshes = 0
+
+    def start_refresh(self, max_age):
+        self.refreshes += 1
+
+    async def latest(self, max_age, wait=None):
+        return self.cond
+
+    def conditions(self):
+        return self.cond
+
+
+def test_alert_has_sea_conditions_and_passage_keeps_wind(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    now = time.time()
+    fw.weather = StubWeather({"wind": {"ms": 9.0, "gust": 13.0, "dir": 225.0, "ts": now - 300},
+                              "visibility": {"km": 20.0, "weather": None, "ts": now - 300}})
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    first, second = fw.ha.calls[-1][1]["message"].split("\n")
+    assert first.startswith("Towards Stockholm, 17 kn.")
+    assert second.startswith("Wind SW 9 m/s (gusts 13), visibility 20 km, sun") and second.endswith(".")
+    assert fw.weather.refreshes == 1  # started while the phone's location was looked up
+    row = fw.store.passages()[0]
+    assert (row["wind_ms"], row["gust_ms"], row["wind_dir"]) == (9.0, 13.0, 225.0)
+
+
+def test_stale_wind_is_left_out(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    fw.weather = StubWeather({"wind": {"ms": 9.0, "gust": None, "dir": 225.0, "ts": time.time() - 3 * 3600}})
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    second = fw.ha.calls[-1][1]["message"].split("\n")[1]
+    assert second.startswith("Sun")  # only the sun time
+    assert fw.store.passages()[0]["wind_ms"] is None

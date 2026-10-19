@@ -42,8 +42,9 @@ def test_csv(tmp_path):
     store = Store(tmp_path / "t.db")
     store.add_ship(1, "Silja Serenade", "#111111")
     passage(store, 1, 1_790_000_000, notified=True, note="sent")
-    passage(store, 1, 1_790_050_000, route="outer", direction="east", note="outer route")
+    pid = passage(store, 1, 1_790_050_000, route="outer", direction="east", note="outer route")
+    store.set_passage_wind(pid, 8.36, 11.0, 225.0)
     rows = list(csv.reader(io.StringIO(stats.to_csv(store))))
-    assert rows[0] == ["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert"]
-    assert rows[1][1:] == ["Silja Serenade", "1", "outer", "towards Helsinki", "17.2", "outer route"]
-    assert rows[2][1:] == ["Silja Serenade", "1", "inner", "towards Stockholm", "17.2", "sent"]
+    assert rows[0] == ["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert", "wind_ms", "wind_dir"]
+    assert rows[1][1:] == ["Silja Serenade", "1", "outer", "towards Helsinki", "17.2", "outer route", "8.4", "225"]
+    assert rows[2][1:] == ["Silja Serenade", "1", "inner", "towards Stockholm", "17.2", "sent", "", ""]

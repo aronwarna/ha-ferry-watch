@@ -16,23 +16,29 @@ from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
-from .fleets import FleetManager, match_fleets
+from .faults import Faults
+from .fleets import FleetManager, FleetMatcher
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
-from .ha import HAClient, HAPublisher
-from .notify import Notifier
+from .geo import sun_info
+from .ha import HAClient, HAPublisher, NextPassageSensor
+from .notify import Notifier, sun_place
 from .passages import Detector
 from .photos import PhotoCache
+from .predict import Predictor
 from .store import Store
 from .tilecache import TileCache
 from .tracker import Tracker
+from .traffic import Traffic
 from .vchart import VectorChart
+from .weather import SeaWeather
 from .web import Web
 
 _LOGGER = logging.getLogger("ferrywatch")
 
 HOUSEKEEPING_INTERVAL = 6 * 3600
 HA_SENSOR_INTERVAL = 30 * 60
+PANEL_TICK = 60  # s between sea-condition checks and phone reads while a panel is open
 FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
 FLEET_REFRESH = 24 * 3600
 SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
@@ -54,6 +60,9 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.notifier = Notifier(self)
         self.detector = Detector(self.store, self.notifier.on_passage)
+        self.predictor = Predictor(self.store, self._next_passage_changed)
+        self.next_sensor: NextPassageSensor | None = None
+        self._background: set[asyncio.Task] = set()
         self.session: aiohttp.ClientSession | None = None
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
@@ -66,6 +75,10 @@ class FerryWatch:
         self.tiles: TileCache | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
+        self.weather: SeaWeather | None = None
+        self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
+        self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
+        self._wakers: list[asyncio.Event] = []
         self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
         self._keep_task: asyncio.Task | None = None
         self.tasks: list[asyncio.Task] = []
@@ -92,13 +105,22 @@ class FerryWatch:
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
-        fake_chart = None
+        fake_chart = fake_fmi = fake_faults = fake_traffic = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
+            from .simulate import fake_fmi_fetch as fake_fmi
+            from .simulate import fake_faults_fetch as fake_faults
+            from .simulate import fake_traffic_fetch as fake_traffic
+        self.weather = SeaWeather(self.session, fake_fmi)
+        # Both only answer the panel's requests: nothing runs while no one looks.
+        self.faults = Faults(self.session, fake_faults)
+        self.traffic = Traffic(self.session, self.store,
+                               lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
+        self.tracker.subscribe(self.predictor.on_event)  # before the panel, which shows its result
         self.tracker.subscribe(self.web.on_event)
         self.tracker.subscribe(self.detector.on_event)
         self.fleet_tracker.subscribe(self.web.on_fleet_event)
@@ -109,11 +131,13 @@ class FerryWatch:
         if os.environ.get("FW_FAKE_HA") == "1":
             from .simulate import FakeHA
             self.ha = FakeHA()
+            self.next_sensor = NextPassageSensor(self.ha)
         elif SUPERVISOR_TOKEN and not DEV:
             self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
             if self.options.ha_entities:
+                self.next_sensor = NextPassageSensor(self.ha)
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
                 self.tasks.append(asyncio.create_task(self.publisher.run()))
@@ -124,9 +148,11 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import FLEET_MEMBERS, run_simulation, seed_history, simulate_aircraft
+            from .simulate import FLEET_MEMBERS, fake_vessel_list, run_simulation, seed_history, simulate_aircraft
             if os.environ.get("FW_SIM_HISTORY") == "1":
                 seed_history(self.store)
+            self.feed.vessel_list_source = fake_vessel_list
+            await self.feed.refresh_directory()
             self.fleets.update(FLEET_MEMBERS)
             self.fleet_tracker.load()
             self.tasks.append(asyncio.create_task(run_simulation(self.tracker, self.fleet_tracker)))
@@ -137,6 +163,8 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:
             self._start_keeping()
 
@@ -157,17 +185,21 @@ class FerryWatch:
 
     async def _refresh_fleets_daily(self) -> None:
         while True:
-            if time.time() - self.fleets.updated_ts >= FLEET_REFRESH:
+            if time.time() - self.fleets.updated_ts >= FLEET_REFRESH or not self.store.vessel_count():
                 await self.refresh_fleets()
             await asyncio.sleep(3600)
 
     async def refresh_fleets(self) -> None:
-        """Work out fleet membership from Digitraffic's vessel list."""
+        """Work out fleet membership from Digitraffic's vessel list, which also refreshes
+        the vessel directory used by ship search."""
+        matcher = FleetMatcher()
         try:
-            members = match_fleets(await self.feed.vessels(cache=False))
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            count = await self.feed.refresh_directory(matcher)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
             _LOGGER.warning("Could not update the fleets: %s", err)
             return
+        _LOGGER.info("Vessel directory: %s vessels", count)
+        members = matcher.result()
         if self.fleets.update(members):
             _LOGGER.info("Fleets: %s ships", len(members))
             await self.fleets_changed()
@@ -216,6 +248,56 @@ class FerryWatch:
             self._keep_task = None
             self._start_keeping()
 
+    # --- while a panel is open: sea conditions and the phone's position ----------------
+
+    def panel_opened(self) -> None:
+        """A panel connected: check the sea conditions and the phone now, not in a minute."""
+        for wake in self._wakers:
+            wake.set()
+
+    async def _while_panel_open(self, tick) -> None:
+        wake = asyncio.Event()
+        self._wakers.append(wake)
+        while True:
+            if self.web.sockets:
+                try:
+                    await tick()
+                except Exception:  # noqa: BLE001 - keep the loop alive
+                    _LOGGER.exception("Panel update failed")
+            try:
+                await asyncio.wait_for(wake.wait(), PANEL_TICK)
+            except asyncio.TimeoutError:
+                pass
+            wake.clear()
+
+    async def _weather_tick(self) -> None:
+        if not self.weather_enabled:
+            return
+        before = self.weather.fetched
+        await self.weather.latest()
+        if self.weather.fetched != before:
+            self.web.broadcast({"type": "weather", "weather": self.weather_state()})
+
+    async def _phone_tick(self) -> None:
+        if not self.ha or not self.options.phone_entity:
+            return
+        fix = await self.ha.phone_state(self.options.phone_entity)
+        phone = {**fix, "max_age": self.options.phone_max_age_minutes * 60} if fix else None
+        if phone != self.phone:
+            self.phone = phone
+            self.web.broadcast({"type": "phone", "phone": phone})
+
+    def weather_state(self) -> dict[str, Any]:
+        cond = self.weather.conditions() if self.weather and self.weather_enabled else {}
+        return {**cond, "enabled": self.weather_enabled, "sun": sun_info(*sun_place(self.store))}
+
+    async def set_weather(self, on: bool) -> None:
+        self.weather_enabled = on
+        self.store.kv_set("weather_enabled", on)
+        if on:
+            self.panel_opened()
+        self.web.broadcast({"type": "weather", "weather": self.weather_state()})
+
     async def set_aircraft(self, on: bool) -> None:
         self.aircraft_enabled = on
         self.store.kv_set("aircraft_enabled", on)
@@ -241,9 +323,33 @@ class FerryWatch:
         while True:
             try:
                 await self.notifier.publish_last_inner()
+                await self._publish_next_passage(force=True)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.debug("Could not update the last passage sensor: %s", err)
+                _LOGGER.debug("Could not update the passage sensors: %s", err)
             await asyncio.sleep(HA_SENSOR_INTERVAL)
+
+    def spawn(self, coro) -> asyncio.Task:
+        """Run a coroutine in the background, keeping a reference until it finishes."""
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    def _next_passage_changed(self) -> None:
+        if self.next_sensor:
+            self.spawn(self._publish_next_passage())
+
+    async def _publish_next_passage(self, force: bool = False) -> None:
+        """sensor.ferry_watch_next_passage, for the ships with alerts on."""
+        if not self.next_sensor:
+            return
+        alerting = {s["mmsi"]: s["name"] for s in self.store.ships() if self.store.alerts_on(s["mmsi"])}
+        best = self.predictor.soonest(set(alerting))
+        mmsi, prediction = best if best else (None, None)
+        try:
+            await self.next_sensor.update(alerting.get(mmsi), mmsi, prediction, force=force)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("Could not update the next passage sensor: %s", err)
 
     async def _housekeeping(self) -> None:
         while True:
@@ -272,6 +378,7 @@ class FerryWatch:
                 **self.tracker.ship_summary(ship["mmsi"]),
                 "name": ship["name"],
                 "color": ship["color"],
+                "next_passage": self.predictor.get(ship["mmsi"]),
                 "alerts": self.store.alerts_on(ship["mmsi"]),
                 "photo": self.photos.public_info(ship["mmsi"]) if self.photos else None,
             })
@@ -295,6 +402,9 @@ class FerryWatch:
             "vchart": self.vchart.status() if self.vchart else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
+            "weather": self.weather_state(),
+            "phone": self.phone,
+            "memory_mb": memory_mb(),
             "aircraft": {
                 "enabled": self.aircraft_enabled,
                 "error": self.aircraft.error if self.aircraft else None,
@@ -366,6 +476,18 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.feed.sync_subscriptions()
         await self.web.broadcast_ships()
+
+
+def memory_mb() -> float | None:
+    """This process's resident memory (VmRSS), for the panel's settings."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 async def main() -> None:

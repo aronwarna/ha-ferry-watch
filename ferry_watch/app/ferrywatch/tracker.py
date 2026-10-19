@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .geo import angle_diff, nearest_port
@@ -24,6 +25,9 @@ STORE_INTERVAL_MOVING = 30  # seconds between stored points while under way
 STORE_INTERVAL_STOPPED = 300  # seconds between stored points while stopped
 TURN_DEGREES = 15  # store early when the course changes this much
 MIN_TURN_INTERVAL = 5
+# The crew-entered AIS ETA is shown from 2 days ahead until an hour after it has passed.
+ETA_SHOWN_AHEAD = 2 * 86400
+ETA_SHOWN_PAST = 3600
 
 Listener = Callable[[str, dict[str, Any]], None]
 
@@ -61,6 +65,28 @@ def parse_location(mmsi: int, data: dict[str, Any]) -> Position | None:
     return Position(mmsi=mmsi, ts=ts, lat=lat, lon=lon, sog=sog, cog=cog, heading=heading)
 
 
+def decode_eta(packed: Any, now: float | None = None) -> int | None:
+    """AIS ETA (UTC month, day, hour and minute packed in bits 19-0, no year) as a
+    timestamp, taking the year that puts it nearest to now; None when not given."""
+    if not isinstance(packed, int) or packed <= 0:
+        return None
+    month, day = (packed >> 16) & 0xF, (packed >> 11) & 0x1F
+    hour, minute = (packed >> 6) & 0x1F, packed & 0x3F
+    if not (1 <= month <= 12 and day >= 1 and hour < 24 and minute < 60):
+        return None
+    now = time.time() if now is None else now
+    year = datetime.fromtimestamp(now, timezone.utc).year
+    best = None
+    for y in (year - 1, year, year + 1):
+        try:
+            ts = datetime(y, month, day, hour, minute, tzinfo=timezone.utc).timestamp()
+        except ValueError:  # 30 February and the like
+            continue
+        if best is None or abs(ts - now) < abs(best - now):
+            best = ts
+    return int(best) if best is not None else None
+
+
 def parse_metadata(data: dict[str, Any]) -> dict[str, Any]:
     def clean(value: Any) -> Any:
         if isinstance(value, str):
@@ -75,6 +101,9 @@ def parse_metadata(data: dict[str, Any]) -> dict[str, Any]:
         "imo": data.get("imo") or None,
         "call_sign": clean(data.get("callSign")),
         "ship_type": data.get("type"),
+        "eta_ts": decode_eta(data.get("eta")),
+        # In tenths of a metre; 0 means not given.
+        "draught": draught / 10 if isinstance((draught := data.get("draught")), (int, float)) and draught > 0 else None,
         # Metadata timestamps are milliseconds, location timestamps seconds.
         "updated_ts": int(ts / 1000) if isinstance(ts, (int, float)) else int(time.time()),
     }
@@ -220,4 +249,6 @@ class Tracker:
             "voyage_from": state.voyage_from,
             "destination": state.meta.get("destination"),
             "ais_name": state.meta.get("name"),
+            "eta_ais": eta if (eta := state.meta.get("eta_ts")) and time.time() - ETA_SHOWN_PAST < eta < time.time() + ETA_SHOWN_AHEAD else None,
+            "draught": state.meta.get("draught"),
         }

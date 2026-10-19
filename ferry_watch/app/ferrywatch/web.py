@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
+FLEET_PUSH_SECONDS = 5
 
 
 @web.middleware
@@ -68,6 +69,8 @@ class Web:
     def __init__(self, fw: FerryWatch):
         self.fw = fw
         self.sockets: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
+        self._fleet_pushed: dict[int, float] = {}  # mmsi -> when its last position went out
+        self._fleet_pending: set[int] = set()
         self.app = web.Application(middlewares=[ingress_only], client_max_size=10 * 1024 * 1024)
         r = self.app.router
         r.add_get("/", self.index)
@@ -94,6 +97,9 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
+        r.add_post("/api/weather", self.set_weather)
+        r.add_get("/api/faults", self.faults)
+        r.add_get("/api/traffic", self.traffic)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
@@ -254,7 +260,7 @@ class Web:
         return web.json_response({"ok": True})
 
     async def search(self, request: web.Request) -> web.Response:
-        return web.json_response(await self.fw.feed.search(request.query.get("q", "")))
+        return web.json_response(self.fw.feed.search(request.query.get("q", "")[:60]))
 
     # --- zones and passages ---------------------------------------------
 
@@ -330,6 +336,25 @@ class Web:
         await self.fw.set_aircraft(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
+    async def set_weather(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        await self.fw.set_weather(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
+    async def faults(self, request: web.Request) -> web.Response:
+        return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
+
+    async def traffic(self, request: web.Request) -> web.Response:
+        try:
+            lat, lon = float(request.query["lat"]), float(request.query["lon"])
+            radius = float(request.query.get("r", 30))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="lat, lon and r are needed")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or radius != radius:
+            raise web.HTTPBadRequest(text="lat, lon and r are needed")
+        ships = await self.fw.traffic.around(lat, lon, radius)
+        return web.json_response({"ships": ships, "error": self.fw.traffic.error})
+
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()
         await self.fw.set_vchart_keep(bool(body.get("enabled")))
@@ -362,6 +387,7 @@ class Web:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         self.sockets.add(ws)
+        self.fw.panel_opened()
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.ERROR:
@@ -372,14 +398,37 @@ class Web:
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if self.sockets:
-            self._send({"type": kind, "ship": payload})
+            self._send({"type": kind, "ship": {**payload, "next_passage": self.fw.predictor.get(payload["mmsi"])}})
 
     def on_fleet_event(self, kind: str, payload: dict[str, Any]) -> None:
-        if self.sockets:
-            self._send({"type": kind, "ship": self.fw.fleet_summary(payload["mmsi"])})
+        # Fleet ships report every few seconds; the panel gets at most one position per ship
+        # per FLEET_PUSH_SECONDS (the latest one, once the time is up). My own ships, and so
+        # the alert ferries, go through on_event at full rate.
+        if not self.sockets:
+            return
+        mmsi = payload["mmsi"]
+        if kind == "position":
+            wait = self._fleet_pushed.get(mmsi, 0.0) + FLEET_PUSH_SECONDS - time.monotonic()
+            if wait > 0:
+                if mmsi not in self._fleet_pending:
+                    self._fleet_pending.add(mmsi)
+                    asyncio.get_running_loop().call_later(wait, self._push_fleet, mmsi, kind)
+                return
+        self._push_fleet(mmsi, kind)
+
+    def _push_fleet(self, mmsi: int, kind: str) -> None:
+        self._fleet_pending.discard(mmsi)
+        if mmsi not in self.fw.fleet_tracker.ships:
+            return
+        self._fleet_pushed[mmsi] = time.monotonic()
+        self._send({"type": kind, "ship": self.fw.fleet_summary(mmsi)})
 
     def broadcast_aircraft(self, aircraft: list[dict[str, Any]]) -> None:
         self._send({"type": "aircraft", "aircraft": aircraft})
+
+    def broadcast(self, message: dict[str, Any]) -> None:
+        if self.sockets:
+            self._send(message)
 
     async def broadcast_ships(self) -> None:
         self._send({"type": "reload"})
