@@ -19,10 +19,11 @@ from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .fleets import FleetManager, FleetMatcher
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
-from .ha import HAClient, HAPublisher
+from .ha import HAClient, HAPublisher, NextPassageSensor
 from .notify import Notifier
 from .passages import Detector
 from .photos import PhotoCache
+from .predict import Predictor
 from .store import Store
 from .tilecache import TileCache
 from .tracker import Tracker
@@ -54,6 +55,9 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.notifier = Notifier(self)
         self.detector = Detector(self.store, self.notifier.on_passage)
+        self.predictor = Predictor(self.store, self._next_passage_changed)
+        self.next_sensor: NextPassageSensor | None = None
+        self._background: set[asyncio.Task] = set()
         self.session: aiohttp.ClientSession | None = None
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
@@ -99,6 +103,7 @@ class FerryWatch:
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
+        self.tracker.subscribe(self.predictor.on_event)  # before the panel, which shows its result
         self.tracker.subscribe(self.web.on_event)
         self.tracker.subscribe(self.detector.on_event)
         self.fleet_tracker.subscribe(self.web.on_fleet_event)
@@ -109,11 +114,13 @@ class FerryWatch:
         if os.environ.get("FW_FAKE_HA") == "1":
             from .simulate import FakeHA
             self.ha = FakeHA()
+            self.next_sensor = NextPassageSensor(self.ha)
         elif SUPERVISOR_TOKEN and not DEV:
             self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
             if self.options.ha_entities:
+                self.next_sensor = NextPassageSensor(self.ha)
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
                 self.tasks.append(asyncio.create_task(self.publisher.run()))
@@ -247,9 +254,33 @@ class FerryWatch:
         while True:
             try:
                 await self.notifier.publish_last_inner()
+                await self._publish_next_passage(force=True)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.debug("Could not update the last passage sensor: %s", err)
+                _LOGGER.debug("Could not update the passage sensors: %s", err)
             await asyncio.sleep(HA_SENSOR_INTERVAL)
+
+    def spawn(self, coro) -> asyncio.Task:
+        """Run a coroutine in the background, keeping a reference until it finishes."""
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    def _next_passage_changed(self) -> None:
+        if self.next_sensor:
+            self.spawn(self._publish_next_passage())
+
+    async def _publish_next_passage(self, force: bool = False) -> None:
+        """sensor.ferry_watch_next_passage, for the ships with alerts on."""
+        if not self.next_sensor:
+            return
+        alerting = {s["mmsi"]: s["name"] for s in self.store.ships() if self.store.alerts_on(s["mmsi"])}
+        best = self.predictor.soonest(set(alerting))
+        mmsi, prediction = best if best else (None, None)
+        try:
+            await self.next_sensor.update(alerting.get(mmsi), mmsi, prediction, force=force)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("Could not update the next passage sensor: %s", err)
 
     async def _housekeeping(self) -> None:
         while True:
@@ -278,6 +309,7 @@ class FerryWatch:
                 **self.tracker.ship_summary(ship["mmsi"]),
                 "name": ship["name"],
                 "color": ship["color"],
+                "next_passage": self.predictor.get(ship["mmsi"]),
                 "alerts": self.store.alerts_on(ship["mmsi"]),
                 "photo": self.photos.public_info(ship["mmsi"]) if self.photos else None,
             })

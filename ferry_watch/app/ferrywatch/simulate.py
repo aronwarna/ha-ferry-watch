@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from .geo import distance_m
-from .store import Store
+from .store import Position, Store
 from .tracker import Tracker
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,6 +161,23 @@ def seed_history(store: Store, days: int = 290) -> None:
                 pid = store.add_passage({"mmsi": mmsi, "ts": ts, "route": route, "direction": direction,
                                          "zone_id": None, "lat": 59.98, "lon": 24.4, "sog": 17.0})
                 store.set_passage_result(pid, False, "made-up history")
+                store.set_passage_wind(pid, round(rng.uniform(2, 14), 1), None, rng.choice((45, 135, 225, 270)))
+    # A track for each ship's latest inner passage each way, so next-passage predictions
+    # have something to go on.
+    west = [*OUT_OF_HELSINKI, *INNER_ROUTE]
+    east = west[::-1]
+    for (mmsi, direction), path in [((m, d), west if d == "west" else east)
+                                    for pair in pairs for m in pair for d in ("west", "east")]:
+        p = next((r for r in store.passages(limit=40, route="inner", direction=direction) if r["mmsi"] == mmsi), None)
+        if not p:
+            continue
+        porkkala = path.index(INNER_ROUTE[3])
+        at = sum(distance_m(*a, *b) for a, b in zip(path[:porkkala], path[1:porkkala + 1]))
+        speed = 17.0 * KNOTS
+        for back in range(3 * 3600, -1, -60):
+            (lat, lon), brg, _ = _point_along(path, max(0.0, at - back * speed))
+            store.insert_position(Position(mmsi=p["mmsi"], ts=p["ts"] - back, lat=lat, lon=lon,
+                                           sog=17.0, cog=round(brg, 1), heading=int(brg)))
 
 
 class FakeHA:

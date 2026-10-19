@@ -372,7 +372,7 @@ class Web:
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if self.sockets:
-            self._send({"type": kind, "ship": payload})
+            self._send({"type": kind, "ship": {**payload, "next_passage": self.fw.predictor.get(payload["mmsi"])}})
 
     def on_fleet_event(self, kind: str, payload: dict[str, Any]) -> None:
         # Fleet ships report every few seconds; the panel gets at most one position per ship
