@@ -1515,7 +1515,7 @@
     const color = ZONE_STYLE[zone.role]?.color || "#64748b";
     return editing
       ? { color, weight: zone.shape === "line" ? 5 : 3, opacity: 0.95, fillOpacity: 0.15, dashArray: null }
-      : { color, weight: zone.shape === "line" ? 3 : 1.5, opacity: 0.55, fillOpacity: 0.05, dashArray: "6 6" };
+      : { color, weight: zone.shape === "line" ? 3 : 1.5, opacity: 0.55, fillOpacity: 0, dashArray: "6 6" }; // no fill: it would tint the chart;
   }
 
   function zoneLatLngs(layer, shape) {
