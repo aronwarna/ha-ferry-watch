@@ -1000,7 +1000,7 @@
     renderZones(state.zones || []);
     renderNotifyStatus();
     renderChartKeep();
-    FerryChart.setRev(state.vchart?.rev);
+    FerryChart.setRev(state.vchart?.rev, state.vchart?.min_zoom);
     if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     renderConditions();
     renderPhone();

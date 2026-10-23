@@ -1,14 +1,19 @@
 /* Ferry Watch: the vector nautical chart.
  *
  * Draws the chart tiles the add-on cuts from Traficom's depth data, Väylävirasto's
- * fairway data, the Land Survey's rocks and names and Museovirasto's wreck register
- * (see vchart.py), in the inks, symbols and lettering of Traficom's scanned paper
- * charts. Exposes window.FerryChart.
+ * fairway data, the Land Survey's rocks, names and topography and Museovirasto's wreck
+ * register (see vchart.py), in the inks, symbols and lettering of Traficom's paper charts.
+ *
+ * Geometry, symbols and soundings are drawn into the map tiles. Names, light characters
+ * and other labels are placed once for the whole screen on a canvas above the tiles, so
+ * they never collide across tile edges: each tile hands over its label candidates and the
+ * boxes of its symbols, and the overlay places the labels by importance, each at the best
+ * free spot round its symbol. Exposes window.FerryChart.
  */
 (function () {
   "use strict";
 
-  // The inks of Traficom's scanned paper chart.
+  // The inks of Traficom's paper chart.
   const C = {
     land: "#f9efca",
     coast: "#000000",
@@ -23,21 +28,30 @@
     magenta: "#9d3289",
     magentaLight: "#c47db5",
     red: "#c63541",
-    green: "#64a96f",
+    green: "#5fa86c",
     yellow: "#f2d100",
     black: "#000000",
     brown: "#bea26a",
     fort: "#6b3a4f", // coastal defence sites ashore
+    height: "#c9a978", // land contours
+    heightText: "#9c7a45",
+    lake: "#d6ebf8",
+    buildArea: "#ddd3b4",
+    tssLane: "rgba(157, 50, 137, 0.07)",
+    tssZone: "rgba(157, 50, 137, 0.26)",
+    tssSep: "rgba(157, 50, 137, 0.5)",
+    hatch: "#8e9599",
   };
   const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", Roboto, sans-serif';
   const SERIF = '"Times New Roman", Times, "Liberation Serif", "Noto Serif", serif';
 
-  // Symbol and text sizes below are the scanned chart's at zoom 14, in its pixels. The
-  // scanned chart is a picture, so its symbols double with every zoom step; these grow
-  // more gently. CHART_SCALE is the one number to tune: 1 is the scanned chart's size.
-  const CHART_SCALE = 0.75;
-  const ZOOM_SCALE = { 10: 0.45, 11: 0.5, 12: 0.6, 13: 0.8, 14: 1, 15: 1.1 };
+  // Symbol and text sizes below are in "chart pixels"; SCALE says how many CSS pixels one
+  // is at each zoom. Up to zoom 13 the paper chart's own size (1:50 000 shown at about its
+  // printed scale); closer in it grows, as the paper chart does when magnified, but gentler.
+  const SCALE = { 8: 0.42, 9: 0.45, 10: 0.5, 11: 0.54, 12: 0.62, 13: 0.78, 14: 1.0, 15: 1.18, 16: 1.34, 17: 1.46 };
+  const scaleAt = (z) => SCALE[z] ?? (z < 8 ? 0.42 : 1.55);
   const MIN_TEXT = 10; // CSS px: names stay readable when zoomed out
+  const OVERVIEW_Z = 9; // at and below this, the overview chart's look: no clutter, big names
 
   const LIGHT = { W: C.yellow, R: C.red, G: C.green, Y: C.yellow };
   // A sector light zoomed out: one flare per colour, fanned out (compass bearings).
@@ -56,8 +70,8 @@
   // Towns are lettered large, as on the chart; other settlements get small capitals.
   const TOWNS = new Set(["Hanko", "Hangö", "Tammisaari", "Ekenäs", "Inkoo", "Ingå", "Kirkkonummi", "Kyrkslätt",
     "Espoo", "Esbo", "Helsinki", "Helsingfors", "Porvoo", "Borgå", "Loviisa", "Lovisa", "Kotka", "Hamina",
-    "Fredrikshamn", "Paldiski", "Tallinn"]);
-  const OPEN_WATER = /(fjärd|fjärden|selkä|selät|bukt|bukten)$/i; // lettered larger than other waters
+    "Fredrikshamn", "Paldiski", "Tallinn", "Porkkala", "Porkala"]);
+  const OPEN_WATER = /(fjärd|fjärden|selkä|selät|bukt|bukten|lahti|viken)$/i; // lettered larger than other waters
 
   // Museovirasto's register, in English for the tap popup.
   const HERITAGE_CLASSES = ["protected ancient monument", "other heritage site", "other site",
@@ -72,13 +86,7 @@
   };
 
   const options = { heritage: true };
-
-  // How far past its edges a tile carries each kind of point (tile units, as vchart.py
-  // sends them). A label may run over an edge only if the tile beyond has its point too.
-  const BUFFER = { name: 256, light: 128, aid: 128, heritage: 64 };
-  function edgeSafe(box, x, y, e, buf) {
-    return (box[0] >= 0 || x < buf) && (box[2] <= e || x > e - buf) && (box[1] >= 0 || y < buf) && (box[3] <= e || y > e - buf);
-  }
+  let serverMinZoom = 10; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
 
   // --- drawing helpers ------------------------------------------------------------
 
@@ -242,12 +250,22 @@
     return c;
   }
 
+  const overlaps = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+
   // --- text -----------------------------------------------------------------------
 
   const HAS_SPACING = typeof CanvasRenderingContext2D !== "undefined" && "letterSpacing" in CanvasRenderingContext2D.prototype;
 
+  const widths = new Map(); // font + text -> width, for the labels measured on every redraw
   function textWidth(ctx, text, spacing) {
-    return ctx.measureText(text).width + spacing * (text.length - 1);
+    const key = ctx.font + "\u0000" + text;
+    let w = widths.get(key);
+    if (w === undefined) {
+      if (widths.size > 8000) widths.clear();
+      w = ctx.measureText(text).width;
+      widths.set(key, w);
+    }
+    return w + spacing * (text.length - 1);
   }
 
   // Text drawn rightwards from (x, y), with extra space between the letters as the
@@ -268,51 +286,9 @@
     }
   }
 
-  // Lines of text, each { text, font, size, spacing, color }, left-aligned at x0 with the
-  // block's top at y0. Text sits on its baseline, 0.35 em below the middle of its line.
-  function textBlock(ctx, lines, x0, y0) {
-    ctx.textBaseline = "alphabetic";
-    let y = y0;
-    for (const line of lines) {
-      ctx.font = line.font;
-      ctx.fillStyle = line.color;
-      spacedText(ctx, line.text, x0, y + 0.5 * line.size + 0.35 * line.size, line.spacing);
-      y += line.size;
-    }
-  }
-
-  // Labels that don't overlap each other within a tile. Each claims its box first; all
-  // the lettering is drawn at the end, over everything else, as charts print it.
-  function labeller() {
-    const boxes = [];
-    const draws = [];
-    const free = (b) => boxes.every((o) => b[0] >= o[2] || b[2] <= o[0] || b[1] >= o[3] || b[3] <= o[1]);
-    return {
-      free,
-      claim(box, draw) {
-        boxes.push(box);
-        if (draw) draws.push(draw);
-      },
-      // The first free spot of a label's possible spots, if any.
-      first(spots) {
-        for (const spot of spots) {
-          if (free(spot.box)) {
-            boxes.push(spot.box);
-            draws.push(spot.draw);
-            return true;
-          }
-        }
-        return false;
-      },
-      flush() {
-        for (const draw of draws) draw();
-      },
-    };
-  }
-
   // A label along a line, on its longest straight stretch, kept whole inside the tile.
   // Returns the stretch of line to leave out under it (null if it's beside the line), or
-  // false if it found no room.
+  // false if it found no room. These stay in the tiles, as they break the line under them.
   function alongLine(ctx, label, flat, e, o) {
     ctx.font = o.font;
     const w = textWidth(ctx, o.text, o.spacing || 0);
@@ -335,7 +311,7 @@
     const hy = (Math.abs(Math.sin(a)) * w + Math.abs(Math.cos(a)) * h) / 2;
     const box = [cx - hx, cy - hy, cx + hx, cy + hy];
     if (box[0] < 1 || box[1] < 1 || box[2] > e - 1 || box[3] > e - 1 || !label.free(box)) return false;
-    label.claim(box, () => {
+    label.claim(box, true, () => {
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(a);
@@ -355,7 +331,7 @@
   function sounding(ctx, x, y, depth, s) {
     const whole = Math.floor(depth + 1e-6);
     const tenth = Math.round((depth - whole) * 10);
-    const big = 22 * s, small = 14 * s, base = y + 0.36 * big;
+    const big = 21 * s, small = 13.5 * s, base = y + 0.36 * big;
     ctx.fillStyle = C.sounding;
     ctx.textBaseline = "alphabetic";
     ctx.font = `italic ${big}px ${SANS}`;
@@ -373,7 +349,7 @@
   }
 
   function soundingBox(x, y, depth, s) {
-    const big = 22 * s;
+    const big = 21 * s;
     const whole = String(Math.round(depth >= 20 ? depth : Math.floor(depth + 1e-6)));
     const decimal = depth < 20 && Math.round((depth - Math.floor(depth + 1e-6)) * 10) % 10 !== 0;
     const w = 0.56 * big * whole.length;
@@ -397,34 +373,66 @@
 
   // --- navigation aids --------------------------------------------------------------
 
-  // A light's flare: a teardrop pointing away from the light, yellow (white light, edged
-  // black), red or green. `bearing` is the compass direction it points to.
+  // A light's flare as the paper chart prints it: a bold teardrop, pointed at the light and
+  // round at its far end, yellow (white light, edged black), red or green. `bearing` is the
+  // compass direction it points to.
   function flare(ctx, x, y, s, lw, color, bearing) {
-    const L = 40 * s, r = 5.5 * s, g = 3 * s, cy = L - r;
+    const L = 46 * s, r = 7 * s, cy = L - r;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(((bearing - 180) * Math.PI) / 180); // local +y points along the bearing
     ctx.beginPath();
-    ctx.moveTo(0, g);
-    ctx.quadraticCurveTo(-0.9 * r, cy - 1.2 * r, -r, cy);
+    ctx.moveTo(0, 0.5 * s);
+    ctx.bezierCurveTo(-0.25 * r, 0.3 * L, -r, cy - 1.6 * r, -r, cy);
     ctx.arc(0, cy, r, Math.PI, 0, true); // round far end
-    ctx.quadraticCurveTo(0.9 * r, cy - 1.2 * r, 0, g);
+    ctx.bezierCurveTo(r, cy - 1.6 * r, 0.25 * r, 0.3 * L, 0, 0.5 * s);
     ctx.closePath();
     ctx.fillStyle = color;
     ctx.fill();
     if (color === C.yellow) {
-      ctx.lineWidth = 0.8 * lw;
+      ctx.lineWidth = 0.9 * lw;
       ctx.strokeStyle = C.black;
       ctx.stroke();
     }
     ctx.restore();
   }
 
+  // Where a flare lies, for the labels to keep clear of: a box round its far half.
+  function flareBox(x, y, s, bearing) {
+    const a = (bearing * Math.PI) / 180;
+    const d = 30 * s, r = 10 * s;
+    const cx = x + Math.sin(a) * d, cy = y - Math.cos(a) * d;
+    return [cx - r, cy - r, cx + r, cy + r];
+  }
+
+  // A leading light points its flare along its leading line, out to sea.
+  function leadBearing(aid, leads) {
+    for (const row of leads) {
+      const line = Array.isArray(row[1]) ? row[1] : row[0];
+      if (!Array.isArray(line)) continue;
+      let near = Infinity;
+      for (let i = 0; i < line.length; i += 2) near = Math.min(near, Math.hypot(line[i] - aid[0], line[i + 1] - aid[1]));
+      if (near > 6) continue;
+      const n = line.length;
+      const dA = Math.hypot(line[0] - aid[0], line[1] - aid[1]);
+      const dB = Math.hypot(line[n - 2] - aid[0], line[n - 1] - aid[1]);
+      const [fx, fy] = dA > dB ? [line[0], line[1]] : [line[n - 2], line[n - 1]];
+      return ((Math.atan2(fx - aid[0], aid[1] - fy) * 180) / Math.PI + 360) % 360;
+    }
+    return null;
+  }
+
   // One flare in the light's colour, or for a sector light a fan of one per colour.
-  function drawFlares(ctx, aid, s, lw) {
+  // Returns the compass bearings drawn.
+  function drawFlares(ctx, aid, s, lw, bearing) {
     const colours = [...new Set(String(aid[6] || "").replace(/[^WRGY]/g, ""))];
-    if (colours.length <= 1) flare(ctx, aid[0], aid[1], s, lw, LIGHT[colours[0]] || C.yellow, 135);
-    else for (const c of colours) flare(ctx, aid[0], aid[1], s, lw, LIGHT[c], FAN[c]);
+    if (bearing != null || colours.length <= 1) {
+      const b = bearing ?? 135;
+      flare(ctx, aid[0], aid[1], s, lw, LIGHT[colours[0]] || C.yellow, b);
+      return [b];
+    }
+    for (const c of colours) flare(ctx, aid[0], aid[1], s, lw, LIGHT[c], FAN[c]);
+    return colours.map((c) => FAN[c]);
   }
 
   // The position of a buoy or beacon: a small circle on a short base line.
@@ -432,17 +440,17 @@
     ctx.lineWidth = lw;
     ctx.strokeStyle = C.black;
     ctx.beginPath();
-    ctx.moveTo(-6 * s, 0); ctx.lineTo(-2.5 * s, 0);
-    ctx.moveTo(2.5 * s, 0); ctx.lineTo(6 * s, 0);
-    ctx.moveTo(2.5 * s, 0); ctx.arc(0, 0, 2.5 * s, 0, 7);
+    ctx.moveTo(-7 * s, 0); ctx.lineTo(-2.6 * s, 0);
+    ctx.moveTo(2.6 * s, 0); ctx.lineTo(7 * s, 0);
+    ctx.moveTo(2.6 * s, 0); ctx.arc(0, 0, 2.6 * s, 0, 7);
     ctx.stroke();
   }
 
   // Topmarks as on Finnish charts, standing on (x, y): port an open square, starboard a
-  // cone, cardinals two cones.
+  // cone, cardinals two cones, isolated danger two balls, safe water a ball, special an X.
+  // Returns the topmark's height.
   function topmark(ctx, cat, x, y, s, lw) {
-    const w = 3.5 * s, h = 6 * s, gap = 2 * s;
-    // A cone with its base at yb, pointing up or down.
+    const w = 4 * s, h = 6.5 * s, gap = 2 * s;
     const cone = (yb, up) => {
       ctx.beginPath();
       ctx.moveTo(x - w, yb); ctx.lineTo(x + w, yb); ctx.lineTo(x, up ? yb - h : yb + h);
@@ -452,28 +460,59 @@
     const ball = (cy, r) => { ctx.beginPath(); ctx.arc(x, cy, r, 0, 7); ctx.fill(); };
     ctx.fillStyle = C.black;
     ctx.strokeStyle = C.black;
+    let top = 0;
     switch (cat) {
-      case 1: ctx.lineWidth = 1.5 * s; ctx.strokeRect(x - 2.5 * s, y - 8 * s, 5 * s, 8 * s); break;
-      case 2: ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x + w, y); ctx.lineTo(x, y - 7 * s); ctx.closePath(); ctx.fill(); break;
-      case 3: cone(y, true); cone(y - h - gap, true); break; // north: both up
-      case 4: cone(y - h, false); cone(y - 2 * h - gap, false); break; // south: both down
-      case 5: cone(y, true); cone(y - 2 * h - gap, false); break; // west: points together
-      case 6: cone(y - h, false); cone(y - h - gap, true); break; // east: bases together
-      case 7: ball(y - 2.6 * s, 2.4 * s); ball(y - 8 * s, 2.4 * s); break;
-      case 8: ctx.fillStyle = C.red; ball(y - 2.8 * s, 2.6 * s); break;
+      case 1: ctx.lineWidth = 1.6 * s; ctx.strokeRect(x - 3 * s, y - 8.5 * s, 6 * s, 8.5 * s); top = 9; break;
+      case 2: ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x + w, y); ctx.lineTo(x, y - 8 * s); ctx.closePath(); ctx.fill(); top = 8; break;
+      case 3: cone(y, true); cone(y - h - gap, true); top = 15; break; // north: both up
+      case 4: cone(y - h, false); cone(y - 2 * h - gap, false); top = 15; break; // south: both down
+      case 5: cone(y, true); cone(y - 2 * h - gap, false); top = 15; break; // west: points together
+      case 6: cone(y - h, false); cone(y - h - gap, true); top = 15; break; // east: bases together
+      case 7: ball(y - 2.8 * s, 2.6 * s); ball(y - 8.6 * s, 2.6 * s); top = 11; break;
+      case 8: ctx.fillStyle = C.red; ball(y - 3 * s, 2.9 * s); top = 6; break;
       case 9:
-        ctx.strokeStyle = C.yellow; ctx.lineWidth = 1.8 * s;
+        ctx.strokeStyle = C.black; ctx.lineWidth = 1.8 * s;
         ctx.beginPath();
         ctx.moveTo(x - w, y - 7 * s); ctx.lineTo(x + w, y);
         ctx.moveTo(x + w, y - 7 * s); ctx.lineTo(x - w, y);
         ctx.stroke();
+        top = 7;
         break;
       default: break;
     }
     ctx.lineWidth = lw;
+    return top * s;
   }
 
-  // The black symbol of a buoy, beacon or light, as the scanned chart draws them.
+  // How far each kind of symbol reaches round its point (chart px: left, top, right,
+  // bottom), for labels and soundings to keep clear of.
+  const EXTENT = {
+    v: [-7, -48, 18, 3], vl: [-7, -46, 9, 3], p: [-7, -38, 14, 3], r: [-7, -42, 7, 2], l: [-7, -30, 7, 3],
+    k: [-6, -11, 6, 1], m: [-10, -10, 10, 10], s: [-8, -8, 8, 8], d: [-4, -4, 4, 4], a: [-4, -4, 4, 4],
+    t: [-5, -5, 5, 5], o: [-4, -4, 4, 4],
+  };
+  function markExtent(aid) {
+    const [, , type, , lit] = aid;
+    return EXTENT[type === "v" && lit ? "vl" : type] || EXTENT.o;
+  }
+  function markBox(aid, s) {
+    const [l, t, r, b] = markExtent(aid);
+    return [aid[0] + l * s, aid[1] + t * s, aid[0] + r * s, aid[1] + b * s];
+  }
+
+  // The light's own point: a small dot in the light's colour, as the paper chart marks it.
+  function lightDot(ctx, aid, s, lw) {
+    const col = String(aid[6] || "").replace(/[^WRGY]/g, "")[0];
+    ctx.beginPath();
+    ctx.arc(0, 0, 2.6 * s, 0, 7);
+    ctx.fillStyle = LIGHT[col] || C.yellow;
+    ctx.fill();
+    ctx.lineWidth = 0.8 * lw;
+    ctx.strokeStyle = C.black;
+    ctx.stroke();
+  }
+
+  // The black symbol of a buoy, beacon or light, as the paper chart draws them.
   function drawMark(ctx, aid, s, lw, zoom) {
     const [x, y, type, cat, lit] = aid;
     ctx.save();
@@ -482,83 +521,85 @@
     ctx.strokeStyle = C.black;
     ctx.lineWidth = lw;
     ctx.lineJoin = "miter";
-    if (type === "v" || type === "p") {
-      // Floating marks lean to the right. A spar buoy is a thin stem, or a black wedge
-      // when lit; a buoy is a slim bell, filled when lit.
+    const tops = zoom >= 12;
+    if (type === "v") {
+      // Spar buoys: a thin stick leaning right, or a black bar standing up when lit,
+      // with the topmark above.
+      base(ctx, s, lw);
+      if (lit) {
+        ctx.beginPath();
+        ctx.moveTo(-3.6 * s, -2.6 * s); ctx.lineTo(-2.4 * s, -28 * s); ctx.lineTo(2.4 * s, -28 * s); ctx.lineTo(3.6 * s, -2.6 * s);
+        ctx.closePath();
+        ctx.fill();
+        if (tops) topmark(ctx, cat, 0, -30 * s, s, lw);
+      } else {
+        ctx.rotate(0.36);
+        ctx.beginPath();
+        ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -31 * s);
+        ctx.lineWidth = 1.7 * s;
+        ctx.stroke();
+        if (tops) topmark(ctx, cat, 0, -31.5 * s, s, lw);
+      }
+    } else if (type === "p") {
+      // Buoys lean to the right: a slim bell, filled when lit.
       base(ctx, s, lw);
       ctx.rotate(0.3);
-      let top;
+      const top = -19 * s;
       ctx.beginPath();
-      if (type === "v") {
-        top = -30 * s;
-        if (lit) {
-          ctx.moveTo(-4.5 * s, -2.5 * s); ctx.lineTo(-1.5 * s, top); ctx.lineTo(1.5 * s, top); ctx.lineTo(4.5 * s, -2.5 * s);
-          ctx.closePath();
-          ctx.fill();
-        } else {
-          ctx.moveTo(0, -2.5 * s); ctx.lineTo(0, top);
-          ctx.lineWidth = 1.5 * s;
-          ctx.stroke();
-        }
-      } else {
-        top = -17 * s;
-        ctx.moveTo(-5 * s, -2.5 * s); ctx.lineTo(-2 * s, top + 2 * s);
-        ctx.arc(0, top + 2 * s, 2 * s, Math.PI, 0);
-        ctx.lineTo(5 * s, -2.5 * s);
-        ctx.closePath();
-        if (lit) ctx.fill();
-        else ctx.stroke();
-      }
-      if (zoom >= 12) topmark(ctx, cat, 0, top - 0.5 * s, s, lw);
+      ctx.moveTo(-5.5 * s, -2.6 * s); ctx.lineTo(-2.2 * s, top + 2.2 * s);
+      ctx.arc(0, top + 2.2 * s, 2.2 * s, Math.PI, 0);
+      ctx.lineTo(5.5 * s, -2.6 * s);
+      ctx.closePath();
+      if (lit) ctx.fill();
+      else { ctx.lineWidth = 1.2 * lw; ctx.stroke(); }
+      if (tops) topmark(ctx, cat, 0, top - 0.6 * s, s, lw);
     } else if (type === "r") {
       // Fixed beacon: a black bar on a base line, with its topmark.
-      ctx.beginPath(); ctx.moveTo(-6 * s, 0); ctx.lineTo(6 * s, 0); ctx.stroke();
-      ctx.fillRect(-2.5 * s, -22 * s, 5 * s, 22 * s);
-      if (zoom >= 12) topmark(ctx, cat, 0, -23 * s, s, lw);
+      ctx.beginPath(); ctx.moveTo(-7 * s, 0); ctx.lineTo(7 * s, 0); ctx.lineWidth = 1.2 * lw; ctx.stroke();
+      ctx.fillRect(-3 * s, -24 * s, 6 * s, 24 * s);
+      if (tops) topmark(ctx, cat, 0, -25.5 * s, s, lw);
     } else if (type === "l") {
       // Leading mark: a notched black board on a post.
       base(ctx, s, lw);
-      ctx.beginPath(); ctx.moveTo(0, -2.5 * s); ctx.lineTo(0, -8 * s);
-      ctx.lineWidth = 1.5 * s; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -9 * s);
+      ctx.lineWidth = 1.7 * s; ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(-2.5 * s, -8 * s); ctx.lineTo(0, -11 * s); ctx.lineTo(2.5 * s, -8 * s);
-      ctx.lineTo(2.5 * s, -26 * s); ctx.lineTo(-2.5 * s, -26 * s);
+      ctx.moveTo(-3 * s, -9 * s); ctx.lineTo(0, -12.5 * s); ctx.lineTo(3 * s, -9 * s);
+      ctx.lineTo(3 * s, -29 * s); ctx.lineTo(-3 * s, -29 * s);
       ctx.closePath();
       ctx.fill();
     } else if (type === "k") {
       // Cairn: a small open triangle.
-      ctx.beginPath(); ctx.moveTo(-4.5 * s, 0); ctx.lineTo(4.5 * s, 0); ctx.lineTo(0, -9 * s); ctx.closePath();
+      ctx.beginPath(); ctx.moveTo(-5.5 * s, 0); ctx.lineTo(5.5 * s, 0); ctx.lineTo(0, -10.5 * s); ctx.closePath();
+      ctx.lineWidth = 1.3 * lw;
       ctx.stroke();
-    } else if (type === "m") {
-      // Lighthouse: a black five-pointed star.
+    } else if (type === "m" || type === "s") {
+      // Lighthouse: a black star; a sector light an open star.
+      const R = (type === "m" ? 10 : 8) * s;
       ctx.beginPath();
       for (let i = 0; i < 10; i++) {
-        const r = (i % 2 ? 3.2 : 8) * s, a = -Math.PI / 2 + (i * Math.PI) / 5;
+        const r = i % 2 ? 0.4 * R : R, a = -Math.PI / 2 + (i * Math.PI) / 5;
         ctx.lineTo(r * Math.cos(a), r * Math.sin(a));
       }
       ctx.closePath();
-      ctx.fill();
+      if (type === "m") ctx.fill();
+      else {
+        ctx.fillStyle = "#ffffff"; ctx.fill();
+        ctx.lineWidth = 1.2 * lw; ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, 1.4 * s, 0, 7); ctx.fillStyle = C.black; ctx.fill();
+      }
     } else if (type === "t") {
-      // Radar beacon: a magenta ring.
-      ctx.beginPath(); ctx.arc(0, 0, 9 * s, 0, 7);
-      ctx.lineWidth = 1.2 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, 1.6 * s, 0, 7); ctx.fill();
-    } else if (type === "s" || type === "d" || type === "a") {
-      // Lights: a black dot (the flare shows it is a light).
-      ctx.beginPath(); ctx.arc(0, 0, Math.max(2 * s, 0.8 * lw), 0, 7); ctx.fill();
+      // Radar beacon: a dot; the Racon ring is drawn with the flares.
+      ctx.beginPath(); ctx.arc(0, 0, 1.8 * s, 0, 7); ctx.fill();
+    } else if (type === "d" || type === "a") {
+      // Minor and directional lights: the light's dot.
+      lightDot(ctx, aid, s, lw);
     } else {
       // Other marks: a dot in a ring.
-      ctx.beginPath(); ctx.arc(0, 0, 2.6 * s, 0, 7); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, 1.1 * s, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 2.8 * s, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 1.2 * s, 0, 7); ctx.fill();
     }
     ctx.restore();
-  }
-
-  // Where a symbol stands, so soundings keep clear of it.
-  function markBox(aid, s) {
-    const [x, y, type] = aid;
-    if ("vprl".includes(type)) return [x - 7 * s, y - 34 * s, x + 16 * s, y + 3 * s];
-    return [x - 8 * s, y - 9 * s, x + 8 * s, y + 8 * s];
   }
 
   // --- rocks, wrecks and heritage ---------------------------------------------------
@@ -566,8 +607,8 @@
   // Rocks as on Finnish charts, the bar being the water line: T under water, + at the
   // surface, ⊥ above water. A rock cluster adds dots.
   function drawRock(ctx, x, y, kind, s, group) {
-    const a = 6 * s, h = 8 * s;
-    ctx.lineWidth = 2 * s;
+    const a = 5.5 * s, h = 7.5 * s;
+    ctx.lineWidth = 1.8 * s;
     ctx.lineCap = "butt";
     ctx.strokeStyle = ctx.fillStyle = C.black;
     ctx.beginPath();
@@ -653,10 +694,10 @@
     ctx.restore();
   }
 
-  function anchor(ctx, x, y, s, lw) {
+  function anchor(ctx, x, y, s, lw, color = C.black) {
     ctx.save();
     ctx.translate(x, y);
-    ctx.strokeStyle = C.black;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1.5 * lw;
     ctx.lineCap = "butt";
     ctx.beginPath();
@@ -692,37 +733,369 @@
     ctx.stroke();
   }
 
+  // --- traffic separation and other routeing areas ------------------------------------
+
+  // An outlined arrow along a compass bearing, centred on (x, y), length len.
+  function tssArrow(ctx, x, y, bearing, len, unit, both) {
+    const a = ((bearing - 90) * Math.PI) / 180;
+    const hw = 0.11 * len, head = 0.3 * len, hh = 0.24 * len;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a);
+    ctx.beginPath();
+    const h = len / 2;
+    ctx.moveTo(both ? -h + head : -h, -hw);
+    ctx.lineTo(h - head, -hw); ctx.lineTo(h - head, -hh); ctx.lineTo(h, 0); ctx.lineTo(h - head, hh); ctx.lineTo(h - head, hw);
+    if (both) {
+      ctx.lineTo(-h + head, hw); ctx.lineTo(-h + head, hh); ctx.lineTo(-h, 0); ctx.lineTo(-h + head, -hh);
+    } else ctx.lineTo(-h, hw);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+    ctx.fill();
+    ctx.strokeStyle = C.magenta;
+    ctx.lineWidth = 1.3 * unit;
+    ctx.lineJoin = "miter";
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Arrows at fixed points of the tile's own grid, where both ends fall inside the area,
+  // so they never cross a tile edge.
+  function areaArrows(ctx, rings, bearing, e, s, unit, both) {
+    const len = Math.min(e / 2 - 16, Math.max(48 * unit, 80 * s));
+    const a = (bearing * Math.PI) / 180, ux = Math.sin(a), uy = -Math.cos(a);
+    for (const gx of [e / 4, (3 * e) / 4]) {
+      for (const gy of [e / 4, (3 * e) / 4]) {
+        const ends = [[gx - ux * len * 0.55, gy - uy * len * 0.55], [gx + ux * len * 0.55, gy + uy * len * 0.55]];
+        if (ends.every(([x, y]) => insideRings(rings, x, y))) tssArrow(ctx, gx, gy, bearing, len, unit, both);
+      }
+    }
+  }
+
+  function hatch(ctx, rings, e, unit) {
+    ctx.save();
+    ctx.beginPath();
+    for (const ring of rings) path(ctx, ring, true);
+    ctx.clip("evenodd");
+    ctx.beginPath();
+    const step = 7 * unit;
+    for (let d = -e; d < e * 2; d += step) { ctx.moveTo(d, 0); ctx.lineTo(d + e, e); }
+    ctx.strokeStyle = C.hatch;
+    ctx.lineWidth = 0.7 * unit;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Routeing measures: [kind, orient, ...rings].
+  function drawTss(ctx, rows, e, s, unit) {
+    for (const [kind, orient, ...rings] of rows) {
+      if (!rings.length) continue;
+      if (kind === "lane") {
+        fillRings(ctx, rings, C.tssLane);
+        if (orient != null) areaArrows(ctx, rings, orient, e, s, unit, false);
+      } else if (kind === "zone") {
+        fillRings(ctx, rings, C.tssZone);
+      } else if (kind === "prec" || kind === "deep" || kind === "twoway") {
+        // Their "!" and "DW" are lettering, placed with the other labels.
+        strokeRings(ctx, rings, C.magenta, 1.3 * unit, [10 * unit, 6 * unit]);
+        if (kind === "twoway" && orient != null) areaArrows(ctx, rings, orient, e, s, unit, true);
+      } else if (kind === "dredged") {
+        fillRings(ctx, rings, C.fairwayArea);
+        strokeRings(ctx, rings, "#7b8184", 0.8 * unit, [5 * unit, 3 * unit]);
+      } else if (kind === "unsurveyed") {
+        hatch(ctx, rings, e, unit);
+        strokeRings(ctx, rings, C.hatch, 0.8 * unit);
+      } else {
+        strokeRings(ctx, rings, C.magenta, unit);
+      }
+    }
+  }
+
+  function drawTssLines(ctx, rows, unit) {
+    for (const [kind, line] of rows) {
+      if (!Array.isArray(line)) continue;
+      if (kind === "sep") strokeLine(ctx, line, C.tssSep, 5 * unit);
+      else if (kind === "bnd") strokeLine(ctx, line, C.magenta, 1.3 * unit, [10 * unit, 6 * unit]);
+      else strokeLine(ctx, line, C.magenta, unit, [6 * unit, 4 * unit]);
+    }
+  }
+
+  // --- land: topography, roads, buildings, landmarks ------------------------------------
+
+  function drawRoads(ctx, roads, rails, zoom, unit) {
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    // Major roads as the chart's double line: black, with land colour inside.
+    const major = roads.filter((r) => r[0] === 1 && Array.isArray(r[1]));
+    if (zoom >= 12) {
+      for (const [, line] of major) strokeLine(ctx, line, C.black, 3.4 * unit);
+      for (const [, line] of major) strokeLine(ctx, line, C.land, 1.6 * unit);
+    } else {
+      for (const [, line] of major) strokeLine(ctx, line, C.black, 1.1 * unit);
+    }
+    ctx.lineCap = "butt";
+    for (const [cls, line] of roads) {
+      if (!Array.isArray(line)) continue;
+      if (cls === 2) strokeLine(ctx, line, C.black, 0.9 * unit);
+      else if (cls !== 1) strokeLine(ctx, line, C.black, 0.8 * unit, [4 * unit, 2.5 * unit]);
+    }
+    // Railways: a line with cross ticks.
+    for (const [line] of rails) {
+      if (!Array.isArray(line)) continue;
+      strokeLine(ctx, line, C.black, 1.4 * unit);
+      if (zoom < 12) continue;
+      ctx.beginPath();
+      let next = 6 * unit, d = 0;
+      for (let i = 2; i < line.length; i += 2) {
+        const x0 = line[i - 2], y0 = line[i - 1], x1 = line[i], y1 = line[i + 1];
+        const len = Math.hypot(x1 - x0, y1 - y0);
+        if (!len) continue;
+        const ux = (x1 - x0) / len, uy = (y1 - y0) / len;
+        for (; next <= d + len; next += 12 * unit) {
+          const px = x0 + ux * (next - d), py = y0 + uy * (next - d);
+          ctx.moveTo(px - uy * 3 * unit, py + ux * 3 * unit);
+          ctx.lineTo(px + uy * 3 * unit, py - ux * 3 * unit);
+        }
+        d += len;
+      }
+      ctx.lineWidth = 1.1 * unit;
+      ctx.stroke();
+    }
+  }
+
+  // A landmark (x, y at its foot): mast (radio waves for a radio mast), chimney, wind
+  // turbine, tower or church, in the chart's black line symbols. Returns its box.
+  function drawLandmark(ctx, x, y, kind, s, lw) {
+    const k = String(kind || "").toLowerCase();
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = ctx.fillStyle = C.black;
+    ctx.lineWidth = 1.2 * lw;
+    ctx.lineJoin = "miter";
+    ctx.lineCap = "butt";
+    const foot = () => { ctx.beginPath(); ctx.arc(0, 0, 2.6 * s, 0, 7); ctx.stroke(); };
+    let box = [-6, -28, 6, 3];
+    if (k.includes("wind")) {
+      foot();
+      ctx.beginPath(); ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -20 * s); ctx.stroke();
+      ctx.beginPath();
+      for (const a of [-90, 30, 150]) {
+        const r = (a * Math.PI) / 180;
+        ctx.moveTo(0, -20 * s); ctx.lineTo(Math.cos(r) * 9 * s, -20 * s + Math.sin(r) * 9 * s);
+      }
+      ctx.lineWidth = 1.6 * lw; ctx.stroke();
+      box = [-9, -30, 9, 3];
+    } else if (k.includes("chimn") || k.includes("savu")) {
+      foot();
+      ctx.beginPath(); ctx.moveTo(-2.5 * s, -2.6 * s); ctx.lineTo(-1.5 * s, -18 * s); ctx.lineTo(1.5 * s, -18 * s); ctx.lineTo(2.5 * s, -2.6 * s);
+      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -20 * s); ctx.bezierCurveTo(3 * s, -23 * s, 6 * s, -19 * s, 9 * s, -23 * s); ctx.stroke();
+      box = [-5, -25, 10, 3];
+    } else if (k.includes("church") || k.includes("kirk")) {
+      ctx.beginPath(); ctx.arc(0, 0, 4 * s, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -4 * s); ctx.lineTo(0, -16 * s); ctx.moveTo(-4 * s, -11.5 * s); ctx.lineTo(4 * s, -11.5 * s);
+      ctx.lineWidth = 1.6 * lw; ctx.stroke();
+      box = [-5, -17, 5, 5];
+    } else if (k.includes("tower") || k.includes("torni")) {
+      foot();
+      ctx.strokeRect(-3 * s, -16 * s, 6 * s, 13.4 * s);
+      ctx.beginPath(); ctx.moveTo(-4.5 * s, -16 * s); ctx.lineTo(4.5 * s, -16 * s); ctx.stroke();
+      box = [-5, -18, 5, 3];
+    } else if (k.includes("mast") || k.includes("masto") || k.includes("radio")) {
+      // A tall narrow lattice mast; a radio mast sends out waves from its top.
+      foot();
+      ctx.beginPath(); ctx.moveTo(-3 * s, -2 * s); ctx.lineTo(0, -26 * s); ctx.lineTo(3 * s, -2 * s);
+      ctx.moveTo(-2.2 * s, -9 * s); ctx.lineTo(2.2 * s, -9 * s); ctx.moveTo(-1.2 * s, -17 * s); ctx.lineTo(1.2 * s, -17 * s);
+      ctx.stroke();
+      if (k.includes("radio")) {
+        ctx.beginPath();
+        for (const r of [4.5, 7.5]) {
+          ctx.moveTo(-r * s * Math.cos(0.6), -24 * s - r * s * Math.sin(0.6));
+          ctx.arc(0, -24 * s, r * s, Math.PI + 0.6, Math.PI - 0.6, true);
+          ctx.moveTo(r * s * Math.cos(0.6), -24 * s - r * s * Math.sin(0.6));
+          ctx.arc(0, -24 * s, r * s, -0.6, 0.6);
+        }
+        ctx.lineWidth = lw; ctx.stroke();
+        box = [-9, -32, 9, 3];
+      }
+    } else {
+      foot();
+      ctx.beginPath(); ctx.arc(0, 0, 1 * s, 0, 7); ctx.fill();
+      box = [-4, -4, 4, 4];
+    }
+    ctx.restore();
+    return [x + box[0] * s, y + box[1] * s, x + box[2] * s, y + box[3] * s];
+  }
+
+  // A pilot boarding place: a magenta circle with a flag.
+  function drawPilot(ctx, x, y, s, lw) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = ctx.fillStyle = C.magenta;
+    ctx.lineWidth = 1.5 * lw;
+    ctx.beginPath(); ctx.arc(0, 0, 8 * s, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 1.6 * s, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -8 * s); ctx.lineTo(0, -21 * s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -21 * s); ctx.lineTo(9 * s, -17.5 * s); ctx.lineTo(0, -14 * s); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    return [x - 9 * s, y - 22 * s, x + 10 * s, y + 9 * s];
+  }
+
+  // Signs in the water: a speed limit as a red-ringed disc with its number, no wake as a
+  // crossed-out wave, no anchoring as a crossed-out magenta anchor, others a notice board.
+  function drawSign(ctx, x, y, type, value, s, lw) {
+    const r = 9 * s;
+    ctx.save();
+    ctx.translate(x, y);
+    const disc = () => {
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, 7);
+      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.lineWidth = 2.2 * s; ctx.strokeStyle = C.red; ctx.stroke();
+    };
+    if (type === "speed") {
+      disc();
+      ctx.fillStyle = C.black;
+      ctx.font = `bold ${(String(value ?? "").length > 2 ? 7.5 : 9.5) * s}px ${SANS}`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(value != null ? String(Math.round(value)) : "!", 0, 0.5 * s);
+    } else if (type === "nowake") {
+      disc();
+      ctx.beginPath();
+      ctx.moveTo(-5.5 * s, 1 * s);
+      ctx.bezierCurveTo(-3.5 * s, -2 * s, -1.5 * s, -2 * s, 0, 1 * s);
+      ctx.bezierCurveTo(1.5 * s, 4 * s, 3.5 * s, 4 * s, 5.5 * s, 1 * s);
+      ctx.lineWidth = 1.4 * s; ctx.strokeStyle = C.black; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-0.7 * r, -0.7 * r); ctx.lineTo(0.7 * r, 0.7 * r);
+      ctx.lineWidth = 2 * s; ctx.strokeStyle = C.red; ctx.stroke();
+    } else if (type === "noanchor") {
+      anchor(ctx, 0, 0, 0.75 * s, lw, C.magenta);
+      ctx.beginPath(); ctx.moveTo(-7 * s, -9 * s); ctx.lineTo(7 * s, 9 * s);
+      ctx.lineWidth = 1.6 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
+    } else {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(-7 * s, -7 * s, 14 * s, 14 * s);
+      ctx.lineWidth = 1.4 * lw; ctx.strokeStyle = C.magenta; ctx.strokeRect(-7 * s, -7 * s, 14 * s, 14 * s);
+      ctx.fillStyle = C.magenta; ctx.font = `bold ${11 * s}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("!", 0, 0.5 * s);
+    }
+    ctx.restore();
+    return [x - r, y - r, x + r, y + r];
+  }
+
   // --- labels -------------------------------------------------------------------------
 
-  // Every label but those along lines, each with the spots it may take, in the order they
-  // are placed: towns, waters, islands, lights, other land, then heritage names.
-  function labelCandidates(ctx, data, zoom, s, unit, aidAt) {
-    const px = (n) => Math.max(MIN_TEXT * unit, n * s);
-    const out = [];
-    const line = (text, size, spacing, font, color) => ({ text, size, spacing, font, color });
-    // A block of lines either side of a symbol at (x, y), vertically centred on cy; with dy,
-    // also centred above and below it, for long names that would cross a tile edge beside it.
-    const beside = (lines, x, cy, dxRight, dxLeft, buf, dy) => {
-      let w = 0, h = 0;
-      for (const l of lines) {
-        ctx.font = l.font;
-        w = Math.max(w, textWidth(ctx, l.text, l.spacing));
-        h += l.size;
-      }
-      const places = [[x + dxRight, cy - h / 2], [x - dxLeft - w, cy - h / 2]];
-      if (dy) places.push([x - w / 2, cy - dy - h], [x - w / 2, cy + dy]);
-      return places.map(([x0, top]) => ({
-        box: [x0 - unit, top + 0.1 * h, x0 + w + unit, top + 0.95 * h],
-        draw: () => textBlock(ctx, lines, x0, top),
-      })).filter((spot) => edgeSafe(spot.box, x, cy, data.e, buf));
-    };
+  // Lettering styles, in chart px. spacing is in em.
+  const STYLES = {
+    town: { size: 42, family: SERIF, spacing: 0.04, upper: true, min: 15 },
+    sea: { size: 26, italic: true, min: 12 },
+    water: { size: 20, italic: true },
+    island: { size: 16.5 },
+    litIsland: { size: 18, weight: 700, spacing: 0.07, upper: true },
+    land: { size: 15, spacing: 0.12, upper: true },
+    settlement: { size: 16, spacing: 0.1, upper: true },
+    light: { size: 16 },
+    lightName: { size: 17, weight: 700, spacing: 0.07, upper: true },
+    racon: { size: 16, color: C.magenta },
+    mark: { size: 15 },
+    heritage: { size: 14, italic: true, color: C.magenta },
+    fort: { size: 14, italic: true, color: C.fort },
+    speed: { size: 13, color: C.magenta },
+    tss: { size: 17, color: C.magenta, min: 11 },
+    precSign: { size: 15, weight: 700, color: C.magenta, min: 10 },
+  };
+  // Placement order: towns, sea areas, lights, islands, heritage, other land.
+  const PRIO = { town: 0, sea: 1, light: 2, island: 3, heritage: 4, land: 5 };
 
-    // Names. A town's Finnish and Swedish names close together share one label.
+  // A label's lines and the spots it may take round its anchor, in units of k per CSS px
+  // (the tile's units, or 1 on the overlay). Spots are top-left corners relative to the
+  // anchor, best first.
+  function layoutLabel(ctx, cand, k, sc) {
+    const lines = [];
+    let w = 0, h = 0;
+    for (const [text, name] of cand.lines) {
+      const st = STYLES[name] || STYLES.island;
+      const size = Math.max(st.min ?? MIN_TEXT, st.size * sc) * k;
+      const caps = st.upper || (name === "sea" && text === text.toUpperCase());
+      const t = st.upper ? text.toUpperCase() : text;
+      const spacing = (st.spacing ?? (caps ? 0.2 : 0)) * size;
+      const font = `${st.italic ? "italic " : ""}${st.weight ? `${st.weight} ` : ""}${size}px ${st.family || SANS}`;
+      ctx.font = font;
+      const lw = textWidth(ctx, t, spacing);
+      lines.push({ text: t, font, size, spacing, color: st.color || C.black, w: lw });
+      w = Math.max(w, lw);
+      h += size;
+    }
+    if (cand.frame) w = h = 1.9 * h; // a sign: the text in a triangle round it
+    const spots = [];
+    if (cand.sym) {
+      const f = sc * k;
+      const [l, t, r, b] = cand.sym.map((v) => v * f);
+      const g = 2.5 * f + k;
+      const cy = t + 0.42 * (b - t);
+      spots.push([r + g, cy - h / 2, "left"], [l - g - w, cy - h / 2, "right"],
+        [r + g, t - 0.7 * h, "left"], [r + g, b - 0.3 * h, "left"],
+        [l - g - w, t - 0.7 * h, "right"], [l - g - w, b - 0.3 * h, "right"],
+        [-w / 2, t - g - h, "center"], [-w / 2, b + g, "center"]);
+    } else {
+      spots.push([-w / 2, -h / 2, "center"]);
+      if (cand.shift) spots.push([-w / 2, -1.3 * h, "center"], [-w / 2, 0.3 * h, "center"]);
+    }
+    const top = 0.1 * lines[0].size, bottom = 0.1 * lines[lines.length - 1].size;
+    return {
+      lines, w, h, frame: cand.frame,
+      spots: spots.map(([dx, dy, align]) => ({ dx, dy, align, box: [dx - k, dy + top, dx + w + k, dy + h - bottom] })),
+    };
+  }
+
+  function drawLabel(ctx, lay, x0, y0, align) {
+    ctx.textBaseline = "alphabetic";
+    if (lay.frame === "triangle") {
+      const line = lay.lines[0], cx = x0 + lay.w / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, y0); ctx.lineTo(x0 + lay.w, y0 + 0.9 * lay.h); ctx.lineTo(x0, y0 + 0.9 * lay.h); ctx.closePath();
+      ctx.strokeStyle = line.color; ctx.lineWidth = 1.4; ctx.lineJoin = "miter"; ctx.stroke();
+      ctx.font = line.font; ctx.fillStyle = line.color;
+      spacedText(ctx, line.text, cx - line.w / 2, y0 + 0.78 * lay.h, 0);
+      return;
+    }
+    let y = y0;
+    for (const line of lay.lines) {
+      ctx.font = line.font;
+      ctx.fillStyle = line.color;
+      const x = align === "right" ? x0 + lay.w - line.w : align === "center" ? x0 + (lay.w - line.w) / 2 : x0;
+      spacedText(ctx, line.text, x, y + 0.82 * line.size, line.spacing);
+      y += line.size;
+    }
+  }
+
+  // "Rönnskär 6", "Gustavsvärn ylempi" -> "rönnskär", "gustavsvärn": the place an aid is named after.
+  const placeKey = (name) => String(name || "").toLowerCase()
+    .replace(/\s+(\d.*|ylempi|alempi|etu|taka|övre|nedre|n|s|e|w|[ivx]+)$/i, "").trim();
+
+  // Every label of a tile, each { prio, rank, x, y, lines: [[text, style]], sym?, shift? },
+  // with `inside` set for those whose point is the tile's own (the overlay takes those;
+  // the rest only keep soundings clear near the tile's edges).
+  function labelCandidates(data, zoom, aidAt) {
+    const out = [];
+    const e = data.e;
+    const own = (x, y) => x >= 0 && y >= 0 && x < e && y < e;
+    const add = (c) => { c.inside = own(c.x, c.y); out.push(c); };
+
+    // Lights that will show their character, and which island names carry one.
+    const lit = [];
+    for (const [x, y, character] of data.light || []) {
+      const aid = aidAt.get(`${x},${y}`);
+      const type = aid ? aid[2] : "";
+      if (zoom < 14 && !(type === "s" || type === "m" || type === "d")) continue;
+      if (zoom <= OVERVIEW_Z && type !== "m" && type !== "s") continue;
+      lit.push({ x, y, character, aid, type, key: aid ? placeKey(aid[5]) : "", merged: null });
+    }
+    const litAids = (data.aid || []).filter((a) => a[4] && a[5]);
     const names = [];
     for (const [x, y, text, kind] of data.name || []) {
       if (!text) continue;
       if (kind === "s") {
-        const twin = names.find((n) => n.kind === "s" && n.texts.length === 1 && Math.hypot(n.x - x, n.y - y) < 40 * unit);
+        const twin = names.find((n) => n.kind === "s" && n.texts.length === 1 && Math.hypot(n.x - x, n.y - y) < 80);
         if (twin) {
           if (twin.texts[0].toUpperCase() !== text.toUpperCase()) twin.texts.push(text);
           continue;
@@ -730,79 +1103,114 @@
       }
       names.push({ x, y, kind, texts: [text] });
     }
-    for (const { x, y, kind, texts } of names) {
-      let size, font, spacing = 0, upper = false, prio;
+
+    for (const n of names) {
+      const { x, y, kind, texts } = n;
       if (kind === "s" && texts.some((t) => TOWNS.has(t))) {
-        size = px(46); font = `${size}px ${SERIF}`; spacing = 0.04 * size; upper = true; prio = 0;
+        add({ prio: PRIO.town, rank: 0, x, y, lines: texts.map((t) => [t, "town"]) });
+      } else if (kind === "s") {
+        add({ prio: PRIO.land, rank: 0, x, y, lines: texts.map((t) => [t, "settlement"]), shift: true });
       } else if (kind === "w") {
-        size = px(OPEN_WATER.test(texts[0]) ? 27 : 22); font = `italic ${size}px ${SANS}`; prio = 1;
-      } else if (kind === "i") {
-        size = px(18); font = `${size}px ${SANS}`; prio = 2;
+        const open = OPEN_WATER.test(texts[0]) || texts[0] === texts[0].toUpperCase();
+        add({ prio: PRIO.sea, rank: open ? 0 : 1, x, y, lines: [[texts[0], open ? "sea" : "water"]], shift: true });
       } else {
-        size = px(18); font = `${size}px ${SANS}`; spacing = 2 * s; upper = true; prio = 4;
-      }
-      const lines = texts.map((t) => line(upper ? t.toUpperCase() : t, size * (texts.length > 1 ? 0.95 : 1), spacing, font, C.black));
-      ctx.font = font;
-      const w = Math.max(...lines.map((l) => textWidth(ctx, l.text, spacing)));
-      const h = lines.reduce((sum, l) => sum + l.size, 0);
-      const draw = () => {
-        let top = y - h / 2;
-        for (const l of lines) {
-          ctx.font = font;
-          textBlock(ctx, [l], x - textWidth(ctx, l.text, spacing) / 2, top);
-          top += l.size;
+        // An island or rock with a light on it is lettered in capitals, as the chart does,
+        // together with the light's character when that shows.
+        const key = placeKey(texts[0]);
+        const isLit = zoom >= 12 && litAids.some((a) => Math.hypot(a[0] - x, a[1] - y) < 120 && placeKey(a[5]) === key);
+        if (isLit) {
+          let best = null;
+          for (const l of lit) {
+            if (l.key !== key || l.merged) continue;
+            const d = Math.hypot(l.x - x, l.y - y);
+            if (d < 120 && (!best || d < best.d)) best = { l, d };
+          }
+          if (best) { best.l.merged = texts[0]; continue; }
+          add({ prio: PRIO.island, rank: 0, x, y, lines: [[texts[0], "litIsland"]], shift: true });
+        } else {
+          add({ prio: kind === "i" ? PRIO.island : PRIO.land, rank: 1, x, y, lines: [[texts[0], kind === "i" ? "island" : "land"]], shift: true });
         }
-      };
-      const box = [x - w / 2 - unit, y - 0.42 * h, x + w / 2 + unit, y + 0.42 * h];
-      if (edgeSafe(box, x, y, data.e, BUFFER.name)) out.push({ prio, x, y, spots: [{ box, draw }] });
+      }
     }
 
-    // Light characters beside their lights; major lights also get their name above.
-    for (const [x, y, character] of data.light || []) {
-      const aid = aidAt.get(`${x},${y}`);
-      const type = aid ? aid[2] : "";
-      if (zoom < 14 && !(type === "s" || type === "m" || type === "d")) continue;
+    // Light characters beside their lights; major lights not named after an island also
+    // get their name above.
+    const islandKeys = new Set(names.filter((n) => n.kind === "i" || n.kind === "l").map((n) => placeKey(n.texts[0])));
+    for (const l of lit) {
       const lines = [];
-      if ((type === "s" || type === "m") && aid[5]) lines.push(line(aid[5].toUpperCase(), px(22), 3 * s, `${px(22)}px ${SANS}`, C.black));
-      lines.push(line(lightText(character, aid ? aid[6] || "" : ""), px(19), 0, `${px(19)}px ${SANS}`, C.black));
-      const tall = !!type && "vprl".includes(type);
-      out.push({ prio: 3, x, y, spots: beside(lines, x, y - (tall ? 12 : 0) * s, (tall ? 14 : 10) * s, (tall ? 8 : 10) * s, BUFFER.light) });
+      if (l.merged) lines.push([l.merged, "litIsland"]);
+      else if ((l.type === "s" || l.type === "m") && l.aid[5] && !islandKeys.has(l.key)) lines.push([l.aid[5], "lightName"]);
+      lines.push([lightText(l.character, l.aid ? l.aid[6] || "" : ""), "light"]);
+      const rank = { m: 0, s: 1, d: 2 }[l.type] ?? 3;
+      add({ prio: PRIO.light, rank, x: l.x, y: l.y, lines, sym: l.aid ? markExtent(l.aid) : EXTENT.o });
     }
     for (const aid of data.aid || []) {
       if (aid[2] !== "t" || zoom < 13) continue;
-      const lines = [line("Racon", px(19), 0, `${px(19)}px ${SANS}`, C.magenta)];
-      out.push({ prio: 3, x: aid[0], y: aid[1], spots: beside(lines, aid[0], aid[1] + 14 * s, 4 * s, 4 * s, BUFFER.aid) });
+      add({ prio: PRIO.light, rank: 4, x: aid[0], y: aid[1], lines: [["Racon", "racon"]], sym: [-20, -20, 20, 20] });
+    }
+    // Heights of masts, chimneys and the like: "(131)".
+    if (zoom >= 13) {
+      for (const [x, y, kind, height] of data.landmark || []) {
+        if (height == null || height === "") continue;
+        const ext = LANDMARK_EXTENT(kind);
+        add({ prio: PRIO.light, rank: 5, x, y, lines: [[`(${Math.round(height)})`, "mark"]], sym: ext });
+      }
     }
 
-    // Speed limits in restricted areas.
-    if (zoom >= 14) {
+    // Precautionary areas' "!" and deep-water routes' "DW", once in a while across the area.
+    for (const [kind, , ...rings] of data.tss || []) {
+      if ((kind !== "prec" && kind !== "deep") || !rings.length) continue;
+      const p = labelPoint(rings, e, 40, 40);
+      if (!p) continue;
+      add({ prio: PRIO.sea, rank: 3, x: p[0], y: p[1], once: 320, ...(kind === "prec"
+        ? { lines: [["!", "precSign"]], frame: "triangle" } : { lines: [["DW", "tss"]] }) });
+    }
+
+    // Speed limits in restricted areas, unless the tile has its own speed signs.
+    if (zoom >= 14 && !(data.sign || []).some((r) => r[2] === "speed")) {
       for (const [types, speed, ...rings] of data.restrict || []) {
         if (speed == null || !/(^|\D)01(\D|$)/.test(String(types || ""))) continue;
-        const size = px(14), font = `${size}px ${SANS}`;
-        const text = `${Math.round(speed)} km/h`;
-        ctx.font = font;
-        const w = textWidth(ctx, text, 0);
-        const p = labelPoint(rings, data.e, w + 4 * unit, size + 4 * unit);
+        const p = labelPoint(rings, e, 60, 20);
         if (!p) continue;
-        const lines = [line(text, size, 0, font, C.magenta)];
-        out.push({
-          prio: 4, x: p[0], y: p[1],
-          spots: [{ box: [p[0] - w / 2 - unit, p[1] - 0.45 * size, p[0] + w / 2 + unit, p[1] + 0.45 * size], draw: () => textBlock(ctx, lines, p[0] - w / 2, p[1] - size / 2) }],
-        });
+        add({ prio: PRIO.heritage, rank: 0, x: p[0], y: p[1], lines: [[`${Math.round(speed)} km/h`, "speed"]], once: 250 });
       }
     }
 
-    // Wreck and site names, from zoom 14.
+    // Wreck and site names only up close: protected wrecks from zoom 14, the rest from 15.
     if (zoom >= 14 && options.heritage) {
-      for (const [x, y, , name, , kind] of data.heritage || []) {
-        if (!name) continue;
-        const size = px(16);
-        const lines = [line(name, size, 0, `italic ${size}px ${SANS}`, kind === 5 ? C.fort : C.magenta)];
-        out.push({ prio: 5, x, y, spots: beside(lines, x, y, 12 * s, 12 * s, BUFFER.heritage, 10 * s) });
+      for (const [x, y, , name, cls, kind] of data.heritage || []) {
+        if (!name || (zoom < 15 && !(cls === 0 && kind <= 3))) continue;
+        add({ prio: PRIO.heritage, rank: cls === 0 ? 1 : 2, x, y, lines: [[name, kind === 5 ? "fort" : "heritage"]], sym: [-11, -9, 11, 9] });
       }
     }
-    // In the same order in every tile, so a label near an edge is placed the same in both.
-    return out.sort((a, b) => a.prio - b.prio || a.x - b.x || a.y - b.y);
+    return out;
+  }
+
+  function LANDMARK_EXTENT(kind) {
+    const k = String(kind || "").toLowerCase();
+    if (k.includes("radio")) return [-9, -32, 9, 3];
+    if (k.includes("wind")) return [-9, -30, 9, 3];
+    if (k.includes("mast") || k.includes("masto")) return [-6, -28, 6, 3];
+    return [-6, -20, 6, 4];
+  }
+
+  // Boxes claimed in a tile: by the labels' first spots (so soundings keep clear of them)
+  // and by labels along lines and symbols (handed to the overlay as obstacles).
+  function claims() {
+    const boxes = [];
+    const draws = [];
+    const free = (b) => boxes.every((o) => !overlaps(b, o));
+    return {
+      free,
+      hard: [], // for the overlay: [x0, y0, x1, y1] in tile units
+      soft: [],
+      claim(box, hard, draw) {
+        boxes.push(box);
+        if (hard) this.hard.push(box);
+        if (draw) draws.push(draw);
+      },
+      flush() { for (const draw of draws) draw(); },
+    };
   }
 
   // --- a tile -------------------------------------------------------------------------
@@ -816,18 +1224,26 @@
     const k = canvas.width / e;
     ctx.setTransform(k, 0, 0, k, 0, 0);
     // Lines are in CSS pixels (`unit`; tile units are half a CSS pixel); symbols and text
-    // in scanned-chart pixels (`s`); symbol outlines thin out a little when zoomed out.
+    // in chart pixels (`s`); symbol outlines thin out a little when zoomed out.
     const unit = e / 256;
-    const zs = ZOOM_SCALE[zoom] ?? 1.2;
-    const s = unit * CHART_SCALE * zs;
-    const lw = unit * Math.min(1, zs);
+    const sc = scaleAt(zoom);
+    const s = unit * sc;
+    const lw = unit * Math.min(1.3, Math.max(0.7, sc));
+    const overview = zoom <= OVERVIEW_Z;
     ctx.lineCap = "butt";
     ctx.lineJoin = "round";
 
     const aidAt = new Map((data.aid || []).map((aid) => [`${aid[0]},${aid[1]}`, aid]));
-    // Labels claim their places first, so lines can be broken under the ones along them.
-    const label = labeller();
-    for (const cand of labelCandidates(ctx, data, zoom, s, unit, aidAt)) label.first(cand.spots);
+    // Labels claim their first spots first, so soundings and labels along lines keep clear.
+    const label = claims();
+    const cands = labelCandidates(data, zoom, aidAt);
+    for (const cand of cands) {
+      const lay = layoutLabel(ctx, cand, unit, sc);
+      const spot = lay.spots[0];
+      label.claim([cand.x + spot.box[0], cand.y + spot.box[1], cand.x + spot.box[2], cand.y + spot.box[3]], false);
+    }
+    const inside = (x, y) => x >= 0 && y >= 0 && x < e && y < e;
+    const symbol = (box, x, y) => { if (inside(x, y)) label.hard.push(box); };
 
     // 1. Land: the Finnish area, painted under the water.
     if (data.land) {
@@ -836,6 +1252,8 @@
       ctx.fillStyle = C.land;
       ctx.fill("evenodd");
     }
+    // Built-up areas, under the water so the shore stays crisp.
+    for (const [, ...rings] of data.buildarea || []) if (rings.length && Array.isArray(rings[0])) fillRings(ctx, rings, C.buildArea);
 
     // 2. Water on its own canvas, then a crisp coastline: the water grown by a pixel,
     // painted black, with the water on top.
@@ -860,7 +1278,37 @@
       ctx.restore();
     }
 
-    // 3. Main merchant fairways (class 1) in grey over the depths; anchorages outlined.
+    // 3. On land: lakes, height contours, roads and railways, buildings.
+    for (const rings of data.lake || []) {
+      if (!Array.isArray(rings) || !rings.length) continue;
+      fillRings(ctx, rings, C.lake);
+      strokeRings(ctx, rings, C.contour, 0.8 * unit);
+    }
+    const heightsLabelled = new Set();
+    for (const [metres, line] of data.height || []) {
+      if (!Array.isArray(line)) continue;
+      const major = metres % 20 === 0;
+      let gap = null;
+      if (zoom >= 14 && major && (coords.x + coords.y) % 2 === 1 && !heightsLabelled.has(metres)) {
+        const size = Math.max(9 * unit, 11 * s);
+        gap = alongLine(ctx, label, line, e, {
+          text: String(metres), font: `${size}px ${SANS}`, size, color: C.heightText, need: 50 * unit, pad: 1.5 * unit,
+        }) || null;
+        if (gap) heightsLabelled.add(metres);
+      }
+      strokeLine(ctx, line, C.height, (major ? 0.9 : 0.6) * unit, null, gap);
+    }
+    if (data.road || data.rail) drawRoads(ctx, data.road || [], data.rail || [], zoom, unit);
+    if (data.building?.length) {
+      ctx.fillStyle = C.black;
+      const mpu = 40075016.7 / 2 ** zoom / e / 2; // metres per tile unit, at about 60°N
+      for (const [x, y, size] of data.building) {
+        const side = Math.min(14 * s, Math.max(3.2 * s, (size || 0) / mpu));
+        ctx.fillRect(x - side / 2, y - side / 2, side, side);
+      }
+    }
+
+    // 4. Main merchant fairways (class 1) in grey over the depths; anchorages outlined.
     const anchors = [];
     for (const row of data.farea || []) {
       const [code, draught, vl, ...rings] = row;
@@ -873,17 +1321,21 @@
           ctx.fillStyle = C.fairwayArea;
           ctx.fill("evenodd");
         }
-      } else if (code === 2) {
+      } else if (code === 2 && !overview) {
         strokeRings(ctx, rings, C.magenta, 1.2 * unit, [8 * unit, 5 * unit]);
         const p = labelPoint(rings, e, 14 * s, 24 * s);
         if (p) anchors.push(p);
       }
     }
 
-    // 5. The small-craft trunk route's green band.
+    // 5. Traffic separation schemes and other routeing measures.
+    if (data.tss) drawTss(ctx, data.tss, e, s, unit);
+    if (data.tssline) drawTssLines(ctx, data.tssline, unit);
+
+    // 6. The small-craft trunk route's green band.
     for (const [line] of data.band || []) strokeLine(ctx, line, C.band, 18 * s);
 
-    // 6. Contours: 3 m dotted, 6 m dashed, 10 m and deeper solid with a figure in a break.
+    // 7. Contours: 3 m dotted, 6 m dashed, 10 m and deeper solid with a figure in a break.
     const labelled = new Set();
     for (const [depth, line] of data.contour || []) {
       if (depth <= 3) {
@@ -906,16 +1358,16 @@
       }
     }
 
-    // 7. Restricted areas: magenta T-dashed limits.
-    for (const [, , ...rings] of data.restrict || []) if (rings.length) restrictedLimit(ctx, rings, unit);
+    // 8. Restricted areas: magenta T-dashed limits.
+    if (!overview) for (const [, , ...rings] of data.restrict || []) if (rings.length) restrictedLimit(ctx, rings, unit);
 
-    // 8. Leading lines, dashed; the fairway line drawn over one makes it solid there.
+    // 9. Leading lines, dashed; the fairway line drawn over one makes it solid there.
     for (const row of data.lead || []) {
       let [bearing, line] = row;
       if (!line) { line = bearing; bearing = null; } // a tile from before bearings
       strokeLine(ctx, line, C.black, 1.1 * unit, [8 * unit, 5 * unit]);
       if (zoom >= 13 && bearing != null) {
-        const size = Math.max(MIN_TEXT * unit, 25 * s);
+        const size = Math.max(MIN_TEXT * unit, 21 * s);
         const b = (bearing * Math.PI) / 180;
         // Beside the line, to the right of a ship heading along it.
         alongLine(ctx, label, line, e, {
@@ -925,25 +1377,26 @@
       }
     }
 
-    // 9. Piers, quays and breakwaters.
+    // 10. Piers, quays and breakwaters.
     for (const [line] of data.shore || []) strokeLine(ctx, line, C.black, 2 * unit);
 
-    // 10. Fairway lines, with their draught "(9,0)" set into the line once per tile;
+    // 11. Fairway lines, with their draught "(9,0)" set into the line once per tile;
     // boat routes dashed, their advisory draught in italics.
     const draughts = new Set();
     for (const row of data.fline || []) {
       let [draught, vl, line] = row;
       if (!line) { line = vl; vl = null; } // a tile from before fairway classes
       const boat = draught == null || vl >= 5;
+      if (overview && boat) continue;
       let gap = null;
       if (zoom >= 12 && draught != null) {
         const text = fmtDraught(draught);
         if (!draughts.has(text)) {
-          const size = Math.max(MIN_TEXT * unit, 26 * s);
+          const size = Math.max(MIN_TEXT * unit, 23 * s);
           ctx.font = `${boat ? "italic " : ""}${size}px ${SANS}`;
-          const w = textWidth(ctx, text, 2 * s);
+          const w = textWidth(ctx, text, 0.08 * size);
           gap = alongLine(ctx, label, line, e, {
-            text, font: ctx.font, size, spacing: 2 * s, color: C.fairway, need: 3 * w, pad: -0.05 * size,
+            text, font: ctx.font, size, spacing: 0.08 * size, color: C.fairway, need: 3 * w, pad: -0.05 * size,
             alternate: zoom >= 14 ? coords : null,
           }) || null;
           if (gap) draughts.add(text);
@@ -953,61 +1406,99 @@
       else strokeLine(ctx, line, C.fairway, (zoom >= 13 ? 2.2 : 1.6) * unit, null, gap);
     }
 
-    // 11. Rocks, rock clusters, wrecks, heritage sites and anchorages.
-    for (const [x, y, kind] of data.rock || []) drawRock(ctx, x, y, kind, s, false);
-    for (const row of data.rockarea || []) {
-      const [kind, ...rings] = row;
-      if (Array.isArray(kind)) rings.unshift(kind); // a tile from before rock-cluster kinds
-      const rock = Array.isArray(kind) || !kind ? 1 : kind;
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const ring of rings) {
-        for (let i = 0; i < ring.length; i += 2) {
-          x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]);
-          y0 = Math.min(y0, ring[i + 1]); y1 = Math.max(y1, ring[i + 1]);
+    // 12. Rocks, rock clusters, wrecks, heritage sites and anchorages.
+    if (!overview) {
+      for (const [x, y, kind] of data.rock || []) {
+        drawRock(ctx, x, y, kind, s, false);
+        if (inside(x, y)) label.soft.push([x - 5 * s, y - 7 * s, x + 5 * s, y + 7 * s]);
+      }
+      for (const row of data.rockarea || []) {
+        const [kind, ...rings] = row;
+        if (Array.isArray(kind)) rings.unshift(kind); // a tile from before rock-cluster kinds
+        const rock = Array.isArray(kind) || !kind ? 1 : kind;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const ring of rings) {
+          for (let i = 0; i < ring.length; i += 2) {
+            x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]);
+            y0 = Math.min(y0, ring[i + 1]); y1 = Math.max(y1, ring[i + 1]);
+          }
+        }
+        if (Math.max(x1 - x0, y1 - y0) >= 24 * unit) {
+          // A wide cluster: a dotted danger line round it.
+          ctx.lineCap = "round";
+          strokeRings(ctx, rings, C.black, unit, [0.01 * unit, 3 * unit]);
+          ctx.lineCap = "butt";
+        }
+        const c = ringCentroid(rings[0]) || [(x0 + x1) / 2, (y0 + y1) / 2];
+        drawRock(ctx, c[0], c[1], rock, s, true);
+      }
+      for (const [x, y, kind] of data.wreck || []) {
+        drawWreck(ctx, x, y, kind, s, C.black);
+        symbol([x - 10 * s, y - 8 * s, x + 10 * s, y + 6 * s], x, y);
+      }
+      if (options.heritage) {
+        for (const site of data.heritage || []) {
+          drawHeritage(ctx, site, s, lw, unit);
+          const r = site[4] === 0 && site[5] <= 3 ? 10 * s : 7 * s;
+          symbol([site[0] - r, site[1] - r, site[0] + r, site[1] + r], site[0], site[1]);
         }
       }
-      if (Math.max(x1 - x0, y1 - y0) >= 24 * unit) {
-        // A wide cluster: a dotted danger line round it.
-        ctx.lineCap = "round";
-        strokeRings(ctx, rings, C.black, unit, [0.01 * unit, 3 * unit]);
-        ctx.lineCap = "butt";
+      for (const [x, y] of anchors) {
+        anchor(ctx, x, y, s, lw);
+        symbol([x - 7 * s, y - 12 * s, x + 7 * s, y + 12 * s], x, y);
       }
-      const c = ringCentroid(rings[0]) || [(x0 + x1) / 2, (y0 + y1) / 2];
-      drawRock(ctx, c[0], c[1], rock, s, true);
     }
-    for (const [x, y, kind] of data.wreck || []) drawWreck(ctx, x, y, kind, s, C.black);
-    if (options.heritage) for (const site of data.heritage || []) drawHeritage(ctx, site, s, lw, unit);
-    for (const [x, y] of anchors) anchor(ctx, x, y, s, lw);
 
-    // 12. Light sectors up close: coloured arcs round the light, their limits dotted, a
+    // 13. Light sectors up close: coloured arcs round the light, their limits dotted, a
     // colour letter outside each. A sector "from 200° to 238°" is seen from ships bearing
-    // 200-238° towards the light, so it lies on the opposite side.
+    // 200-238° towards the light, so it lies on the opposite side. A narrow white sector
+    // (a directional light's) is a yellow strip out along its middle, as on the chart.
     const arcsAt = new Set();
     if (zoom >= 14 && data.sector?.length) {
-      const r = 60 * s, width = 7 * s;
+      const r = 58 * s, width = 7 * s;
       const arcs = data.sector.map(([x, y, from, to, colour]) => {
         arcsAt.add(`${x},${y}`);
         const a1 = ((from + 90) * Math.PI) / 180;
         let a2 = ((to + 90) * Math.PI) / 180;
         if (a2 <= a1) a2 += 2 * Math.PI;
-        return { x, y, a1, a2, letter: SECTOR[colour] || "W" };
+        const letter = SECTOR[colour] || "W";
+        return { x, y, a1, a2, letter, strip: letter === "W" && a2 - a1 <= (8 * Math.PI) / 180 };
       });
       ctx.lineCap = "round";
       ctx.setLineDash([0.01 * unit, 4 * unit]);
       ctx.beginPath();
-      for (const { x, y, a1, a2 } of arcs) {
+      for (const { x, y, a1, a2, strip } of arcs) {
+        if (strip) continue;
         for (const a of [a1, a2]) {
           ctx.moveTo(x + Math.cos(a) * 4 * s, y + Math.sin(a) * 4 * s);
           ctx.lineTo(x + Math.cos(a) * 2.2 * r, y + Math.sin(a) * 2.2 * r);
         }
       }
       ctx.strokeStyle = C.black;
-      ctx.lineWidth = 1.3 * unit;
+      ctx.lineWidth = 1.2 * unit;
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.lineCap = "butt";
+      // Labels keep clear of the arcs and strips where they can.
+      for (const { x, y, a1, a2, strip } of arcs) {
+        if (!inside(x, y)) continue;
+        const near = (px, py) => label.soft.push([px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s]);
+        const mid = (a1 + a2) / 2;
+        if (strip) for (let d = 8 * s; d <= 3.2 * r; d += 8 * s) near(x + Math.cos(mid) * d, y + Math.sin(mid) * d);
+        else for (let a = a1; a <= a2; a += (8 * s) / r) near(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      }
+      for (const { x, y, a1, a2, strip } of arcs) {
+        if (!strip) continue;
+        const a = (a1 + a2) / 2, len = 3.2 * r;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 4 * s, y + Math.sin(a) * 4 * s);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.strokeStyle = C.black; ctx.lineWidth = 5 * s + 1.4 * unit; ctx.stroke();
+        ctx.strokeStyle = C.yellow; ctx.lineWidth = 5 * s; ctx.stroke();
+      }
       for (const pass of [0, 1]) {
-        for (const { x, y, a1, a2, letter } of arcs) {
+        for (const { x, y, a1, a2, letter, strip } of arcs) {
+          if (strip) continue;
           const yellow = LIGHT[letter] === C.yellow;
           if (pass === 0 && !yellow) continue;
           ctx.beginPath();
@@ -1021,36 +1512,245 @@
       ctx.fillStyle = C.black;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      for (const { x, y, a1, a2, letter } of arcs) {
+      for (const { x, y, a1, a2, letter, strip } of arcs) {
+        if (strip || a2 - a1 < 0.05) continue;
         const a = (a1 + a2) / 2;
         ctx.fillText(letter, x + Math.cos(a) * (r + 10 * s), y + Math.sin(a) * (r + 10 * s));
       }
     }
 
-    // 13. Navigation aids: every flare first, then the black symbols over them. Floating
-    // marks before fixed ones, lights last.
+    // 14. Navigation aids: every flare first, then the black symbols over them. Floating
+    // marks before fixed ones, lights last. Radar beacons get their magenta ring.
     const order = { v: 0, p: 0, k: 1, l: 1, r: 2, o: 2, t: 2, a: 3, d: 3, s: 3, m: 4 };
     const aids = (data.aid || []).slice().sort((a, b) => (order[a[2]] ?? 2) - (order[b[2]] ?? 2));
-    for (const aid of aids) if (aid[4] && !arcsAt.has(`${aid[0]},${aid[1]}`)) drawFlares(ctx, aid, s, lw);
+    for (const aid of aids) {
+      if (!aid[4] || arcsAt.has(`${aid[0]},${aid[1]}`)) continue;
+      const lead = "lds".includes(aid[2]) ? leadBearing(aid, data.lead || []) : null;
+      for (const b of drawFlares(ctx, aid, s, lw, lead)) if (inside(aid[0], aid[1])) label.soft.push(flareBox(aid[0], aid[1], s, b));
+    }
+    for (const aid of aids) {
+      if (aid[2] !== "t") continue;
+      ctx.beginPath(); ctx.arc(aid[0], aid[1], 20 * s, 0, 7);
+      ctx.lineWidth = 1.3 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
+    }
     const marks = [];
     for (const aid of aids) {
       drawMark(ctx, aid, s, lw, zoom);
-      marks.push(markBox(aid, s));
+      const box = markBox(aid, s);
+      marks.push(box);
+      symbol(box, aid[0], aid[1]);
     }
 
-    // 14. Soundings where no label or symbol is, then all the lettering.
+    // 15. Landmarks, pilot boarding places and signs.
+    for (const [x, y, kind] of data.landmark || []) {
+      const box = drawLandmark(ctx, x, y, kind, s, lw);
+      marks.push(box);
+      symbol(box, x, y);
+    }
+    for (const [x, y] of data.pilot || []) {
+      const box = drawPilot(ctx, x, y, s, lw);
+      marks.push(box);
+      symbol(box, x, y);
+    }
+    for (const [x, y, type, value] of data.sign || []) {
+      const box = drawSign(ctx, x, y, type, value, s, lw);
+      marks.push(box);
+      symbol(box, x, y);
+    }
+
+    // 16. Soundings where no label or symbol is; then the labels along lines.
     if (zoom >= 13) {
       // Shallowest first, as charts keep those; in the same order in every tile.
       const soundings = (data.sounding || []).slice().sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
       for (const [x, y, depth] of soundings) {
         const box = soundingBox(x, y, depth, s);
-        if (!label.free(box) || marks.some((m) => box[0] < m[2] && box[2] > m[0] && box[1] < m[3] && box[3] > m[1])) continue;
-        label.claim(box);
+        if (!label.free(box) || marks.some((m) => overlaps(box, m))) continue;
+        label.claim(box, false);
+        if (inside(x, y)) label.soft.push(box);
         sounding(ctx, x, y, depth, s);
       }
     }
     label.flush();
+
+    // What the overlay needs: the tile's own labels and its obstacles.
+    return { z: zoom, x: coords.x, y: coords.y, e, cands: cands.filter((c) => c.inside), hard: label.hard, soft: label.soft };
   }
+
+  // --- the screen's labels --------------------------------------------------------------
+
+  // Boxes in a coarse grid, for quick overlap tests.
+  class BoxGrid {
+    constructor(cell) { this.cell = cell; this.cells = new Map(); }
+    _keys(b, fn) {
+      const c = this.cell;
+      const x0 = Math.floor(b[0] / c), x1 = Math.floor(b[2] / c), y0 = Math.floor(b[1] / c), y1 = Math.floor(b[3] / c);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) if (fn((x + 4096) * 8192 + y + 4096)) return true;
+      return false;
+    }
+    insert(b) {
+      this._keys(b, (key) => {
+        let list = this.cells.get(key);
+        if (!list) this.cells.set(key, (list = []));
+        list.push(b);
+      });
+    }
+    hits(b) {
+      return this._keys(b, (key) => (this.cells.get(key) || []).some((o) => overlaps(b, o)));
+    }
+    count(b) {
+      let n = 0;
+      const seen = new Set();
+      this._keys(b, (key) => {
+        for (const o of this.cells.get(key) || []) if (!seen.has(o) && overlaps(b, o)) { seen.add(o); n++; }
+      });
+      return n;
+    }
+  }
+
+  const PANE = "fwChartLabels";
+  const MAX_LABELS = 1200; // candidates looked at per redraw
+
+  // A canvas over the whole map (and a margin round it) with the chart's lettering, placed
+  // for the screen as a whole: redrawn after every move or zoom and as tiles arrive.
+  const LabelOverlay = L.Layer.extend({
+    options: { padding: 0.25 },
+
+    initialize(chart) { this._chart = chart; },
+
+    onAdd(map) {
+      if (!map.getPane(PANE)) {
+        const pane = map.createPane(PANE);
+        pane.style.zIndex = 350; // over the tiles, under paths, markers and popups
+        pane.style.pointerEvents = "none";
+      }
+      this._canvas = L.DomUtil.create("canvas", "leaflet-zoom-animated", map.getPane(PANE));
+      this._canvas.style.pointerEvents = "none";
+      this._reset();
+    },
+
+    onRemove() {
+      clearTimeout(this._timer);
+      cancelAnimationFrame(this._frame);
+      L.DomUtil.remove(this._canvas);
+      this._canvas = null;
+    },
+
+    getEvents() {
+      return { viewreset: this._reset, moveend: this._reset, zoom: this._onZoom, zoomanim: this._onAnimZoom, resize: this._reset };
+    },
+
+    _onAnimZoom(e) { this._updateTransform(e.center, e.zoom); },
+    _onZoom() { this._updateTransform(this._map.getCenter(), this._map.getZoom()); },
+
+    // While zooming, the drawn labels are scaled with the map, as Leaflet's own canvas does.
+    _updateTransform(center, zoom) {
+      if (!this._center) return;
+      const map = this._map;
+      const scale = map.getZoomScale(zoom, this._zoom);
+      const viewHalf = map.getSize().multiplyBy(0.5 + this.options.padding);
+      const centerPoint = map.project(this._center, zoom);
+      const topLeft = viewHalf.multiplyBy(-scale).add(centerPoint).subtract(map._getNewPixelOrigin(center, zoom));
+      L.DomUtil.setTransform(this._canvas, topLeft, scale);
+    },
+
+    // Called by the chart as tiles arrive: redraw soon, not for every tile.
+    schedule() {
+      if (!this._map || this._timer) return;
+      this._timer = setTimeout(() => {
+        this._timer = null;
+        if (this._map._animatingZoom) return; // zoomend redraws
+        cancelAnimationFrame(this._frame);
+        this._frame = requestAnimationFrame(() => this._draw());
+      }, 90);
+    },
+
+    _reset() {
+      const map = this._map;
+      if (!map || !this._canvas) return;
+      const p = this.options.padding;
+      const size = map.getSize();
+      const min = map.containerPointToLayerPoint(size.multiplyBy(-p)).round();
+      this._bounds = L.bounds(min, min.add(size.multiplyBy(1 + 2 * p)).round());
+      this._center = map.getCenter();
+      this._zoom = map.getZoom();
+      L.DomUtil.setPosition(this._canvas, min);
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const w = this._bounds.max.x - min.x, h = this._bounds.max.y - min.y;
+      if (this._canvas.width !== Math.round(w * dpr) || this._canvas.height !== Math.round(h * dpr)) {
+        this._canvas.width = Math.round(w * dpr);
+        this._canvas.height = Math.round(h * dpr);
+        this._canvas.style.width = `${w}px`;
+        this._canvas.style.height = `${h}px`;
+      }
+      this._dpr = dpr;
+      cancelAnimationFrame(this._frame);
+      this._draw();
+    },
+
+    _draw() {
+      const map = this._map, chart = this._chart, canvas = this._canvas;
+      if (!map || !canvas || !this._bounds) return;
+      const t0 = performance.now();
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const tz = chart._tileZoom;
+      if (tz == null || !chart._tiles) return;
+      ctx.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
+      const W = this._bounds.max.x - this._bounds.min.x, H = this._bounds.max.y - this._bounds.min.y;
+      const zoom = map.getZoom();
+      const zscale = map.getZoomScale(zoom, tz);
+      const origin = map.getPixelOrigin().add(this._bounds.min);
+      const ts = chart.getTileSize().x;
+      const sc = scaleAt(tz);
+
+      const hard = new BoxGrid(64), soft = new BoxGrid(64);
+      const cands = [];
+      const margin = 120;
+      for (const key in chart._tiles) {
+        const tile = chart._tiles[key];
+        const fw = tile.el._fw;
+        if (!fw || tile.coords.z !== tz) continue;
+        const f = (ts / fw.e) * zscale;
+        const ox = fw.x * ts * zscale - origin.x, oy = fw.y * ts * zscale - origin.y;
+        if (ox > W + margin || oy > H + margin || ox + ts * zscale < -margin || oy + ts * zscale < -margin) continue;
+        const conv = (b) => [ox + b[0] * f, oy + b[1] * f, ox + b[2] * f, oy + b[3] * f];
+        for (const b of fw.hard) hard.insert(conv(b));
+        for (const b of fw.soft) soft.insert(conv(b));
+        for (const c of fw.cands) {
+          const x = ox + c.x * f, y = oy + c.y * f;
+          if (x < -margin || y < -margin || x > W + margin || y > H + margin) continue;
+          cands.push({ c, x, y, gx: Math.round(x + origin.x), gy: Math.round(y + origin.y) });
+        }
+      }
+      cands.sort((a, b) => a.c.prio - b.c.prio || a.c.rank - b.c.rank || a.gy - b.gy || a.gx - b.gx);
+      let placed = 0;
+      const draws = [];
+      const once = new Map(); // text -> where it was placed, for labels repeated across an area
+      for (let i = 0; i < cands.length && i < MAX_LABELS; i++) {
+        const { c, x, y } = cands[i];
+        const onceKey = c.once && c.lines[0][0];
+        if (onceKey && (once.get(onceKey) || []).some(([px, py]) => Math.hypot(px - x, py - y) < c.once)) continue;
+        const lay = layoutLabel(ctx, c, 1, sc);
+        let best = null, bestSoft = Infinity;
+        for (const spot of lay.spots) {
+          const box = [x + spot.box[0], y + spot.box[1], x + spot.box[2], y + spot.box[3]];
+          if (hard.hits(box)) continue;
+          const n = c.prio <= PRIO.sea ? 0 : soft.count(box);
+          if (n < bestSoft) { best = { spot, box }; bestSoft = n; }
+          if (n === 0) break;
+        }
+        // Names of land and sites give way to soundings and rocks; the rest only shift.
+        if (!best || (bestSoft > 0 && c.prio >= PRIO.island && bestSoft > 1)) continue;
+        hard.insert(best.box);
+        if (onceKey) once.set(onceKey, [...(once.get(onceKey) || []), [x, y]]);
+        placed++;
+        draws.push([lay, x + best.spot.dx, y + best.spot.dy, best.spot.align]);
+      }
+      for (const [lay, x0, y0, align] of draws) drawLabel(ctx, lay, x0, y0, align);
+      window.__fwLabelStats = { ms: Math.round((performance.now() - t0) * 10) / 10, candidates: cands.length, placed };
+    },
+  });
 
   // --- the Leaflet layer -------------------------------------------------------------
 
@@ -1102,9 +1802,10 @@
               return;
             }
             setWaiting(false);
-            drawTile(canvas, data, coords, dpr);
+            canvas._fw = drawTile(canvas, data, coords, dpr);
             this._rememberTaps(coords, data);
             show(null);
+            this._labels?.schedule();
           })
           .catch((err) => {
             if (err.name !== "AbortError") console.error("Chart tile", coords, err);
@@ -1137,6 +1838,7 @@
       this._ratioChanged = this._ratioChanged || (() => {
         this._watchPixelRatio();
         this.redraw();
+        this._labels?._reset();
       });
       this._ratioQuery?.removeEventListener?.("change", this._ratioChanged);
       this._ratioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
@@ -1146,6 +1848,7 @@
     _tileUnload(e) {
       clearTimeout(e.tile._retry);
       e.tile._abort?.abort();
+      e.tile._fw = null;
       tileAids.delete(this._tileCoordsToKey(e.coords));
     },
 
@@ -1153,6 +1856,7 @@
       layers.delete(this);
       this._ratioQuery?.removeEventListener?.("change", this._ratioChanged);
       this._ratioQuery = null;
+      if (this._labels) map.removeLayer(this._labels);
       L.GridLayer.prototype.onRemove.call(this, map);
     },
 
@@ -1162,6 +1866,18 @@
       this.off("tileunload", this._tileUnload, this);
       this.on("tileunload", this._tileUnload, this);
       this._watchPixelRatio();
+      this._labels = this._labels || new LabelOverlay(this);
+      map.addLayer(this._labels);
+    },
+
+    // The lowest zoom the server has tiles for.
+    _setMinZoom(z) {
+      if (this.options.minZoom === z) return;
+      this.options.minZoom = z;
+      if (this._map) {
+        this._resetView?.();
+        this.redraw();
+      }
     },
   });
 
@@ -1221,11 +1937,16 @@
   }
 
   window.FerryChart = {
-    layer: (opts) => new ChartLayer(opts),
+    layer: (opts) => new ChartLayer({ minZoom: serverMinZoom, ...opts }),
     aidAt,
     colors: C,
     onWaiting: (fn) => { waitingChanged = fn; },
-    setRev: (r) => {
+    // The server's tile revision (and the lowest zoom it cuts tiles for, if it says).
+    setRev: (r, minZoom) => {
+      if (Number.isInteger(minZoom) && minZoom !== serverMinZoom) {
+        serverMinZoom = minZoom;
+        for (const layer of layers) layer._setMinZoom(minZoom);
+      }
       if (!r || r === rev) return;
       const first = rev === "";
       rev = r;
