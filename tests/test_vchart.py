@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 
 import aiohttp
@@ -707,7 +708,7 @@ def test_misread_capabilities_are_not_trusted(tmp_path):
     assert again._resolve("rajoitettu:PrecautionaryArea_A") is None and again._resolve("rajoitettu:DepthArea_A")
 
 
-def test_overview_tiles(tmp_path):
+def test_overview_tiles(tmp_path, monkeypatch):
     chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
     # Blocks get on disk as the map is looked at zoomed in; overviews are made from them.
     _tiles(chart, *[(10, lat, lon) for lat in (59.85, 59.95, 60.05) for lon in (24.1, 24.4, 24.7)])
@@ -719,17 +720,48 @@ def test_overview_tiles(tmp_path):
         assert t["contour"] and {row[0] for row in t["contour"]} <= set(vchart.OVERVIEW_CONTOURS)
         assert {row[1] for row in t["fline"]} == {1}  # merchant fairways only, the class carried along
         assert t["aid"] and all(a[2] in vchart.MAJOR_AIDS for a in t["aid"])
-        assert "Suomenlahti" in [n[2] for n in t["name"]]  # seas and towns only
-        assert {n[2] for n in t["name"]} <= {"Suomenlahti", "Kirkkonummi"}
+        assert {n[2] for n in t.get("name", ())} <= {"Suomenlahti", "Kirkkonummi"}  # seas and towns only
         for key in ("sounding", "rock", "height", "building", "sign", "heritage", "farea"):
             assert key not in t
+    assert "Suomenlahti" in [n[2] for n in t8["name"]]  # (at 59.80, south of the zoom-9 tile)
     assert not ok9 and not ok8  # not every block of them is there yet
     assert empty == {"e": 512, "cover": 0} and not ok_empty  # nothing fetched up north
     assert sea == {"e": 512} and ok_sea  # nothing Finnish out there at all
     assert list((tmp_path / "overview").iterdir())
+    assert not chart._memory_bytes or len(chart._memory) <= vchart.MEMORY_BLOCKS  # nothing kept for overviews
     # Kept, and read back from disk after a restart.
     again = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
-    assert _tiles(again, (9, 60.0, 24.4))[0][0] == t9
+    assert json.dumps(_tiles(again, (9, 60.0, 24.4))[0][0]) == json.dumps(t9)
+    # Another block of it fetched: shown as it was for a while (and not complete), then cut again.
+    _tiles(again, (10, 60.15, 24.1))
+    (stale, ok), = _tiles(again, (9, 60.0, 24.4))
+    assert json.dumps(stale) == json.dumps(t9) and not ok
+    monkeypatch.setattr(vchart, "OVERVIEW_RECUT", 0)
+    (recut, _), = _tiles(again, (9, 60.0, 24.4))
+    assert recut["cover"] > t9["cover"]
+    # Without the Land Survey key its names aren't on overview tiles either.
+    (no_key, _), = _tiles(VectorChart(tmp_path, None, fake_chart_layer), (9, 60.0, 24.4))
+    assert "name" not in no_key and no_key["depth"]
+
+
+def test_ram_is_let_go_when_nobody_looks(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "IDLE_FORGET", 0.2)
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer)
+        await chart.tile(*tile_at(60.005, 24.4, 12))
+        await chart.tile(*tile_at(60.0, 24.4, 9))
+        assert chart._memory
+        for _ in range(3):  # still being looked at: kept
+            await asyncio.sleep(0.1)
+            await chart.tile(*tile_at(60.005, 24.4, 12))
+        assert chart._memory
+        await asyncio.sleep(0.4)
+        assert not chart._memory and not chart._coast and chart._memory_bytes == 0
+        tile, ok = await chart.tile(*tile_at(60.005, 24.4, 12))  # read back from disk
+        assert ok and tile["depth"] and chart._memory
+
+    asyncio.run(run())
 
 
 def test_overview_level_is_skipped_by_read_block(tmp_path):

@@ -17,8 +17,8 @@ Data is fetched lazily in blocks (zoom-11 map tiles, about 10 km across) the
 first time part of the map is viewed, kept on the NAS for a month, and cut into
 small map tiles on request. Land is whatever isn't water: the panel paints the
 Finnish area in the land colour and draws the depth areas over it, so islands
-line up exactly with the depths around them. Zoomed out (zooms 8-9) tiles come
-from an overview per zoom-7 region, put together from the blocks on disk.
+line up exactly with the depths around them. Zoomed out (zooms 8-9) tiles are cut
+from a coarse copy at the head of each block file on disk, and kept on disk too.
 
 Which layers each service has is read from its capabilities once a day, so a layer
 a service doesn't have (or names differently) is left out instead of failing.
@@ -68,8 +68,7 @@ ATTRIBUTION = ("Chart data: Traficom (depths, routeing, harbour structures), Vä
 SERVICES = {"rajoitettu": TRAFICOM_WFS, "avoin": TRAFICOM_OPEN_WFS, "vesivaylatiedot": VAYLA_WFS}
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
-BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks...
-OVERVIEW_Z = 7  # ...and below it from overviews of zoom-7 regions (about 80 km across)
+BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks' levels, below it from their overview levels
 MIN_Z = 8  # below this the panel shows Traficom's overview chart
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
@@ -85,10 +84,20 @@ CAPS_MAX_AGE = 86400  # s between reads of which layers each service has
 PAGE = 2000  # features per request; a page over MAX_RESPONSE is asked for again in halves
 MML_PAGE = 1000
 MML_PAGES = {"height": 250, "building": 500, "road": 500, "lake": 250}  # long or dense features: smaller pages
-MAX_RESPONSE = 8 * 1024 * 1024  # bytes; a bigger page is asked for again in halves
-MEMORY_BYTES = 24 * 1024 * 1024  # parsed blocks kept in RAM, by their array sizes...
+# Bytes; a bigger page is asked for again in halves. Parsing a page is the biggest use of RAM
+# here, about seven times its size (a 4 MB page of depth areas takes some 30 MB for a moment).
+MAX_RESPONSE = 4 * 1024 * 1024
+# Parsed blocks kept in RAM, by their array sizes (blocks with land detail take a few MB
+# each at full detail, so the cache holds a handful of them)...
+MEMORY_BYTES = 16 * 1024 * 1024
 MEMORY_BLOCKS = 64  # ...and by count; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
+# s without a tile request after which what's in RAM is let go: the chart is mostly not
+# being looked at, and on a small NAS those MB are better left to the rest of the system.
+IDLE_FORGET = 300
+# s an overview tile is shown as cut although blocks in it changed since: while blocks are
+# being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
+OVERVIEW_RECUT = 60
 TILE_REV = 6  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
@@ -96,7 +105,7 @@ HALF = 20037508.342789244  # half the web-mercator world, in metres
 # units, smallest feature kept in block units). Zoomed-out tiles read only the first.
 LEVELS = ((11, 24, 64), (13, 8, 16), (99, 0, 0))
 # A coarser copy of what overview charts show, ahead of LEVELS in each file, from which the
-# zoom-8 and 9 overviews are put together (192 block units is about 60 m on the ground).
+# zoom-8 and 9 tiles are cut (192 block units is about 60 m on the ground).
 OVERVIEW_LEVEL = (9, 192, 512)
 # Land Survey data is digitised to a metre or so; simplifying the full detail by about half a
 # metre is invisible on the chart and halves the size of contours and roads.
@@ -1185,38 +1194,32 @@ def _run_pts(layer: Layer, v0: int, v1: int, x0: float, y0: float, x1: float, y1
     return out
 
 
-def _fairway_classes(blocks: dict[tuple[int, int], dict | None]) -> dict[int, int]:
-    """Fairway number -> class (1 main merchant fairway ... 6), from the blocks' routes."""
-    classes: dict[int, int] = {}
-    for data in blocks.values():
-        route = (data or {}).get("route")
-        for props in route.props if route else ():
-            jnro, vl = _int(props[1]), _int(props[0])
-            if jnro is not None and vl is not None:
-                classes[jnro] = vl
-    return classes
-
-
-def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None],
-              block_z: int = BLOCK_Z) -> dict[str, Any]:
+def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None] | Iterable[tuple]) -> dict[str, Any]:
     """The chart features for one map tile, in tile units (0..EXTENT, y down). ``blocks``
-    are zoom-``block_z`` tiles of data in block units: blocks, or overview regions."""
+    may also be (key, data) pairs made as they're needed, so that overview tiles never
+    hold more than one block's data at a time."""
     tile: dict[str, Any] = {"e": EXTENT}
     rows: dict[str, list] = {}  # layer -> [props, geometry...] or [x, y, props], before formatting
     lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
     tol = 0.35 if z >= 12 else 0.5
     land_rects: list[tuple[float, float, float, float]] = []
     seen_points: set = set()
-    for (bx, by), data in blocks.items():
+    classes: dict[int, int] = {}  # fairway number -> class (1 main merchant fairway ... 6), from the routes
+    for (bx, by), data in blocks.items() if isinstance(blocks, dict) else blocks:
         if not data:
             continue
+        route = data.get("route")
+        for props in route.props if route else ():
+            jnro, vl = _int(props[1]), _int(props[0])
+            if jnro is not None and vl is not None:
+                classes[jnro] = vl
         # Block units -> tile units, and the tile (with buffer) in block units for quick skips.
-        if z >= block_z:
-            n = 2 ** (z - block_z)
+        if z >= BLOCK_Z:
+            n = 2 ** (z - BLOCK_Z)
             size = UNITS / n
             ox, oy = (x - bx * n) * size, (y - by * n) * size
         else:
-            n = 2 ** (block_z - z)
+            n = 2 ** (BLOCK_Z - z)
             size = UNITS * n
             ox, oy = (x * n - bx) * UNITS, (y * n - by) * UNITS
         k = EXTENT / size
@@ -1227,15 +1230,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             return [((px - ox) * k, (py - oy) * k) for px, py in pts]
 
         depth = data.get("depth")
-        cover = data.get("_cover")
-        if cover is not None:
-            # An overview: land only over the blocks it was made from.
-            for cx0, cy0, cx1, cy1 in cover:
-                rect = (max(lo, (cx0 - ox) * k - 1), max(lo, (cy0 - oy) * k - 1),
-                        min(hi, (cx1 - ox) * k + 1), min(hi, (cy1 - oy) * k + 1))
-                if rect[0] < rect[2] and rect[1] < rect[3]:
-                    land_rects.append(rect)
-        elif depth is not None and depth.n:
+        if depth is not None and depth.n:
             # Land is painted only where this block's depths are, so a block that
             # couldn't be fetched never shows up as solid land. (1 unit of overlap
             # hides the seam between blocks.)
@@ -1305,7 +1300,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         land = [_flat(part) for part in (clip_ring(ring, *rect) for rect in land_rects) if len(part) >= 3]
         if land:
             tile["land"] = land
-    _format(tile, rows, z, _fairway_classes(blocks))
+    _format(tile, rows, z, classes)
     return {k: v for k, v in tile.items() if v != []}
 
 
@@ -1715,98 +1710,31 @@ def finish_part(built: dict[str, Layer]) -> dict[str, Layer]:
 
 
 # --- overviews (zooms 8-9) ------------------------------------------------------------
-# Overview tiles come from zoom-7 regions put together from the overview level of each
-# block file on disk, not from downloads of their own: a WFS query over a whole region
-# would bring every vertex of the archipelago's depth areas (hundreds of MB) only to
-# throw nearly all of it away, where the blocks already hold a simplified copy, a few KB
-# each. So the overview shows the blocks that have been fetched (all of the Gulf of
+# Overview tiles are cut from the overview level at the head of each block file on disk,
+# not from downloads of their own: a WFS query over a large area would bring every vertex
+# of the archipelago's depth areas only to throw nearly all of it away, where the blocks
+# already hold a simplified copy. A tile reads its blocks (16 at zoom 9, 64 at zoom 8) one
+# at a time and keeps nothing in RAM; a whole region's overview kept in memory would take
+# 100 MB and more in the archipelago. Cut tiles are kept on disk until a block in them
+# changes. So the overview shows the blocks that have been fetched (all of the Gulf of
 # Finland with "Keep chart on NAS"), and tiles say how much of them is there ("cover").
 
-OVERVIEW_REGIONS = 4  # regions kept in RAM
-OVERVIEW_CHECK = 60  # s between looks for newer blocks in a region in RAM...
-OVERVIEW_REBUILD = 600  # ...and at most this often is it put together again while blocks arrive
-REGION_BLOCKS = 2 ** (BLOCK_Z - OVERVIEW_Z)  # blocks across a region
 # Parts with anything for overviews; the rest aren't read.
 OVERVIEW_PARTS = tuple(p for p, keys in PARTS.items()
                        if any(LAYER_MIN_Z.get(k, 99) <= OVERVIEW_LEVEL[0] for k in keys))
 
 
-def region_blocks(root: Path, rx: int, ry: int) -> dict[tuple[int, int], dict[str, Path]]:
-    """Block part files on disk in a zoom-7 region: (bx, by) -> {part: path}."""
-    s = BLOCK_Z - OVERVIEW_Z
-    out: dict[tuple[int, int], dict[str, Path]] = {}
-    try:
-        entries = list(os.scandir(root))
-    except FileNotFoundError:
-        return out
-    for e in entries:
-        if not e.name.endswith(SUFFIX):
-            continue
-        coords, _, part = e.name[:-len(SUFFIX)].partition(".")
-        try:
-            bx, by = (int(v) for v in coords.split("_"))
-        except ValueError:
-            continue
-        if bx >> s == rx and by >> s == ry:
-            out.setdefault((bx, by), {})[part] = Path(e.path)
-    return out
-
-
-def _add_scaled(b: LayerBuilder, L: Layer, ox: float, oy: float, f: float, seen: set, key: str) -> None:
-    """A block's layer into a region's, scaled down (block -> region units)."""
-    co = L.co
-    for i in range(L.n):
-        props = L.props[L.pi[i]]
-        if L.kind == "point":
-            x, y = round(ox + co[2 * i] * f), round(oy + co[2 * i + 1] * f)
-            if (key, x, y, props) not in seen:  # the same point from two blocks' margins
-                seen.add((key, x, y, props))
-                b.point(props, x, y)
-        elif L.kind == "line":
-            b.line(props, [(ox + co[2 * v] * f, oy + co[2 * v + 1] * f) for v in range(L.vo[i], L.vo[i + 1])])
-        else:
-            b.area(props, [[(ox + co[2 * v] * f, oy + co[2 * v + 1] * f) for v in range(L.vo[r], L.vo[r + 1])]
-                           for r in L.rings(i)])
-
-
-def build_overview(rx: int, ry: int, files: dict[tuple[int, int], dict[str, Path]]) -> tuple[dict, dict]:
-    """(meta, layers) of a region's overview, in region units, from its block files. One
-    block's overview level is read at a time, so this needs little more RAM than the result."""
-    f = 1 / REGION_BLOCKS
-    builders: dict[str, LayerBuilder] = {}
-    seen: set = set()
-    have, covered = [], set()
-    for (bx, by), parts in sorted(files.items()):
-        if "" not in parts:
-            continue
-        have.append((bx, by))
-        ox, oy = (bx - rx * REGION_BLOCKS) * UNITS * f, (by - ry * REGION_BLOCKS) * UNITS * f
-        block: dict[str, Layer] = {}
-        for part in OVERVIEW_PARTS:  # in order: a layer in a later part replaces an earlier one's
-            if part in parts:
-                try:
-                    block.update(read_overview(parts[part]))
-                except (OSError, ValueError, EOFError, KeyError) as err:
-                    _LOGGER.debug("Overview skips %s: %s", parts[part].name, err)
-        if block.get("depth") is not None and block["depth"].n:
-            covered.add((bx, by))
-        for key, L in block.items():
-            _add_scaled(builders.setdefault(key, LayerBuilder(L.kind)), L, ox, oy, f, seen, key)
-    # Land is painted only over blocks with depths: runs of them along each row.
-    cover = []
-    for by in sorted({b[1] for b in covered}):
-        xs = sorted(b[0] for b in covered if b[1] == by)
-        start = prev = xs[0]
-        for bx in xs[1:] + [None]:
-            if bx is not None and bx == prev + 1:
-                prev = bx
-                continue
-            y0 = (by - ry * REGION_BLOCKS) * UNITS * f
-            cover.append([round((start - rx * REGION_BLOCKS) * UNITS * f), round(y0),
-                          round((prev + 1 - rx * REGION_BLOCKS) * UNITS * f), round(y0 + UNITS * f)])
-            if bx is not None:
-                start = prev = bx
-    return {"cover": cover, "have": have}, {key: b.layer for key, b in builders.items()}
+def overview_blocks(files: dict[tuple[int, int], list[Path]]) -> Iterator[tuple[tuple[int, int], dict]]:
+    """Each block's overview layers, read as they're asked for (for make_tile). ``files``
+    are a block's part files in PARTS order: a layer in a later part replaces an earlier one's."""
+    for key, paths in files.items():
+        layers: dict[str, Layer] = {}
+        for path in paths:
+            try:
+                layers.update(read_overview(path))
+            except (OSError, ValueError, EOFError, KeyError) as err:
+                _LOGGER.debug("Overview skips %s: %s", path.name, err)
+        yield key, layers
 
 
 class VectorChart:
@@ -1828,13 +1756,10 @@ class VectorChart:
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
         self._failed: dict[tuple, float] = {}
-        # file -> (mtime, some layer failed, type names the services didn't have then)
-        self._missing: dict[Path, tuple[float, bool, tuple]] = {}
+        # file name -> (mtime, some layer failed, type names the services didn't have then)
+        self._missing: dict[str, tuple[float, bool, tuple]] = {}
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
         self._coast: OrderedDict[tuple[int, int], tuple] = OrderedDict()  # block -> (region, coastal sites)
-        # Overview regions: (rx, ry) -> (data, newest block file it was made from, when last checked)
-        self._overviews: OrderedDict[tuple[int, int], tuple[dict, float, float]] = OrderedDict()
-        self._near: dict[tuple[int, int], frozenset] = {}  # region -> its blocks that may hold Finnish data
         self._caps: dict[str, set[str]] = {}  # service -> type names (collection ids) it has
         self._caps_at: dict[str, float] = {}  # service -> when they were read
         self._caps_loaded = False
@@ -1844,6 +1769,8 @@ class VectorChart:
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
         self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
+        self._last_tile = 0.0
+        self._idle: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
 
     def set_mml_key(self, key: str) -> None:
         """A new Land Survey key: blocks are read again so rocks, names and land get fetched."""
@@ -1859,6 +1786,26 @@ class VectorChart:
     def _forget(self) -> None:
         self._memory.clear()
         self._memory_bytes = 0
+
+    def _touch(self) -> None:
+        """A tile was asked for: RAM caches are kept until IDLE_FORGET after the last one."""
+        self._last_tile = time.monotonic()
+        loop = asyncio.get_running_loop()
+        if self._idle is None or self._idle[0] is not loop:
+            self._idle = (loop, loop.call_later(IDLE_FORGET, self._idle_check))
+
+    def _idle_check(self) -> None:
+        loop = self._idle[0]
+        left = IDLE_FORGET - (time.monotonic() - self._last_tile)
+        if left > 0:
+            self._idle = (loop, loop.call_later(left, self._idle_check))
+            return
+        self._idle = None
+        freed = self._memory_bytes / 1e6
+        self._forget()
+        self._coast.clear()
+        self._regions.clear()
+        _LOGGER.debug("Chart not looked at for %s s: %.1f MB let go", IDLE_FORGET, freed)
 
     def _scrub(self, text: str) -> str:
         """Text for a log or the panel, without the API key in it."""
@@ -1900,10 +1847,12 @@ class VectorChart:
                 "mb": round(sum(f.stat().st_size for f in files if f.is_file()) / 1e6, 1),
                 "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
                 "keep": self.keep_status, "mml_key": bool(self.mml_key),
-                "memory_mb": round((self._memory_bytes + sum(d[0]["_bytes"] for d in self._overviews.values()))
-                                   / 1e6, 1),
-                "layers": self.layer_report(), "overviews": len(self._overviews),
-                "rev": f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"}
+                "memory_mb": round(self._memory_bytes / 1e6, 1),
+                "layers": self.layer_report(), "rev": self._rev()}
+
+    def _rev(self) -> str:
+        """Changes whenever tiles would: a new tile format, or parts added or dropped."""
+        return f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"
 
     # --- which layers the services have ---
 
@@ -2078,6 +2027,7 @@ class VectorChart:
         connections to Home Assistant, and a tile request held open for half a
         minute would stall the rest of the panel (and Home Assistant's own UI).
         """
+        self._touch()
         if z < BLOCK_MIN_Z:
             return await self._overview_tile(z, x, y, wait)
         keys = blocks_for(z, x, y)
@@ -2164,7 +2114,8 @@ class VectorChart:
                 if part == "":
                     return None
                 continue
-            self._missing[path] = (path.stat().st_mtime, bool(meta.get("missing")), tuple(meta.get("absent") or ()))
+            self._missing[path.name] = (path.stat().st_mtime, bool(meta.get("missing")),
+                                        tuple(meta.get("absent") or ()))
             layers.update(got)
         return layers
 
@@ -2214,13 +2165,13 @@ class VectorChart:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
             return False
-        known = self._missing.get(path)
+        known = self._missing.get(path.name)
         if known is None or known[0] != mtime:
             try:
                 meta = await asyncio.to_thread(read_meta, path)
             except (OSError, ValueError, EOFError):
                 return True
-            known = self._missing[path] = (mtime, bool(meta.get("missing")), tuple(meta.get("absent") or ()))
+            known = self._missing[path.name] = (mtime, bool(meta.get("missing")), tuple(meta.get("absent") or ()))
         return known[1] or any(service_of(n) in self._caps and self._resolve(n) for n in known[2])
 
     async def _convert(self, old: Path, path: Path) -> None:
@@ -2297,7 +2248,7 @@ class VectorChart:
                         make_overview(built))
 
         await asyncio.to_thread(write)
-        self._missing[path] = (path.stat().st_mtime, bool(missing), tuple(absent))
+        self._missing[path.name] = (path.stat().st_mtime, bool(missing), tuple(absent))
         self.blocks_fetched += 1
         _LOGGER.info("Chart block %s,%s%s: %s in %.1f s", bx, by, f" ({part})" if part else "",
                      ", ".join(f"{L.n} {k}" for k, L in built.items()), time.monotonic() - started)
@@ -2342,24 +2293,21 @@ class VectorChart:
                 self._log_once(f"absent {name}", "Chart layer %s is not there: %s", name, str(err)[:120])
         return absent
 
-    async def _get_bytes(self, url: str, params: dict[str, str] | None, what: str) -> bytes:
+    async def _get_bytes(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
         async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
                                     timeout=aiohttp.ClientTimeout(total=120)) as resp:
-            chunks, size = [], 0
+            body = bytearray()  # grown in place: never the chunks and their join at once
             async for chunk in resp.content.iter_chunked(65536):
-                size += len(chunk)
-                if size > MAX_RESPONSE:
+                if len(body) + len(chunk) > MAX_RESPONSE:
                     raise _TooBig(f"more than {MAX_RESPONSE // 1048576} MB of {what} data for one area")
-                chunks.append(chunk)
-            body = b"".join(chunks)
-            del chunks
+                body += chunk
             if resp.status != 200:
                 raise _HTTPError(resp.status, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
         return body
 
     async def _get_json(self, url: str, params: dict[str, str] | None, what: str) -> dict:
         body = await self._get_bytes(url, params, what)
-        if not body.lstrip().startswith(b"{"):
+        if not body[:256].lstrip().startswith(b"{"):
             # Some services answer an error with 200 and an XML exception report.
             raise _HTTPError(200, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
         return await asyncio.to_thread(json.loads, body)  # off the event loop
@@ -2453,90 +2401,73 @@ class VectorChart:
             if "api-key=" not in url:
                 url += ("&" if "?" in url else "?") + f"api-key={self.mml_key}"
 
-    # --- overview regions ---
-
-    def _overview_task(self, rx: int, ry: int) -> "asyncio.Future[dict]":
-        hit = self._overviews.get((rx, ry))
-        if hit is not None and time.monotonic() - hit[2] < OVERVIEW_CHECK:
-            self._overviews.move_to_end((rx, ry))
-            future = asyncio.get_running_loop().create_future()
-            future.set_result(hit[0])
-            return future
-        key = ("overview", rx, ry)
-        task = self._fetching.get(key)
-        if task is None:
-            task = asyncio.create_task(self._load_overview(rx, ry))
-            self._fetching[key] = task
-            task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
-        return task
-
-    async def _load_overview(self, rx: int, ry: int) -> dict:
-        """A region's overview: the one in RAM or on disk while no block in it is newer
-        (or it was put together less than OVERVIEW_REBUILD ago), else put together again."""
-        files = await asyncio.to_thread(region_blocks, self.dir / "blocks", rx, ry)
-
-        def newest() -> float:
-            return max((p.stat().st_mtime for parts in files.values() for p in parts.values()
-                        if p.exists()), default=0.0)
-
-        latest = await asyncio.to_thread(newest)
-        if (rx, ry) not in self._near:
-            n = REGION_BLOCKS
-            self._near[(rx, ry)] = frozenset(await asyncio.to_thread(lambda: [
-                (bx, by) for bx in range(rx * n, rx * n + n) for by in range(ry * n, ry * n + n)
-                if near_finland(block_bounds(bx, by))]))
-        hit = self._overviews.get((rx, ry))
-        path = self.dir / "overview" / f"{rx}_{ry}{SUFFIX}"
-        built_age = _age(path)
-        data = None
-        if hit is not None and (hit[1] >= latest or (built_age is not None and built_age < OVERVIEW_REBUILD)):
-            data, made = hit[0], hit[1]
-        elif built_age is not None and (path.stat().st_mtime >= latest or built_age < OVERVIEW_REBUILD):
-            try:
-                meta, layers = await asyncio.to_thread(read_block, path, 0)
-                data, made = self._overview_data(meta, layers, rx, ry), path.stat().st_mtime
-            except (OSError, ValueError, EOFError):
-                data = None
-        if data is None:
-            async with self._reading:
-                meta, layers = await asyncio.to_thread(build_overview, rx, ry, files)
-                if files:
-                    try:
-                        await asyncio.to_thread(write_block, path, meta, [layers])
-                    except OSError as err:
-                        _LOGGER.warning("Could not store chart overview %s,%s: %s", rx, ry, err)
-            data, made = self._overview_data(meta, layers, rx, ry), max(latest, time.time() if files else 0)
-            if files:
-                _LOGGER.info("Chart overview %s,%s from %s blocks: %s", rx, ry, len(meta["have"]),
-                             ", ".join(f"{L.n} {k}" for k, L in layers.items()))
-        self._overviews[(rx, ry)] = (data, made, time.monotonic())
-        self._overviews.move_to_end((rx, ry))
-        while len(self._overviews) > OVERVIEW_REGIONS:
-            self._overviews.popitem(last=False)
-        return data
-
-    def _overview_data(self, meta: dict, layers: dict[str, Layer], rx: int, ry: int) -> dict:
-        return {**layers, "_cover": [tuple(r) for r in meta.get("cover") or ()],
-                "_have": {tuple(b) for b in meta.get("have") or ()}, "_near": self._near.get((rx, ry), frozenset()),
-                "_bytes": sum(L.nbytes() for L in layers.values())}
+    # --- overview tiles (zooms 8-9) ---
 
     async def _overview_tile(self, z: int, x: int, y: int,
                              wait: float | None) -> tuple[dict[str, Any], bool] | None:
-        s = z - OVERVIEW_Z
-        key = (x >> s, y >> s)
-        task = self._overview_task(*key)
+        key = ("overview", z, x, y)
+        task = self._fetching.get(key)
+        if task is None:
+            task = asyncio.create_task(self._make_overview_tile(z, x, y))
+            self._fetching[key] = task
+            task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
         if not task.done():
             done, still = await asyncio.wait([asyncio.shield(task)], timeout=wait)
             if still:
                 return None
-        data = task.result()
+        return task.result()
+
+    async def _make_overview_tile(self, z: int, x: int, y: int) -> tuple[dict[str, Any], bool]:
+        """The tile stored on disk while none of its blocks changed (or it was cut less
+        than OVERVIEW_RECUT ago), else cut again from the blocks' overview levels."""
+        parts = [p for p in self._parts() if p in OVERVIEW_PARTS]
+        rev = self._rev()
+
+        def scan() -> tuple[dict[tuple[int, int], list[Path]], float]:
+            files: dict[tuple[int, int], list[Path]] = {}
+            newest = 0.0
+            for bx, by in blocks_for(z, x, y):
+                paths = []
+                for part in parts:
+                    path = self._path(bx, by, part)
+                    try:
+                        newest = max(newest, path.stat().st_mtime)
+                    except FileNotFoundError:
+                        if not part:
+                            break  # no block here yet
+                        continue
+                    paths.append(path)
+                if paths:
+                    files[(bx, by)] = paths
+            return files, newest
+
+        files, newest = await asyncio.to_thread(scan)
+        have = [list(k) for k in files]
+        path = self.dir / "overview" / f"{z}_{x}_{y}.json.gz"
+        try:
+            cached = await asyncio.to_thread(_read_json, path)
+        except (OSError, ValueError, EOFError):
+            cached = None
+        if cached is not None and cached.get("rev") == rev:
+            fresh = cached.get("newest", 0) >= newest and cached.get("have") == have
+            if fresh or time.time() - cached.get("made", 0) < OVERVIEW_RECUT:
+                return cached["tile"], cached["complete"] and fresh
+        # Blocks that may hold Finnish data, and how many of them are there.
+        near = await asyncio.to_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
+        got = sum(k in files for k in near)
         async with self._cutting:
-            tile = await asyncio.to_thread(make_tile, z, x, y, {key: data}, OVERVIEW_Z)
-        near = [b for b in blocks_for(z, x, y) if b in data["_near"]]
-        have = sum(b in data["_have"] for b in near)
+            tile = await asyncio.to_thread(make_tile, z, x, y, overview_blocks(files))
         if near:
-            tile["cover"] = round(have / len(near), 2)
-        return tile, have == len(near)
+            tile["cover"] = round(got / len(near), 2)
+        complete = got == len(near)
+        if files:
+            try:
+                await asyncio.to_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
+                                                            "made": time.time(), "tile": tile,
+                                                            "complete": complete})
+            except OSError as err:
+                _LOGGER.warning("Could not store chart overview tile %s/%s/%s: %s", z, x, y, err)
+        return tile, complete
 
     # --- heritage sites ---
 
