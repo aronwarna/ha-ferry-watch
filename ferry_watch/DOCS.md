@@ -59,14 +59,16 @@ The menu button (top right) has four tabs:
 
 - **Ships**: your ships, with their alert switches, and **Add a ship**.
 - **On the map**: switches for what the map shows besides your ships (sea
-  conditions, other ships, rescue aircraft, faulty lights and buoys, wrecks and
-  coastal heritage) and the fleets.
+  conditions, other ships, rescue aircraft, weather stations, harbours, faulty
+  lights and buoys, wrecks and coastal heritage), your saved routes and the
+  fleets.
 - **Stats**: inner-route passages, see above.
 - **Settings**: notifications and the test button, chart storage, the Land
   Survey API key, data sources, the version and the memory the add-on uses.
 
-The switches for other ships, faulty lights and heritage are remembered by each
-browser or phone on its own; the others are kept by the add-on.
+The switches for other ships, weather stations, harbours, faulty lights and
+heritage are remembered by each browser or phone on its own; the others are
+kept by the add-on.
 
 ## Next passage
 
@@ -136,6 +138,52 @@ most every 30 minutes, only while the chart view is shown. Switch it off under
 coastal defence sites (bunkers, trenches, gun and firing positions, near the
 shore and on islands, from zoom 13) from Museovirasto's registers on the drawn
 chart. Tap one to see what it is.
+
+## Measure and plan a route
+
+The ruler button (top, next to the areas button) turns on route mode. Tap the
+map to add points; each leg shows its distance in nautical miles and its true
+bearing, and the panel shows the total and the time and ETA at the speed you
+enter (25 kn to start with). Drag a point to move it, tap it to remove it;
+**Undo** (or Ctrl+Z) and the bin button take back or clear. Escape or the ✕
+leaves route mode; the route you were drawing is kept in the browser until you
+come back. On a phone the panel is a small sheet above the ship chips, on a
+computer a list on the left.
+
+**Auto** plans a route along the marked fairways: enter your draught (1.5 m to
+start with, remembered), tap the start and the end (or use the first and last
+point) and press **Plan along fairways**. The add-on follows the fairway centre
+lines of the drawn chart, skips fairways whose design depth is less than your
+draught plus 0.3 m, and fills the panel with a route you can edit. It plans up
+to about 50 NM at a time and uses the chart areas along the way, downloading
+the missing ones first (it says so when they're still on their way). It is for
+planning only, not for navigation: check it on the chart.
+
+Give a route a name and **Save** it to keep it in the add-on. Saved routes show
+as dashed lines with their name; tap one for its distance and **Edit route**.
+**On the map → Routes** lists them with a switch to show or hide each, **Edit**
+and **Delete**. There is no navigation guidance.
+
+## Weather stations
+
+**On the map → Weather stations** (on by default, every map view) shows the
+Finnish Meteorological Institute's coastal and sea stations as discs with the
+wind in m/s, coloured by strength, and a pointer showing where the wind blows.
+Wave buoys and sea level stations show waves or sea temperature. Tap a station
+for its name, how long ago it reported, wind, gusts, direction, air temperature,
+sea temperature or wave height where measured, and the wind and gusts over the
+past 24 hours. The add-on asks FMI at most every 10 minutes, and only while the
+panel is open; the 24 hours are fetched when you open a station.
+
+## Harbours
+
+**On the map → Harbours** (on by default) shows marinas and harbours from
+OpenStreetMap from zoom 11: a red sailboat on the chart view, a blue tag on the
+map and satellite views. Tap one for its services (guest berths, fuel, toilets,
+shower, sauna, electricity, water, waste, slipway, restaurant), depth, website
+and phone, as mapped in OpenStreetMap. The list is downloaded the first time
+it's needed and refreshed once a month; missing services may just not be mapped
+yet.
 
 ## Fleets
 
@@ -246,7 +294,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
+(and the switch is on), and nothing is polled while it is closed. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
 
 ## If a ship never shows up
 
@@ -259,7 +307,8 @@ by name.
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto), CC BY 4.0.
-- Sea conditions: [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Sea conditions and weather stations: [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
