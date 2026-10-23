@@ -385,8 +385,9 @@
     el.className = "ac-popup";
     el.innerHTML = `<a class="ac-photo" target="_blank" rel="noopener" hidden><img alt=""><span class="credit"></span></a>
       <div class="ac-body"><strong class="ac-name"></strong><div class="ac-type"></div><div class="ac-role muted"></div>
-      <div class="ac-flight"></div><div class="ac-alert" hidden></div>
-      <div class="ac-foot muted"><span class="ac-seen"></span> · <a target="_blank" rel="noopener">adsb.fi</a></div></div>`;
+      <div class="ac-flight"></div><div class="ac-alert" hidden></div><div class="ac-track" hidden></div>
+      <div class="ac-foot muted"><span class="ac-seen"></span> · <a target="_blank" rel="noopener">adsb.fi</a>
+      · <button type="button" class="link-button ac-hist">History</button></div></div>`;
     return el;
   }
 
@@ -437,7 +438,9 @@
       if (!entry) {
         const popupEl = aircraftPopupElement();
         entry = {
+          hex: ac.hex,
           popupEl,
+          flight: null, // the whole flight while the popup is open
           marker: L.marker([ac.lat, ac.lon], { icon, zIndexOffset: 1000, keyboard: false })
             .bindTooltip("", { permanent: true, direction: "right", offset: [12, 0], className: "ship-label aircraft-label" })
             .bindPopup(popupEl, { minWidth: 220, maxWidth: 260, className: "ac-popup-wrap", autoPanPaddingTopLeft: [12, 130] }),
@@ -445,7 +448,19 @@
         };
         entry.trail.addTo(map);
         entry.marker.addTo(map);
+        const e = entry;
+        e.marker.on("popupopen", () => showFlight(e));
+        e.marker.on("popupclose", () => hideFlight(e));
+        popupEl.querySelector(".ac-hist").addEventListener("click", () => {
+          map.closePopup();
+          historyView.open({ icao: e.hex });
+        });
         aircraft.set(ac.hex, entry);
+      }
+      entry.ac = ac;
+      if (entry.flight) {
+        if (ac.flight_id && ac.flight_id !== entry.flightId) showFlight(entry); // a new flight began
+        else entry.flight.add(livePoint(ac));
       }
       entry.marker.setLatLng([ac.lat, ac.lon]).setIcon(icon);
       entry.marker.setTooltipContent(esc(aircraftLabel(ac)));
@@ -456,9 +471,12 @@
       if (seen.has(hex)) continue;
       entry.marker.remove();
       entry.trail.remove();
+      entry.flight?.remove();
       aircraft.delete(hex);
     }
     renderAirBadge(list || []);
+    const info = lastState?.aircraft;
+    $("air-history-button").hidden = !(info?.enabled && (aircraft.size || info.flights_stored));
     const on = Boolean(lastState?.aircraft?.enabled);
     if (on !== aircraftCredit) {
       if (on) map.attributionControl.addAttribution(AIRCRAFT_CREDIT);
@@ -479,6 +497,70 @@
       ? `${aircraftLabel(flying[0])} in the air`
       : `${flying.length} ${heli ? "helicopters" : "aircraft"} in the air`;
   }
+
+  // A selected aircraft: its whole flight so far, from the add-on's history, coloured by
+  // altitude, in place of the short dashed trail.
+  const livePoint = (ac) => [ac.lat, ac.lon, ac.ts, ac.alt_ft != null ? Math.round(ac.alt_ft * 0.3048) : null];
+
+  async function showFlight(entry) {
+    const id = entry.ac?.flight_id;
+    entry.flightId = id;
+    if (!id) return;
+    let flight;
+    try {
+      flight = await api(`api/aircraft/flights/${id}`);
+    } catch (err) {
+      console.error(err);
+      return;
+    }
+    if (!entry.marker.isPopupOpen() || entry.flightId !== id || aircraft.get(entry.hex) !== entry) return;
+    entry.flight?.remove();
+    entry.flight = FerryHistory.flightTrack(map, flight.track);
+    entry.flight.add(livePoint(entry.ac));
+    entry.trail.remove();
+    const box = entry.popupEl.querySelector(".ac-track");
+    box.innerHTML = `${FerryHistory.altLegend()}<span class="muted">This flight since ${clock(flight.start_ts)} · ${flight.dist_km} km</span>`;
+    box.hidden = false;
+    entry.marker.getPopup()?.update();
+  }
+
+  function hideFlight(entry) {
+    entry.flight?.remove();
+    entry.flight = null;
+    entry.flightId = null;
+    entry.popupEl.querySelector(".ac-track").hidden = true;
+    if (aircraft.get(entry.hex) === entry) entry.trail.addTo(map);
+  }
+
+  // Photos already looked up, without asking Planespotters again.
+  function knownAircraftPhoto(hex) {
+    const p = acPhotos.get(hex);
+    if (p !== undefined && !(p instanceof Promise)) return p;
+    try {
+      return JSON.parse(store.get(`fw-acphoto-${hex}`) || "null")?.photo || null;
+    } catch {
+      return null;
+    }
+  }
+
+  const historyView = FerryHistory.view({
+    map,
+    api: (url) => api(url),
+    esc: (text) => esc(text),
+    knownPhoto: knownAircraftPhoto,
+    enabled: () => Boolean(lastState?.aircraft?.enabled),
+    onOpen() {
+      if ($("ships-dialog").open) $("ships-dialog").close();
+      if (focused) unfocus();
+      clearReplay();
+      if (route.on) setRouteMode(false);
+      if (editing) setEditing(false);
+      map.closePopup();
+      $("strip").hidden = true;
+    },
+    onClose() { $("strip").hidden = Boolean(focused) || editing || Boolean(replayLayer); },
+  });
+  $("air-history-button").addEventListener("click", () => (historyView.isOpen() ? historyView.close() : historyView.open()));
 
   $("air-badge").addEventListener("click", () => {
     const entries = [...aircraft.values()];
@@ -645,10 +727,13 @@
       return;
     }
     clearReplay();
+    stopPlayback();
+    if (historyView.isOpen()) historyView.close();
     focused?.line?.remove();
     const mine = { mmsi, line: null, points: [] };
     focused = mine;
     applyDimming();
+    setCardState("full", { animate: false });
     renderCard();
     $("strip").hidden = true;
     history.replaceState(null, "", `#ship=${mmsi}`);
@@ -684,7 +769,8 @@
     const card = $("card");
     if (card.hidden) return { paddingTopLeft: [30, 70], paddingBottomRight: [30, 90] };
     if (window.innerWidth <= 560) {
-      return { paddingTopLeft: [30, 70], paddingBottomRight: [30, card.offsetHeight + 40] };
+      const h = card.classList.contains("sliding") ? cardTargetH : card.offsetHeight;
+      return { paddingTopLeft: [30, 70], paddingBottomRight: [30, h + 40] };
     }
     return { paddingTopLeft: [card.offsetWidth + 40, 70], paddingBottomRight: [40, 40] };
   }
@@ -696,6 +782,8 @@
   }
 
   function unfocus() {
+    stopPlayback();
+    resetCardSheet();
     if (focused?.line) focused.line.remove();
     const entry = focused && ships.get(focused.mmsi);
     entry?.marker?.setZIndexOffset(0);
@@ -815,7 +903,10 @@
     if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;
     $("card-follow").hidden = !info.fleet;
     $("card-unfollow").hidden = info.fleet !== "followed";
+    $("card-play").hidden = (focused.points || []).length < 2;
+    $("peek-play").hidden = (focused.points || []).length < 2;
     renderCardStats(info);
+    renderPeek(info);
 
     const photo = info.photo;
     const box = $("card-photo");
@@ -905,7 +996,209 @@
     await loadTails();
     focusShip(info.mmsi);
   });
-  $("card-zoom").addEventListener("click", zoomToTrack);
+  $("card-zoom").addEventListener("click", () => {
+    if (phone()) setCardState("peek");
+    zoomToTrack();
+  });
+
+  // --- the card as a sheet ----------------------------------------------------------
+  // Full shows the whole card; peek leaves a 72 px banner (photo, name, what it's doing)
+  // so the map is free, e.g. to watch a playback. On phones the card is a bottom sheet:
+  // drag it between the two, or flick it down to close it; tap the banner to open it.
+
+  let cardState = "full", cardTargetH = 0, slideTimer = 0, lastDragEnd = 0, drag = null;
+  const phone = () => window.innerWidth <= 560;
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+  function renderPeek(info) {
+    setText($("peek-name"), info.name);
+    const next = nextPassage(info);
+    const soon = next ? `Porkkala ${next.left < 60 ? "now" : `in ${duration(next.left)}`} · ` : "";
+    setText($("peek-status"), `${soon}${motionText(info)}`);
+    const ring = $("peek-photo");
+    ring.style.borderColor = info.color;
+    const src = info.photo ? `api/photo/${info.mmsi}?v=${info.photo.version}` : "";
+    if (ring.dataset.src !== src || (!src && ring.dataset.color !== info.color)) {
+      ring.dataset.src = src;
+      ring.dataset.color = info.color;
+      ring.classList.toggle("empty", !src);
+      ring.innerHTML = src ? `<img src="${esc(src)}" alt="">` : shipSvg(info.color, 45, 26);
+    }
+  }
+
+  // The card's height in a state, measured without showing it.
+  function cardHeightIn(state) {
+    const card = $("card"), peek = card.classList.contains("peek"), h = card.style.height;
+    card.style.height = "";
+    card.classList.toggle("peek", state === "peek");
+    const v = card.offsetHeight;
+    card.classList.toggle("peek", peek);
+    card.style.height = h;
+    return v;
+  }
+
+  function slideCard(from, to, done) {
+    const card = $("card");
+    cardTargetH = to;
+    clearTimeout(slideTimer);
+    if (reduceMotion?.matches) { card.style.height = ""; done?.(); return; }
+    card.classList.remove("sliding");
+    card.style.height = `${from}px`;
+    void card.offsetHeight; // start from there
+    card.classList.add("sliding");
+    card.style.height = `${to}px`;
+    slideTimer = setTimeout(() => {
+      card.classList.remove("sliding");
+      card.style.height = "";
+      done?.();
+    }, 280);
+  }
+
+  function setCardState(state, { animate = true } = {}) {
+    const card = $("card");
+    const from = card.hidden ? 0 : card.offsetHeight;
+    cardState = state;
+    card.classList.toggle("peek", state === "peek");
+    $("card-collapse").setAttribute("aria-expanded", String(state === "full"));
+    if (!animate || card.hidden) {
+      clearTimeout(slideTimer);
+      card.classList.remove("sliding");
+      card.style.height = "";
+      return;
+    }
+    card.style.height = "";
+    slideCard(from, card.offsetHeight);
+  }
+
+  function resetCardSheet() {
+    clearTimeout(slideTimer);
+    drag = null;
+    const card = $("card");
+    card.classList.remove("sliding", "peek", "closing");
+    card.style.height = "";
+    cardState = "full";
+  }
+
+  $("card-collapse").addEventListener("click", () => setCardState(cardState === "full" ? "peek" : "full"));
+  $("peek-expand").addEventListener("click", () => setCardState("full"));
+  $("peek-close").addEventListener("click", unfocus);
+  $("card-peek").addEventListener("click", (e) => {
+    // The play button swaps its icon while the click is under way, so check the button by the
+    // path the click took rather than by where its target is now.
+    if (e.composedPath().some((n) => n instanceof HTMLButtonElement) || Date.now() - lastDragEnd < 350) return;
+    setCardState("full");
+  });
+  $("card-grab").addEventListener("click", () => {
+    if (Date.now() - lastDragEnd >= 350) setCardState(cardState === "full" ? "peek" : "full");
+  });
+
+  // Dragging on phones: the card follows the finger; on release it settles on the nearest
+  // state, or the next one in the direction of a flick.
+  const DRAG_AREAS = "#card-grab, #card-peek, .card-photo, .card-head";
+  $("card").addEventListener("pointerdown", (e) => {
+    if (!phone() || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (!e.target.closest(DRAG_AREAS) || e.target.closest("button, a, input, label")) return;
+    if (e.pointerType === "mouse") e.preventDefault(); // no text selection while dragging
+    drag = { id: e.pointerId, y0: e.clientY, h0: $("card").offsetHeight, moved: false, track: [[e.timeStamp, e.clientY]] };
+  });
+  $("card").addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const card = $("card"), dy = e.clientY - drag.y0;
+    if (!drag.moved) {
+      if (Math.abs(dy) < 8) return;
+      drag.moved = true;
+      drag.peekH = cardHeightIn("peek");
+      drag.fullH = cardHeightIn("full");
+      clearTimeout(slideTimer);
+      card.classList.remove("sliding");
+      card.setPointerCapture?.(e.pointerId);
+    }
+    let h = drag.h0 - dy;
+    if (h > drag.fullH) h = drag.fullH + (h - drag.fullH) * 0.2; // a little give past the top
+    h = Math.max(0, h);
+    card.classList.toggle("peek", h <= drag.peekH + 16); // the banner near the bottom, the card above
+    card.style.height = `${h}px`;
+    drag.track.push([e.timeStamp, e.clientY]);
+    if (drag.track.length > 5) drag.track.shift();
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
+    drag = null;
+    if (!d.moved) return; // a tap: the click handlers take it
+    lastDragEnd = Date.now();
+    const card = $("card");
+    const [ta, ya] = d.track[0], [tb, yb] = d.track[d.track.length - 1];
+    const v = tb > ta ? (yb - ya) / (tb - ta) : 0; // px per ms, down is positive
+    const h = card.offsetHeight;
+    const levels = [["hidden", 0], ["peek", d.peekH], ["full", d.fullH]];
+    let target;
+    if (v > 0.45) target = levels.filter(([, lh]) => lh < h - 4).pop() || levels[0];
+    else if (v < -0.45) target = levels.find(([, lh]) => lh > h + 4) || levels[2];
+    else target = levels.reduce((a, b) => (Math.abs(b[1] - h) < Math.abs(a[1] - h) ? b : a));
+    if (target[0] === "hidden") {
+      card.classList.add("closing");
+      slideCard(h, 0, unfocus);
+      return;
+    }
+    cardState = target[0];
+    card.classList.toggle("peek", cardState === "peek");
+    $("card-collapse").setAttribute("aria-expanded", String(cardState === "full"));
+    slideCard(h, target[1]);
+  };
+  $("card").addEventListener("pointerup", endDrag);
+  $("card").addEventListener("pointercancel", endDrag);
+
+  // --- track playback ------------------------------------------------------------------
+  // One player at a time, for the focused ship's voyage or a passage from Stats.
+
+  let player = null, playerOwner = null;
+
+  function setPeekPlay(on) {
+    const card = on && playerOwner === "card", replay = on && playerOwner === "replay";
+    $("peek-play").innerHTML = card ? FerryPlayback.ICONS.pause : FerryPlayback.ICONS.play;
+    $("peek-play").setAttribute("aria-label", card ? "Pause the playback" : "Play back the track");
+    $("replay-play").innerHTML = replay ? FerryPlayback.ICONS.pause : FerryPlayback.ICONS.play;
+    $("replay-play").setAttribute("aria-label", replay ? "Pause the playback" : "Play back the passage");
+  }
+
+  // Pixels of the map hidden under the panel at the bottom on phones.
+  const coveredBy = (id) => () => (phone() ? Math.max(0, window.innerHeight - $(id).getBoundingClientRect().top) : 0);
+
+  function startPlayback(owner, points, color, mount, cover) {
+    stopPlayback();
+    playerOwner = owner;
+    player = FerryPlayback.create({
+      map, points, color, mount, shipSvg, speedColor, cover,
+      onState: setPeekPlay,
+      onClose: stopPlayback,
+    });
+    if (!player) { playerOwner = null; return; }
+    if (owner === "card") focused?.line?.remove();
+    if (owner === "replay") replayLayer?.remove();
+    player.play();
+  }
+
+  function stopPlayback() {
+    if (!player) return;
+    const owner = playerOwner;
+    player.destroy();
+    player = null;
+    playerOwner = null;
+    if (owner === "card" && focused?.line) focused.line.addTo(map);
+    if (owner === "replay" && replayLayer) replayLayer.addTo(map);
+    setPeekPlay(false);
+  }
+
+  function playCard() {
+    if (player && playerOwner === "card") { player.toggle(); return; }
+    if (!focused || focused.points.length < 2) return;
+    setCardState("peek");
+    startPlayback("card", focused.points, ships.get(focused.mmsi)?.info.color || "#2563eb", $("card-player"), coveredBy("card"));
+  }
+
+  $("card-play").addEventListener("click", playCard);
+  $("peek-play").addEventListener("click", playCard);
   $("card-upload").addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
     if (!file || !focused) return;
@@ -1492,6 +1785,8 @@
       const when = new Date(p.ts * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short", hour12: false });
       sub.textContent = p.notified ? when : `${when} · ${p.note || "not sent"}`;
       grow.append(top, sub);
+      const wx = FerryWeather.row(p);
+      if (wx) grow.append(wx);
       li.append(grow);
       li.classList.add("clickable");
       li.title = "Show this passage on the map";
@@ -1526,7 +1821,10 @@
   const REPLAY_WINDOW = 3600;
   let replayLayer = null;
 
+  let replayPoints = null, replayColor = null;
+
   function clearReplay() {
+    if (playerOwner === "replay") stopPlayback();
     if (!replayLayer) return;
     replayLayer.remove();
     replayLayer = null;
@@ -1577,6 +1875,9 @@
       : now() - p.ts > keepDays * 86400
         ? `The track isn't stored any more (positions are kept for ${keepDays} days).`
         : "No track was stored for this passage.";
+    replayPoints = data.points;
+    replayColor = color;
+    $("replay-play").hidden = data.points.length < 2;
     $("replay").hidden = false;
     $("strip").hidden = true;
 
@@ -1589,6 +1890,10 @@
   }
 
   $("replay-close").addEventListener("click", clearReplay);
+  $("replay-play").addEventListener("click", () => {
+    if (player && playerOwner === "replay") { player.toggle(); return; }
+    if (replayPoints?.length > 1) startPlayback("replay", replayPoints, replayColor, $("replay-player"), coveredBy("replay"));
+  });
 
   // --- stats --------------------------------------------------------------------
   // Counted here rather than on the server so months and clock times follow this
@@ -1671,10 +1976,10 @@
   statsView = store.get("fw-stats-view") || "month";
 
   function renderStats() {
-    const all = statsData.passages.map(([ts, mmsi, route, direction]) => {
+    const all = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice]) => {
       const d = new Date(ts * 1000);
       return {
-        mmsi, route, direction, ts,
+        mmsi, route, direction, ts, wind_ms, wind_dir, ice,
         year: d.getFullYear(), month: d.getMonth(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
         hour: d.getHours(), minute: d.getHours() * 60 + d.getMinutes(),
       };
@@ -1729,6 +2034,22 @@
         : (inner.length ? `${busyText}Tap a bar to see it on its own.` : "");
     }
     renderStatsShips(scope);
+    if (statsDay) {
+      const day = new Date(statsYear, statsPick, statsDay);
+      const next = new Date(statsYear, statsPick, statsDay + 1);
+      FerryWeather.dayList($("stats-day"), day / 1000, next / 1000, {
+        api, esc, clock, DIRECTIONS,
+        open(p) {
+          $("ships-dialog").close();
+          showPassage(p).catch(console.error);
+        },
+      });
+    } else {
+      FerryWeather.hideDay($("stats-day"));
+    }
+    const scopeName = statsDay ? `${statsDay} ${picked.name}` : picked ? `${picked.name}${statsView === "year" ? "" : ` ${statsYear}`}`
+      : statsView === "year" ? "all years" : String(statsYear);
+    FerryWeather.breakdown($("stats-weather"), scope, scopeName);
   }
 
   // A month as a calendar: each day shows a dot per inner passage in the ship's colour.
@@ -1894,9 +2215,18 @@
     const note = document.createElement("p");
     note.className = "small muted";
     note.innerHTML = info.error
-      ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again every 10 seconds.`
-      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes, while the map is open. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
+      ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again shortly.`
+      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
     section.append(head, note);
+    if (info.enabled || info.flights_stored) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "ah-open-button";
+      const n = info.flights_stored || 0;
+      open.innerHTML = `<span class="strong">Aircraft history</span><span class="small muted">${n ? `${n.toLocaleString()} ${n === 1 ? "flight" : "flights"} stored` : "No flights stored yet"}</span>`;
+      open.addEventListener("click", () => historyView.open());
+      section.append(open);
+    }
     return section;
   }
 
@@ -3427,7 +3757,7 @@
   map.on("popupclose", () => { popupOpen = false; });
 
   // Escape backs out of one thing at a time: a route field being typed in, drawing, a popup,
-  // the sheet, the route tool, the ship card, a replay.
+  // the aircraft history, the sheet, a playback, the route tool, the ship card, a replay.
   document.addEventListener("keydown", (e) => {
     if ($("ships-dialog").open) return;
     const typing = e.target instanceof HTMLInputElement;
@@ -3440,7 +3770,9 @@
     if (typing && e.target.closest("#route")) e.target.blur();
     else if (drawing) cancelDrawing();
     else if (popupOpen) map.closePopup();
+    else if (historyView.isOpen()) historyView.escape();
     else if (!$("conditions-sheet").hidden) toggleConditions(false);
+    else if (player) stopPlayback();
     else if (route.on) setRouteMode(false);
     else if (focused) unfocus();
     else if (replayLayer) clearReplay();

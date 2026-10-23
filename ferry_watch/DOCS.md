@@ -48,10 +48,43 @@ sidebar.
 
 - **Stats.** The **Stats** tab in the menu (top right) counts inner-route
   passages per month, per ship and per direction (towards Helsinki or towards
-  Stockholm), with each ship's usual time of day. If you also draw
-  (Outer-route lines from earlier versions still count for the inner-route share.)
+  Stockholm), with each ship's usual time of day. Outer-route sailings are
+  counted too, so the stats can show how often each ship takes the inner
+  route: a ship that crosses the Porkkala meridian (24.40° E, between
+  59.55° and 60.15° N) without crossing one of your inner-route lines within
+  two hours counts as an outer-route passage. These only feed the stats; they
+  never alert and don't count towards the next-passage guess. (Outer-route
+  lines from earlier versions still work, and then the meridian isn't used.)
   **Download all passages (CSV)** gives you the raw list. Tap a passage to
-  replay its track on the map.
+  replay its track on the map, and ▶ to play it back (see below).
+- **Passage weather.** Each passage keeps the weather when the ship passed,
+  whether or not the panel is open: wind, gusts and direction at Mäkiluoto,
+  the sea temperature, the visibility at Harmaja and, from December to April,
+  the ice on the inner route. Stats shows it on each passage (an arrow
+  pointing where the wind blows, m/s with gusts in brackets, the sea
+  temperature, and "Ice 28 cm · 90%" or "No ice"). Tap a day in the month
+  calendar to list that day's passages with their weather. The **Weather**
+  section compares the inner and outer route by wind strength (0–5, 5–10,
+  10–15 and 15+ m/s), by wind direction (tap a direction for its numbers) and,
+  in winter, by ice, for whatever the chart above shows (a year, a month or a
+  day). See *Sea ice* below for where the ice comes from.
+
+## The ship card and track playback
+
+Tap a ship to open its card. On a phone the card is a bottom sheet: drag it
+down to leave a slim banner (photo, name and what the ship is doing) so the
+map is free, drag or tap the banner to open the card again, and flick it down
+from the banner to close it. On a computer the card stays at the side; its ⌄
+button makes it small the same way. **Show whole track** makes the card small
+on a phone and fits the ship's track above it.
+
+**Play back** (or ▶ on the banner) sails the ship along its stored track again,
+as on MarineTraffic: the track is drawn behind it in speed colours, and the
+player has play and pause, a time slider with the time and speed at that point,
+and a speed button (×60, ×300, ×1200 or ×3600 real time; it starts at the one
+that plays the track in about a minute). The map follows the ship. ✕ on the
+player or Escape stops it. A passage opened from Stats has the same player
+(▶ next to the passage), for the two hours around the passage.
 
 ## The menu
 
@@ -98,8 +131,30 @@ The observations come from the Finnish Meteorological Institute's open data and
 are read every 10 minutes, only while the panel is open, and for an alert
 (which waits at most 3 seconds for them). The alert then ends with a line like
 "Wind SW 9 m/s, visibility 20 km, sunset 18:12." and the wind is saved with the
-passage (it's in the CSV). Sunrise and sunset are worked out by the add-on for
-your areas. Switch it off under **On the map → Sea conditions**.
+passage (it's in the CSV). Every other passage, alert or not, also fetches
+them once (if they're more than 15 minutes old) so that the passage keeps its
+weather. Sunrise and sunset are worked out by the add-on for your areas.
+Switch the pill off under **On the map → Sea conditions**.
+
+## Sea ice
+
+From December to April the add-on checks the ice on the inner route once a day
+(and again an hour later if a source didn't answer), stores it for the day and
+with each passage that day. Two free sources, neither needing a key:
+
+- **FMI's manual sea ice observations** at Kirkkonummi Porkkala (station
+  103933, 59.95° N 24.33° E), the WFS stored query
+  `fmi::observations::seaice::manual::timevaluepair`: ice thickness and snow on
+  the ice, measured by hand about once a week. A report from the last 12 days
+  counts; no report in a month means no ice there.
+- **The FMI ice chart via the Copernicus Marine Service** (Baltic sea ice
+  concentration, `SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_004`), read for
+  the point 59.97° N 24.40° E through its public map service.
+
+The chart decides "ice" (10% cover or more) or "open water" for the route; the
+thickness comes from the Porkkala observations. If a source can't be read, the
+log says so once until it works again, and the day is stored with what the
+other one gave. Outside December to April nothing is fetched.
 
 ## You are here
 
@@ -205,9 +260,34 @@ whose AIS says search and rescue, Border Guard or military; the Navy mostly
 keeps AIS off), **Icebreakers**, **Pilot boats and tugs** (Finnish pilot boats
 and tugs), and **Rescue aircraft**: FinnHEMS, Border Guard and police
 helicopters and Border Guard planes, from [adsb.fi](https://adsb.fi)'s open
-ADS-B data. Aircraft are fetched every 10 seconds only while that switch is on
-and the panel is open, and they are never stored. Fleet ships that report
-every few seconds are passed to the panel at most once every 5 seconds each.
+ADS-B data. While that switch is on, aircraft are fetched every 10 seconds
+while the panel is open and every 30 seconds while it is closed, so that their
+flights are recorded (see below). Fleet ships that report every few seconds are
+passed to the panel at most once every 5 seconds each.
+
+### Rescue aircraft history
+
+While **Rescue aircraft** is on, the add-on records the flights, panel open or
+not. A position is kept when 30 seconds have passed since the last one kept,
+or the aircraft turned more than 15° or climbed or descended more than 100 m;
+an aircraft standing on the ground isn't recorded. A gap of 20 minutes ends a
+flight. Flights are kept for a year and older ones are deleted once a day.
+
+- **Tap an aircraft** for its card: its whole flight so far is drawn as a thick
+  line coloured by altitude (amber low, through green and blue, to violet
+  above 2 km), with the scale on the card. **History** opens the history on
+  that aircraft.
+- **Aircraft history** (the button with the line next to the aircraft badge,
+  or menu → On the map → Rescue aircraft) dims the map and draws every
+  recorded flight of the last 24 hours, 7 days, 30 days or year as glowing
+  lines, one colour per aircraft. **Heat** shows instead where they fly most.
+  ▶ plays the period as a time-lapse with a clock, each flight drawn as it
+  happened with a bright head; drag the slider to move in time (the small bars
+  above it show when aircraft were up). The list shows each aircraft (with
+  its photo if you've opened its card before), its flights and hours; tap one
+  to show only its flights. Tap a line on the map for that flight's date,
+  times, duration, highest altitude and distance, drawn in full in altitude
+  colours. Escape backs out a step at a time.
 
 Ships are matched by name (and for some fleets type, length or flag) once a day
 from Digitraffic's vessel list, so new
@@ -294,7 +374,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed. Rescue aircraft add one small request every 10 seconds, only while the panel is open. Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
+(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
 
 ## If a ship never shows up
 
@@ -307,7 +387,8 @@ by name.
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto), CC BY 4.0.
-- Sea conditions and weather stations: [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Sea conditions, weather stations and sea ice observations: [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Ice chart: E.U. Copernicus Marine Service Information (FMI's Baltic sea ice concentration).
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).

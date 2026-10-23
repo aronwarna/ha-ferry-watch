@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="static/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="static/vendor/geoman/leaflet-geoman.css">
   <link rel="stylesheet" href="static/app.css">
+  <link rel="stylesheet" href="static/extra.css">
 </head>
 <body>
   <div id="map" aria-label="Map of tracked ships"></div>
@@ -43,10 +44,15 @@
         <span id="pill-water" class="pill-part" hidden></span>
         <span id="pill-sun" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="horizon" d="M-7 4 H7"/><path class="sun" d="M-4 4 A4 4 0 0 1 4 4"/><path class="ray" d="M0 -5 V-2.5 M-4.6 -2.8 L-3 -1.2 M4.6 -2.8 L3 -1.2"/></svg><span></span></span>
       </button>
-      <button type="button" id="air-badge" class="air-badge panel" hidden aria-live="polite">
-        <svg viewBox="-13 -13 26 26" aria-hidden="true"><ellipse cx="0" cy="1" rx="4.5" ry="6"/><path d="M0 6 L0 12 M-3 12 L3 12 M-11 -9 L11 9 M11 -9 L-11 9"/></svg>
-        <span id="air-badge-text"></span>
-      </button>
+      <div class="air-row">
+        <button type="button" id="air-badge" class="air-badge panel" hidden aria-live="polite">
+          <svg viewBox="-13 -13 26 26" aria-hidden="true"><ellipse cx="0" cy="1" rx="4.5" ry="6"/><path d="M0 6 L0 12 M-3 12 L3 12 M-11 -9 L11 9 M11 -9 L-11 9"/></svg>
+          <span id="air-badge-text"></span>
+        </button>
+        <button type="button" id="air-history-button" class="panel icon-button air-history-button" hidden aria-label="Aircraft history" title="Aircraft history">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18c3-1 4-6 7-6s3 4 6 3 3-7 5-9"/><circle cx="21" cy="6" r="1.4" class="fill"/><path d="M3 21h18" class="faint"/></svg>
+        </button>
+      </div>
     </div>
     <div class="subbar-right">
       <div id="chart-style" class="chart-style" hidden>
@@ -79,6 +85,17 @@
   <nav id="strip" class="strip" aria-label="Ships"></nav>
 
   <section id="card" class="card panel" hidden aria-live="polite">
+    <div class="sheet-grab" id="card-grab" aria-hidden="true"><i></i></div>
+    <div class="card-peek" id="card-peek">
+      <span class="peek-photo" id="peek-photo"><img id="peek-img" alt=""></span>
+      <div class="peek-text"><strong id="peek-name"></strong><span id="peek-status"></span></div>
+      <button type="button" class="icon-button plain peek-btn" id="peek-play" aria-label="Play back the track"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M8 5.5v13l10.5-6.5z"/></svg></button>
+      <button type="button" class="icon-button plain peek-btn" id="peek-expand" aria-label="Show the whole card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+      <button type="button" class="icon-button plain peek-btn" id="peek-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="player-slot" id="card-player" hidden></div>
     <div class="card-photo" id="card-photo">
       <img id="card-img" alt="">
       <a id="card-credit" class="credit" target="_blank" rel="noopener" hidden>Photo: Wikipedia</a>
@@ -87,6 +104,9 @@
       <div class="card-head">
         <span class="dot" id="card-dot"></span>
         <h2 id="card-name"></h2>
+        <button type="button" class="icon-button plain" id="card-collapse" aria-label="Make the card small" aria-expanded="true" title="Make the card small">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
         <button type="button" class="icon-button plain" id="card-close" aria-label="Close">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
@@ -109,6 +129,7 @@
       </div>
       <div class="card-actions">
         <button type="button" id="card-zoom">Show whole track</button>
+        <button type="button" id="card-play" class="play-link">Play back</button>
         <label class="link-button" id="card-photo-label">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
         <button type="button" class="link-button" id="card-follow" hidden>Add to my ships</button>
         <button type="button" class="link-button" id="card-unfollow" hidden>Stop following</button>
@@ -117,15 +138,19 @@
   </section>
 
   <section id="replay" class="replay panel" hidden aria-live="polite">
-    <span class="dot" id="replay-dot"></span>
-    <div class="grow">
-      <strong id="replay-title"></strong>
-      <span class="small" id="replay-when"></span>
-      <span class="small muted" id="replay-note"></span>
+    <div class="replay-row">
+      <span class="dot" id="replay-dot"></span>
+      <div class="grow">
+        <strong id="replay-title"></strong>
+        <span class="small" id="replay-when"></span>
+        <span class="small muted" id="replay-note"></span>
+      </div>
+      <button type="button" class="icon-button plain replay-play" id="replay-play" aria-label="Play back the passage" title="Play back" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M8 5.5v13l10.5-6.5z"/></svg></button>
+      <button type="button" class="icon-button plain" id="replay-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </div>
-    <button type="button" class="icon-button plain" id="replay-close" aria-label="Close">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-    </button>
+    <div class="player-slot" id="replay-player" hidden></div>
   </section>
 
   <section id="areas" class="sheet panel" hidden aria-label="Areas">
@@ -231,7 +256,8 @@
       <ul class="credits small muted">
         <li>Ship positions: <a href="https://www.digitraffic.fi/en/marine-traffic/" target="_blank" rel="noopener">Digitraffic</a> (Fintraffic, CC BY 4.0)</li>
         <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
-        <li>Sea conditions: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+        <li>Sea conditions and sea ice observations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+        <li>Ice chart: <a href="https://marine.copernicus.eu" target="_blank" rel="noopener">E.U. Copernicus Marine Service Information</a> (Baltic sea ice concentration)</li>
         <li>Charts: Traficom, Väylävirasto, Maanmittauslaitos; wrecks and coastal heritage: Museovirasto</li>
         <li>Weather stations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
         <li>Harbours: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL), via the Overpass API</li>
@@ -258,7 +284,9 @@
       <div id="stats-chart" class="stats-chart"></div>
       <div id="stats-calendar" class="stats-calendar" hidden></div>
       <p class="small muted" id="stats-scope"></p>
+      <div id="stats-day" class="stats-day" hidden></div>
       <ul id="stats-ships" class="ships-list stats-ships"></ul>
+      <section id="stats-weather" class="stats-weather" hidden></section>
       <h3>Recent passages</h3>
       <ul id="passages-list" class="ships-list passages"></ul>
       <p class="small"><a id="stats-csv" href="api/passages.csv" download="ferry-watch-passages.csv">Download all passages (CSV)</a></p>
@@ -269,6 +297,9 @@
   <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/vchart.js"></script>
   <script src="static/navmath.js"></script>
+  <script src="static/playback.js"></script>
+  <script src="static/history.js"></script>
+  <script src="static/weather-stats.js"></script>
   <script src="static/app.js"></script>
 </body>
 </html>

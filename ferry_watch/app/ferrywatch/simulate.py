@@ -276,7 +276,7 @@ def _fly(recorder, plane, path, start_ts) -> None:
     entry = {"hex": hexid, "reg": reg, "type": type_, "type_name": type_name, "callsign": callsign,
              "operator": operator(reg, callsign or ""), "helicopter": heli, "gs_kn": kn}
     t = 0.0
-    while t <= seconds:
+    while t <= seconds and start_ts + t <= time.time():  # nothing from the future
         (lat, lon), brg, _ = _point_along(path, t * speed)
         wobble = math.sin(t / 97) * 0.004
         climb = min(1.0, t / 240, (seconds - t) / 240)
