@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import WSMsgType, web
 
 from . import __version__, stats
+from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
@@ -100,6 +101,9 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_post("/api/aircraft", self.set_aircraft)
+        r.add_get("/api/aircraft/flights", self.air_flights)
+        r.add_get("/api/aircraft/flights/{flight_id}", self.air_flight)
+        r.add_get("/api/aircraft/overview", self.air_overview)
         r.add_post("/api/weather", self.set_weather)
         r.add_get("/api/faults", self.faults)
         r.add_get("/api/traffic", self.traffic)
@@ -122,7 +126,8 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css"):
+        for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css",
+                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -152,7 +157,7 @@ class Web:
             raise web.HTTPBadRequest(text="Invalid time") from None
         if until is not None:
             # A stretch of history (passage replay); works for removed ships too.
-            points = self.fw.store.track(mmsi, since or 0, until)
+            points = self.fw.store.track(mmsi, since or 0, until, speed=True)
             return web.json_response({"mmsi": mmsi, "since": since, "until": until, "points": points})
         tracker = self.fw.tracker_for(mmsi)
         if not tracker:
@@ -317,7 +322,13 @@ class Web:
     async def passages(self, request: web.Request) -> web.Response:
         limit = min(int(request.query.get("limit", 30)), 500)
         names = stats.ship_names(self.fw.store)
-        rows = self.fw.store.passages(limit=limit, route=request.query.get("route"))
+        try:
+            since = int(request.query["since"]) if "since" in request.query else None
+            until = int(request.query["until"]) if "until" in request.query else None
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid time") from None
+        rows = self.fw.store.passages(limit=limit, route=request.query.get("route"), since_ts=since,
+                                      before_ts=until)
         for row in rows:
             info = names.get(row["mmsi"], {})
             row["name"] = info.get("name", f"MMSI {row['mmsi']}")
@@ -345,6 +356,52 @@ class Web:
         body = await request.json()
         await self.fw.set_aircraft(bool(body.get("enabled")))
         return web.json_response({"ok": True})
+
+    # --- aircraft history ------------------------------------------------------
+
+    @staticmethod
+    def _period(request: web.Request) -> tuple[int, int]:
+        now = int(time.time())
+        try:
+            if "period" in request.query:
+                return now - PERIODS[request.query["period"]], now
+            until = int(request.query.get("until", now))
+            return int(request.query.get("since", until - 86400)), until
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="period is 24h, 7d, 30d or year; or since and until") from None
+
+    async def air_flights(self, request: web.Request) -> web.Response:
+        since, until = self._period(request)
+        flights = self.fw.air_history.flights(since, until, request.query.get("icao"))
+        return web.json_response({"since": since, "until": until, "flights": flights})
+
+    async def air_flight(self, request: web.Request) -> web.Response:
+        try:
+            flight = self.fw.air_history.flight(int(request.match_info["flight_id"]))
+        except ValueError:
+            flight = None
+        if not flight:
+            raise web.HTTPNotFound()
+        return web.json_response(flight)
+
+    async def air_overview(self, request: web.Request) -> web.StreamResponse:
+        """Every flight of a period as simplified lines. Written out a flight at a time,
+        so even a year never sits in memory whole."""
+        since, until = self._period(request)
+        resp = web.StreamResponse(headers={"Content-Type": "application/json", "Cache-Control": "no-store"})
+        resp.enable_compression()
+        await resp.prepare(request)
+        buf: list[str] = []
+        size = 0
+        for piece in self.fw.air_history.overview(since, until):
+            buf.append(piece)
+            size += len(piece)
+            if size > 32768:
+                await resp.write("".join(buf).encode())
+                buf, size = [], 0
+        await resp.write("".join(buf).encode())
+        await resp.write_eof()
+        return resp
 
     async def set_weather(self, request: web.Request) -> web.Response:
         body = await request.json()

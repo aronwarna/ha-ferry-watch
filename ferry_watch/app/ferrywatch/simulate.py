@@ -161,11 +161,24 @@ def seed_history(store: Store, days: int = 290) -> None:
                 ts = int(midnight + (hour + rng.uniform(-0.6, 0.6)) * 3600)
                 if ts > time.time() - 3600:
                     continue
-                route = "inner" if rng.random() < 0.55 else "outer"
+                # Calm weather favours the inner route, a gale and ice the outer one.
+                wind = round(rng.gammavariate(2.6, 3.0), 1)
+                month = time.localtime(ts).tm_mon
+                ice = None
+                if month in (12, 1, 2, 3, 4):
+                    ice = "ice" if month in (1, 2, 3) and rng.random() < 0.6 else "open"
+                share = (0.8, 0.62, 0.38, 0.12)[min(3, int(wind // 5))] * (0.5 if ice == "ice" else 1)
+                route = "inner" if rng.random() < share else "outer"
                 pid = store.add_passage({"mmsi": mmsi, "ts": ts, "route": route, "direction": direction,
                                          "zone_id": None, "lat": 59.98, "lon": 24.4, "sog": 17.0})
                 store.set_passage_result(pid, False, "made-up history")
-                store.set_passage_wind(pid, round(rng.uniform(2, 14), 1), None, rng.choice((45, 135, 225, 270)))
+                water = 9 - 8 * math.cos((time.localtime(ts).tm_yday - 30) / 365 * 2 * math.pi)
+                store.set_passage_conditions(
+                    pid, wind_ms=wind, gust_ms=round(wind * rng.uniform(1.2, 1.6), 1),
+                    wind_dir=rng.choice((0, 45, 90, 135, 180, 200, 225, 225, 250, 270, 315)),
+                    water_c=round(max(-0.3, water + rng.uniform(-1, 1)), 1), vis_km=round(rng.uniform(4, 40), 1),
+                    ice=ice, ice_cm=rng.choice((18.0, 24.0, 31.0)) if ice == "ice" else None,
+                    ice_conc=rng.choice((60.0, 90.0, 100.0)) if ice == "ice" else (0.0 if ice else None))
     # A track for each ship's latest inner passage each way, so next-passage predictions
     # have something to go on.
     west = [*OUT_OF_HELSINKI, *INNER_ROUTE]
@@ -213,10 +226,11 @@ class FakeHA:
 
 
 async def simulate_aircraft(watcher, step: float = 5.0) -> None:
-    """A FinnHEMS helicopter flying to Porkkala and a Border Guard plane on patrol."""
+    """A FinnHEMS helicopter flying to Porkkala and a Border Guard plane on patrol, recorded
+    while the switch is on like the real ones."""
     start = time.time()
     while True:
-        if watcher.wanted():
+        if watcher.enabled():
             t = time.time() - start
             heli_f = (t % 900) / 900
             a = (t % 1200) / 1200 * 2 * math.pi
@@ -231,8 +245,101 @@ async def simulate_aircraft(watcher, step: float = 5.0) -> None:
                  "ownOp": "SUOMEN RAJAVARTIOLAITOS"},
             ]
             watcher.update(rows, time.time())
-            watcher.publish(watcher.snapshot())
+            if watcher.watching():
+                watcher.publish(watcher.snapshot())
         await asyncio.sleep(step)
+
+
+# Made-up rescue flights for the aircraft history (FW_SIM_HISTORY=1):
+# (hex, registration, type, type name, callsign, helicopter, base, knots, cruise feet)
+AIR_FLEET = [
+    ("461f01", "OH-HMV", "H145", "Airbus Helicopters H-145", "FINNHEMS10", True, (60.317, 24.963), 130, 1500),
+    ("461f03", "OH-HVK", "A169", None, "FGU11", True, (60.317, 24.963), 125, 1000),
+    ("461f02", "OH-MVL", "D228", None, "FGU2", False, (60.514, 22.262), 170, 1500),
+    ("461f04", "OH-HPC", "EC35", None, "POLICE21", True, (60.254, 25.042), 115, 1200),
+    ("461f05", "OH-HFD", "R44", "Robinson R-44 Raven", None, True, (60.254, 25.042), 95, 800),
+]
+HEMS_CALLS = [(60.0, 24.4), (60.25, 24.07), (60.39, 25.66), (59.83, 22.95), (60.12, 24.44), (60.04, 24.0),
+              (60.16, 24.74), (59.95, 23.4), (60.47, 25.1), (60.2, 23.7)]
+BG_PATROL = [(60.12, 24.6), (59.97, 24.38), (59.9, 23.9), (59.83, 23.1), (59.87, 24.2), (60.05, 24.75)]
+DORNIER_PATROL = [(60.1, 21.9), (59.78, 21.4), (59.7, 22.6), (59.78, 24.0), (59.9, 25.4), (60.0, 26.2),
+                  (59.95, 25.0), (59.86, 23.6), (59.95, 22.4)]
+POLICE_LOOP = [(60.17, 24.94), (60.2, 24.65), (60.3, 24.8), (60.25, 25.1), (60.18, 25.05)]
+
+
+def _fly(recorder, plane, path, start_ts) -> None:
+    """Feed one made-up flight through the history recorder, a report every 15 s."""
+    from .aircraft import operator
+    hexid, reg, type_, type_name, callsign, heli, _base, kn, cruise = plane
+    speed = kn * KNOTS
+    seconds = sum(distance_m(*a, *b) for a, b in zip(path, path[1:])) / speed
+    entry = {"hex": hexid, "reg": reg, "type": type_, "type_name": type_name, "callsign": callsign,
+             "operator": operator(reg, callsign or ""), "helicopter": heli, "gs_kn": kn}
+    t = 0.0
+    while t <= seconds:
+        (lat, lon), brg, _ = _point_along(path, t * speed)
+        wobble = math.sin(t / 97) * 0.004
+        climb = min(1.0, t / 240, (seconds - t) / 240)
+        entry.update(lat=lat + wobble, lon=lon + wobble * 2, track=round(brg + 8 * math.sin(t / 61), 1),
+                     alt_ft=max(1, round(cruise * climb * (1 + 0.25 * math.sin(t / 400)))))
+        recorder.record(entry, start_ts + t, commit=False)
+        t += 15
+
+
+def seed_aircraft_history(recorder, days: int = 45) -> None:
+    """A month and a half of rescue flights, the latest within the last hour."""
+    if recorder.count():
+        return
+    rng = random.Random(11)
+    now = time.time()
+    hems, bg, dornier, police, robin = AIR_FLEET
+    for day in range(days, -1, -1):
+        midnight = now - now % 86400 - day * 86400 - 3 * 3600
+        flights = []
+        for _ in range(rng.choice((1, 2, 2, 3))):
+            dest = rng.choice(HEMS_CALLS)
+            flights.append((hems, [hems[6], dest, (dest[0] + 0.01, dest[1] + 0.02), hems[6]], rng.uniform(7, 21)))
+        if rng.random() < 0.5:
+            flights.append((bg, [bg[6], *rng.sample(BG_PATROL, 4), bg[6]], rng.uniform(8, 16)))
+        if rng.random() < 0.3:
+            flights.append((dornier, [dornier[6], *DORNIER_PATROL, dornier[6]], rng.uniform(8, 12)))
+        if rng.random() < 0.5:
+            flights.append((police, [police[6], *rng.sample(POLICE_LOOP, 3), police[6]], rng.uniform(10, 22)))
+        if rng.random() < 0.15:
+            flights.append((robin, [robin[6], (60.1, 24.5), (60.0, 24.38), (60.06, 24.1), robin[6]],
+                            rng.uniform(11, 17)))
+        for plane, path, hour in flights:
+            start = midnight + hour * 3600
+            if day == 0:  # today: a medical flight in the last hour, the others earlier
+                start = now - rng.uniform(0.5, 1.0) * 3600 if plane is hems else now - rng.uniform(3, 9) * 3600
+            if start < now - 600:
+                _fly(recorder, plane, path, start)
+    recorder.db.commit()
+    recorder.tick(now + 3600)  # finish them all; the live aircraft carry on from here
+
+
+# --- ice (Dec-Apr): FMI's manual observations and the Copernicus ice chart ---------------
+
+async def fake_ice_fetch(url: str, params: dict[str, Any]) -> Any:
+    """Thick ice at Porkkala from January to March, none otherwise."""
+    month = time.localtime().tm_mon
+    if "copernicus" in url:
+        conc = 90.0 if month in (1, 2, 3) else 0.0
+        return '{"type": "FeatureCollection", "features": [{"properties": {"value": %s}}]}' % conc
+    members = ""
+    if month in (1, 2, 3):
+        when = time.strftime("%Y-%m-%dT10:00:00Z", time.gmtime(time.time() - 3 * 86400))
+        for param, value in (("ICE_PT1S_INSTANT", 28.0), ("SNDICE_PT1M_AVG", 6.0)):
+            members += ('<wfs:member><omso:PointTimeSeriesObservation><om:observedProperty xlink:href='
+                        f'"https://opendata.fmi.fi/meta?observableProperty=observation&amp;param={param}"/>'
+                        f'<om:result><wml2:MeasurementTimeseries gml:id="obs-obs-1-1-{param}"><wml2:point>'
+                        f'<wml2:MeasurementTVP><wml2:time>{when}</wml2:time><wml2:value>{value}</wml2:value>'
+                        '</wml2:MeasurementTVP></wml2:point></wml2:MeasurementTimeseries></om:result>'
+                        '</omso:PointTimeSeriesObservation></wfs:member>')
+    return ('<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" '
+            'xmlns:om="http://www.opengis.net/om/2.0" xmlns:omso="http://inspire.ec.europa.eu/schemas/omso/3.0" '
+            'xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink" '
+            'xmlns:wml2="http://www.opengis.net/waterml/2.0">' + members + "</wfs:FeatureCollection>")
 
 
 # --- other ships, the vessel directory, sea conditions and faults ----------------------

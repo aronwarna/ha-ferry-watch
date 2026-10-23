@@ -225,3 +225,21 @@ def test_stale_wind_is_left_out(tmp_path, monkeypatch):
     second = fw.ha.calls[-1][1]["message"].split("\n")[1]
     assert second.startswith("Sun")  # only the sun time
     assert fw.store.passages()[0]["wind_ms"] is None
+
+
+class StubIce:
+    async def current(self, ts):
+        return {"state": "ice", "thick_cm": 31.0, "conc": 90.0}
+
+
+def test_passage_keeps_water_visibility_and_ice(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    now = time.time()
+    fw.weather = StubWeather({"wind": {"ms": 4.0, "gust": 6.0, "dir": 200.0, "ts": now - 300},
+                              "visibility": {"km": 8.5, "weather": None, "ts": now - 300},
+                              "water": {"c": 1.4, "ts": now - 2 * 3600}})
+    fw.ice = StubIce()
+    asyncio.run(n.handle(passage(fw.store, route="outer")))  # outer passages too, with no panel open
+    row = fw.store.passages()[0]
+    assert (row["wind_ms"], row["water_c"], row["vis_km"]) == (4.0, 1.4, 8.5)
+    assert (row["ice"], row["ice_cm"], row["ice_conc"]) == ("ice", 31.0, 90.0)

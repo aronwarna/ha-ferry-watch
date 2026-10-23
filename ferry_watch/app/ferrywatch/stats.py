@@ -27,7 +27,7 @@ def ship_names(store: Store) -> dict[int, dict[str, Any]]:
 def payload(store: Store) -> dict[str, Any]:
     rows = store.passage_rows()
     names = ship_names(store)
-    seen = {mmsi for _, mmsi, _, _ in rows}
+    seen = {row[1] for row in rows}
     ships = [
         {"mmsi": mmsi, **info}
         for mmsi, info in names.items()
@@ -35,6 +35,7 @@ def payload(store: Store) -> dict[str, Any]:
     ]
     for mmsi in seen - names.keys():
         ships.append({"mmsi": mmsi, "name": f"MMSI {mmsi}", "color": "#64748b", "current": False})
+    # [ts, mmsi, route, direction, wind m/s, wind from °, ice state]
     return {"ships": ships, "passages": [list(r) for r in rows]}
 
 
@@ -42,7 +43,12 @@ def to_csv(store: Store) -> str:
     names = ship_names(store)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert", "wind_ms", "wind_dir"])
+    writer.writerow(["time", "ship", "mmsi", "route", "direction", "speed_kn", "alert", "wind_ms", "wind_dir",
+                     "gust_ms", "water_c", "visibility_km", "ice", "ice_cm", "ice_concentration"])
+
+    def num(value: Any, digits: int = 1) -> str:
+        return "" if value is None else f"{value:.{digits}f}"
+
     for row in store.passages(limit=1_000_000):
         writer.writerow([
             time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"])),
@@ -54,5 +60,7 @@ def to_csv(store: Store) -> str:
             "sent" if row["notified"] else (row["note"] or ""),
             f"{row['wind_ms']:.1f}" if row["wind_ms"] is not None else "",
             f"{row['wind_dir']:.0f}" if row["wind_dir"] is not None else "",
+            num(row["gust_ms"]), num(row["water_c"]), num(row["vis_km"]), row["ice"] or "",
+            num(row["ice_cm"], 0), num(row["ice_conc"], 0),
         ])
     return out.getvalue()

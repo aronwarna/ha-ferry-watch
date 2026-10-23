@@ -15,6 +15,7 @@ from aiohttp import web
 from . import __version__
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
+from .airhistory import AircraftHistory
 from .autoroute import AutoRouter
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .faults import Faults
@@ -24,6 +25,7 @@ from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, 
 from .geo import sun_info
 from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
+from .ice import IceWatch
 from .notify import Notifier, sun_place
 from .passages import Detector
 from .photos import PhotoCache
@@ -78,6 +80,8 @@ class FerryWatch:
         self.tiles: TileCache | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
+        self.air_history = AircraftHistory(self.store.db)
+        self.ice: IceWatch | None = None
         self.weather: SeaWeather | None = None
         self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
         self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
@@ -117,6 +121,10 @@ class FerryWatch:
             from .simsea import fake_overpass_fetch as fake_overpass
             from .simsea import fake_stations_fetch as fake_stations
         self.weather = SeaWeather(self.session, fake_fmi)
+        fake_ice = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simulate import fake_ice_fetch as fake_ice
+        self.ice = IceWatch(self.session, self.store, fake_ice)
         # These only answer the panel's requests: nothing runs while no one looks.
         self.faults = Faults(self.session, fake_faults)
         self.traffic = Traffic(self.session, self.store,
@@ -132,9 +140,10 @@ class FerryWatch:
         self.tracker.subscribe(self.web.on_event)
         self.tracker.subscribe(self.detector.on_event)
         self.fleet_tracker.subscribe(self.web.on_fleet_event)
-        # Aircraft are only fetched while the switch is on and someone has the panel open.
-        self.aircraft = AircraftWatcher(self.session, lambda: self.aircraft_enabled and bool(self.web.sockets),
-                                        self.web.broadcast_aircraft)
+        # Aircraft are only fetched while the switch is on: often while a panel is open,
+        # gently otherwise, for the flight history.
+        self.aircraft = AircraftWatcher(self.session, lambda: self.aircraft_enabled, self.web.broadcast_aircraft,
+                                        self.air_history, lambda: self.aircraft_enabled and bool(self.web.sockets))
 
         if os.environ.get("FW_FAKE_HA") == "1":
             from .simulate import FakeHA
@@ -156,9 +165,11 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import FLEET_MEMBERS, fake_vessel_list, run_simulation, seed_history, simulate_aircraft
+            from .simulate import (FLEET_MEMBERS, fake_vessel_list, run_simulation, seed_aircraft_history,
+                                   seed_history, simulate_aircraft)
             if os.environ.get("FW_SIM_HISTORY") == "1":
                 seed_history(self.store)
+                seed_aircraft_history(self.air_history)
             self.feed.vessel_list_source = fake_vessel_list
             await self.feed.refresh_directory()
             self.fleets.update(FLEET_MEMBERS)
@@ -171,6 +182,7 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self.ice.run()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:
@@ -262,6 +274,8 @@ class FerryWatch:
         """A panel connected: check the sea conditions and the phone now, not in a minute."""
         for wake in self._wakers:
             wake.set()
+        if self.aircraft:
+            self.aircraft.wake()
 
     async def _while_panel_open(self, tick) -> None:
         wake = asyncio.Event()
@@ -366,6 +380,11 @@ class FerryWatch:
             if removed:
                 _LOGGER.info("Removed %s positions older than %s days", removed, self.options.retention_days)
             self.store.prune_untracked(int(time.time()) - FLEET_KEEP)
+            if time.time() - self.store.kv_get("air_pruned", 0) >= 86400:  # once a day
+                removed = self.air_history.prune()
+                self.store.kv_set("air_pruned", int(time.time()))
+                if removed:
+                    _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.vchart.prune)
@@ -415,6 +434,7 @@ class FerryWatch:
             "memory_mb": memory_mb(),
             "aircraft": {
                 "enabled": self.aircraft_enabled,
+                "flights_stored": self.air_history.count(),
                 "error": self.aircraft.error if self.aircraft else None,
                 "list": self.aircraft.snapshot() if self.aircraft and self.aircraft_enabled else [],
             },

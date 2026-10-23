@@ -32,7 +32,8 @@ IMAGE_KEEP_DAYS = 14
 LAST_INNER_ENTITY = "sensor.ferry_watch_last_inner_passage"
 WEATHER_WAIT = 3  # seconds an alert may wait for fresh sea conditions
 WEATHER_MAX_AGE = 900
-WIND_MATCH = 40 * 60  # a wind observation this close to a passage is stored with it
+WIND_MATCH = 40 * 60  # a wind or visibility observation this close to a passage is stored with it
+WATER_MATCH = 3 * 3600  # sea temperature is an hourly mean and changes slowly
 
 
 def feed_warning_hours(now: float | None = None) -> bool:
@@ -81,7 +82,7 @@ class Notifier:
         notified, note = await self._alert(passage)
         self.fw.store.set_passage_result(passage["id"], notified, note)
         await self.publish_to_ha(passage, notified, note)
-        await self._store_wind(passage)
+        await self._store_conditions(passage)
 
     async def _conditions(self, wait: float = WEATHER_WAIT) -> dict[str, Any] | None:
         """Sea conditions for an alert: refreshed if older than WEATHER_MAX_AGE, but never
@@ -95,14 +96,31 @@ class Notifier:
             _LOGGER.exception("Could not read sea conditions")
             return weather.conditions()
 
-    async def _store_wind(self, passage: dict[str, Any]) -> None:
-        """Keep the wind at Porkkala with the passage, if an observation is close in time."""
+    async def _store_conditions(self, passage: dict[str, Any]) -> None:
+        """Keep the weather with the passage, for every passage whether or not a panel is
+        open: wind at Mäkiluoto, sea temperature, visibility (observations close in time
+        only) and, in winter, the day's ice on the inner route."""
         if not passage.get("id") or time.time() - passage["ts"] > WIND_MATCH:
             return
-        conditions = await self._conditions(wait=10)
-        wind = (conditions or {}).get("wind")
-        if wind and abs(wind["ts"] - passage["ts"]) <= WIND_MATCH:
-            self.fw.store.set_passage_wind(passage["id"], wind["ms"], wind["gust"], wind["dir"])
+        cond = await self._conditions(wait=10) or {}
+        near = lambda key, limit: (v := cond.get(key)) and abs(v["ts"] - passage["ts"]) <= limit and v  # noqa: E731
+        values: dict[str, Any] = {}
+        if wind := near("wind", WIND_MATCH):
+            values.update(wind_ms=wind["ms"], gust_ms=wind["gust"], wind_dir=wind["dir"])
+        if water := near("water", WATER_MATCH):
+            values["water_c"] = water["c"]
+        if vis := near("visibility", WIND_MATCH):
+            values["vis_km"] = vis["km"]
+        ice = getattr(self.fw, "ice", None)
+        if ice:
+            try:
+                day = await ice.current(passage["ts"])
+            except Exception:  # noqa: BLE001 - the weather is still worth keeping
+                _LOGGER.exception("Could not read the ice")
+                day = None
+            if day:
+                values.update(ice=day["state"], ice_cm=day["thick_cm"], ice_conc=day["conc"])
+        self.fw.store.set_passage_conditions(passage["id"], **values)
 
     async def _alert(self, passage: dict[str, Any]) -> tuple[bool, str]:
         """Send the phone alert if this passage calls for one; returns (sent, note)."""

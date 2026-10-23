@@ -1,8 +1,8 @@
 """Rescue and Border Guard aircraft from adsb.fi's open ADS-B data.
 
-Only fetched while the panel is open and the Aircraft switch is on, so it costs
-nothing the rest of the time. Positions are kept in memory with a short trail;
-nothing is stored.
+Fetched only while the Aircraft switch is on: every 10 s while a panel is open, and
+every 30 s otherwise, for the flight history (airhistory.py), which stores thinned
+positions on disk. In memory each aircraft keeps its latest position and a short trail.
 
 adsb.fi asks for personal, non-commercial use, at most one request a second,
 and a credit with a link, which the panel shows.
@@ -24,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 # The Gulf of Finland and the Archipelago Sea, 160 nautical miles around Porkkala.
 API_URL = "https://opendata.adsb.fi/api/v2/lat/60.0/lon/23.6/dist/160"
 POLL_SECONDS = 10
+BACKGROUND_SECONDS = 30  # with no panel open, only for the history
 TRAIL_POINTS = 60  # about 10 minutes
 FORGET_SECONDS = 120
 HELICOPTER_TYPES = {"EC35", "EC45", "H145", "EC30", "EC55", "A109", "A119", "A139", "A169", "AS32",
@@ -81,21 +82,35 @@ def interesting(ac: dict[str, Any]) -> bool:
 
 
 class AircraftWatcher:
-    def __init__(self, session: aiohttp.ClientSession, wanted: Callable[[], bool],
-                 publish: Callable[[list[dict[str, Any]]], None]):
+    def __init__(self, session: aiohttp.ClientSession, enabled: Callable[[], bool],
+                 publish: Callable[[list[dict[str, Any]]], None], history: Any = None,
+                 watching: Callable[[], bool] | None = None):
         self.session = session
-        self.wanted = wanted  # switch on and a panel open
+        self.enabled = enabled  # the switch
+        self.watching = watching or enabled  # the switch on and a panel open
         self.publish = publish
+        self.history = history
         self.aircraft: dict[str, dict[str, Any]] = {}
         self.error: str | None = None
+        self._wake: asyncio.Event | None = None
+
+    def wake(self) -> None:
+        """A panel opened: poll now rather than at the end of a 30 s background wait."""
+        if self._wake:
+            self._wake.set()
 
     async def run(self) -> None:
+        self._wake = asyncio.Event()
         while True:
-            if self.wanted():
+            if self.enabled():
                 await self.poll()
             elif self.aircraft:
                 self.aircraft.clear()
-            await asyncio.sleep(POLL_SECONDS)
+            try:
+                await asyncio.wait_for(self._wake.wait(), POLL_SECONDS if self.watching() else BACKGROUND_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            self._wake.clear()
 
     async def poll(self) -> None:
         try:
@@ -110,7 +125,8 @@ class AircraftWatcher:
             return
         self.error = None
         self.update(data.get("ac") or data.get("aircraft") or [], time.time())
-        self.publish(self.snapshot())
+        if self.watching():
+            self.publish(self.snapshot())
 
     def update(self, rows: list[dict[str, Any]], now: float) -> None:
         for ac in rows:
@@ -145,8 +161,15 @@ class AircraftWatcher:
             if not trail or trail[-1][:2] != [ac["lat"], ac["lon"]]:
                 trail.append([ac["lat"], ac["lon"]])
                 del trail[:-TRAIL_POINTS]
+                if self.history:
+                    try:
+                        entry["flight_id"] = self.history.record(entry, seen)
+                    except Exception:  # noqa: BLE001 - the live map must keep working
+                        _LOGGER.exception("Could not store an aircraft position")
         for hexid in [h for h, e in self.aircraft.items() if now - e["ts"] > FORGET_SECONDS]:
             del self.aircraft[hexid]
+        if self.history:
+            self.history.tick(now)
 
     def snapshot(self) -> list[dict[str, Any]]:
         return list(self.aircraft.values())

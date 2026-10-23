@@ -110,3 +110,54 @@ def test_default_zones_from_old_setup():
     assert point_in_polygon(60.09, 24.68, inner)  # inner fairway west of Helsinki
     assert not point_in_polygon(59.95, 24.70, inner)  # outer route
     assert point_in_polygon(60.115, 24.45, phone)  # coast near Porkkala
+
+
+EAST_END = [[60.05, 24.55], [59.95, 24.55]]
+WEST_END = [[60.05, 24.25], [59.95, 24.25]]
+
+
+def sub(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir()
+    return path
+
+
+def test_outer_route_at_the_porkkala_meridian(tmp_path):
+    store, det, got = make(tmp_path, [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 59.86, 24.45))  # westbound on the outer route
+    det.on_position(pos(1060, 59.86, 24.35))
+    assert [(p["route"], p["zone_id"], p["direction"]) for p in got] == [("outer", 0, "west")]
+    # On the inner route the line comes first, and the meridian adds nothing.
+    t = 1000 + COOLDOWN + 60
+    for i, lon in enumerate((24.60, 24.50, 24.42, 24.38, 24.30)):
+        det.on_position(pos(t + i * 60, 60.0, lon))
+    assert [p["route"] for p in got] == ["outer", "inner"]
+    # Predictions only learn from the route lines.
+    assert [p["route"] for p in store.recent_passages_for(MMSI)] == ["inner"]
+
+
+def test_inner_passage_replaces_a_meridian_outer_one(tmp_path):
+    # Only the west end has a line: a westbound ship reaches the meridian first.
+    store, det, got = make(tmp_path, [("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 60.0, 24.45))
+    det.on_position(pos(1060, 60.0, 24.35))
+    det.on_position(pos(1120, 60.0, 24.22))
+    assert [p["route"] for p in got] == ["outer", "inner"]
+    assert [p["route"] for p in store.passages()] == ["inner"]
+    # Eastbound it crosses the line first.
+    store, det, got = make(sub(tmp_path, "east"), [("West", "inner", "line", WEST_END)])
+    for i, lon in enumerate((24.20, 24.30, 24.45)):
+        det.on_position(pos(1000 + i * 60, 60.0, lon, cog=90))
+    assert [p["route"] for p in got] == ["inner"]
+
+
+def test_no_meridian_passages_with_outer_lines_or_far_away(tmp_path):
+    store, det, got = make(tmp_path, [("Inner", "inner", "line", EAST_END),
+                                      ("Outer", "outer", "line", [[59.90, 24.10], [59.80, 24.10]])])
+    det.on_position(pos(1000, 59.86, 24.45))
+    det.on_position(pos(1060, 59.86, 24.35))
+    assert got == []
+    store, det, got = make(sub(tmp_path, "south"), [("Inner", "inner", "line", EAST_END)])
+    det.on_position(pos(1000, 59.30, 24.45))  # far south of the Porkkala sailings
+    det.on_position(pos(1060, 59.30, 24.35))
+    assert got == []

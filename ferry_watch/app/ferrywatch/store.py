@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS vessels (
     updated INTEGER
 );
 CREATE INDEX IF NOT EXISTS vessels_norm ON vessels (norm);
+-- Sea ice on the inner route, one row per winter day (see ice.py).
+CREATE TABLE IF NOT EXISTS ice_days (
+    day TEXT PRIMARY KEY,
+    checked_ts INTEGER NOT NULL,
+    state TEXT,
+    conc REAL,
+    thick_cm REAL,
+    thick_ts INTEGER,
+    snow_cm REAL
+);
 """
 
 # Columns added after the first release: (table, column, type).
@@ -92,6 +102,11 @@ ADDED_COLUMNS = [
     ("passages", "wind_ms", "REAL"),
     ("passages", "gust_ms", "REAL"),
     ("passages", "wind_dir", "REAL"),
+    ("passages", "water_c", "REAL"),
+    ("passages", "vis_km", "REAL"),
+    ("passages", "ice", "TEXT"),
+    ("passages", "ice_cm", "REAL"),
+    ("passages", "ice_conc", "REAL"),
     ("meta", "eta_ts", "INTEGER"),
     ("meta", "draught", "REAL"),
 ]
@@ -349,10 +364,29 @@ class Store:
                         (wind_ms, gust_ms, wind_dir, passage_id))
         self.db.commit()
 
+    PASSAGE_CONDITIONS = ("wind_ms", "gust_ms", "wind_dir", "water_c", "vis_km", "ice", "ice_cm", "ice_conc")
+
+    def set_passage_conditions(self, passage_id: int, **values: Any) -> None:
+        """Weather and ice at the time of a passage (any of PASSAGE_CONDITIONS)."""
+        cols = [c for c in values if c in self.PASSAGE_CONDITIONS]
+        if cols:
+            self.db.execute(f"UPDATE passages SET {', '.join(f'{c} = ?' for c in cols)} WHERE id = ?",
+                            (*(values[c] for c in cols), passage_id))
+            self.db.commit()
+
+    def delete_auto_outer(self, mmsi: int, since_ts: int) -> int:
+        """Drop the ship's outer passages at the Porkkala meridian since a time: an inner
+        passage just showed it took the inner route after all."""
+        cur = self.db.execute("DELETE FROM passages WHERE mmsi = ? AND route = 'outer' AND zone_id = 0 AND ts >= ?",
+                              (mmsi, since_ts))
+        self.db.commit()
+        return cur.rowcount
+
     def recent_passages_for(self, mmsi: int, limit: int = 12) -> list[dict[str, Any]]:
-        """Latest passages, the ship's own first, then the other ships' (for predictions)."""
+        """Latest passages at the route lines, the ship's own first, then the other ships'
+        (for predictions); outer passages at the Porkkala meridian (zone 0) aren't lines."""
         rows = self.db.execute(
-            "SELECT * FROM passages ORDER BY mmsi = ? DESC, ts DESC LIMIT ?", (mmsi, limit)
+            "SELECT * FROM passages WHERE zone_id IS NOT 0 ORDER BY mmsi = ? DESC, ts DESC LIMIT ?", (mmsi, limit)
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -368,9 +402,12 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def passages(self, limit: int = 50, route: str | None = None,
-                 direction: str | None = None, before_ts: int | None = None) -> list[dict[str, Any]]:
+    def passages(self, limit: int = 50, route: str | None = None, direction: str | None = None,
+                 before_ts: int | None = None, since_ts: int | None = None) -> list[dict[str, Any]]:
         sql, args = "SELECT * FROM passages WHERE 1=1", []
+        if since_ts is not None:
+            sql += " AND ts >= ?"
+            args.append(since_ts)
         if route:
             sql += " AND route = ?"
             args.append(route)
@@ -384,10 +421,23 @@ class Store:
         args.append(limit)
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
-    def passage_rows(self) -> list[tuple[int, int, str, str]]:
-        """Every passage as (ts, mmsi, route, direction), oldest first, for the stats."""
+    def passage_rows(self) -> list[tuple]:
+        """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice), oldest
+        first, for the stats."""
         return [tuple(r) for r in self.db.execute(
-            "SELECT ts, mmsi, route, direction FROM passages ORDER BY ts").fetchall()]
+            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice "
+            "FROM passages ORDER BY ts").fetchall()]
+
+    # --- sea ice -----------------------------------------------------------
+
+    def set_ice_day(self, row: dict[str, Any]) -> None:
+        self.db.execute("INSERT OR REPLACE INTO ice_days (day, checked_ts, state, conc, thick_cm, thick_ts, snow_cm) "
+                        "VALUES (:day, :checked_ts, :state, :conc, :thick_cm, :thick_ts, :snow_cm)", row)
+        self.db.commit()
+
+    def ice_day(self, day: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT * FROM ice_days WHERE day = ?", (day,)).fetchone()
+        return dict(row) if row else None
 
     # --- vessel directory ------------------------------------------------
     # Digitraffic's list of every vessel seen in Finnish waters, refreshed daily. Kept here
