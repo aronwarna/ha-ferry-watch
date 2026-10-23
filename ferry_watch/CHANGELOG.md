@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.0
+
+- **Swedish and Estonian side of the drawn chart**, in the same style as the
+  Finnish side with no visible seam: depth areas and contours from EMODnet
+  Bathymetry, coastline, buoys, beacons, lights with sectors and characters,
+  traffic separation lanes, leading lines, rocks, wrecks and names from
+  OpenStreetMap / OpenSeaMap. Finnish data always wins where both exist.
+  Less detailed than the Finnish side (no soundings, fairway areas or land
+  detail abroad).
+- Settings → "Swedish and Estonian side" turns it off to save about 40 MB of
+  memory.
+
 ## 0.15.0
 
 - **Drawn chart closer to the paper chart** (Sailmate):

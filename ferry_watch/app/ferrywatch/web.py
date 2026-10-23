@@ -108,6 +108,7 @@ class Web:
         r.add_get("/api/faults", self.faults)
         r.add_get("/api/traffic", self.traffic)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
+        r.add_post("/api/vchart/foreign", self.set_vchart_foreign)
         r.add_post("/api/vchart/key", self.set_mml_key)
         r.add_post("/api/follow", self.follow)
         r.add_delete("/api/follow/{mmsi}", self.unfollow)
@@ -425,6 +426,11 @@ class Web:
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()
         await self.fw.set_vchart_keep(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
+    async def set_vchart_foreign(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.fw.set_vchart_foreign(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
     async def set_mml_key(self, request: web.Request) -> web.Response:

@@ -133,6 +133,7 @@ class FerryWatch:
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
+        self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
         self.autoroute = AutoRouter(self.vchart)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
@@ -259,6 +260,11 @@ class FerryWatch:
         elif self._keep_task:
             self._keep_task.cancel()
             self._keep_task = None
+
+    def set_vchart_foreign(self, on: bool) -> None:
+        """Draw the chart outside Finnish waters too, or not (to save RAM)."""
+        self.store.kv_set("vchart_foreign", on)
+        self.vchart.set_foreign(on)
 
     def set_mml_key(self, key: str) -> None:
         self.store.kv_set("mml_api_key", key.strip())

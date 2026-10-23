@@ -1515,7 +1515,7 @@
     const color = ZONE_STYLE[zone.role]?.color || "#64748b";
     return editing
       ? { color, weight: zone.shape === "line" ? 5 : 3, opacity: 0.95, fillOpacity: 0.15, dashArray: null }
-      : { color, weight: zone.shape === "line" ? 3 : 1.5, opacity: 0.55, fillOpacity: 0, dashArray: "6 6" }; // no fill: it would tint the chart;
+      : { color, weight: zone.shape === "line" ? 3 : 1.5, opacity: 0.55, fillOpacity: 0, dashArray: "6 6" }; // no fill: it would tint the chart
   }
 
   function zoneLatLngs(layer, shape) {
@@ -1714,6 +1714,7 @@
     const vc = lastState?.vchart;
     const keep = vc?.keep;
     $("chart-keep").checked = Boolean(keep);
+    $("chart-foreign").checked = vc?.foreign !== false;
     let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
     if (keep && keep.running) {
       const last = keep.last_ok ? ` Last area finished at ${new Date(keep.last_ok * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
@@ -1750,6 +1751,16 @@
     try {
       await api("api/vchart/keep", { method: "POST", body: { enabled: e.target.checked } });
       await loadState();
+    } finally {
+      e.target.disabled = false;
+    }
+  });
+
+  $("chart-foreign").addEventListener("change", async (e) => {
+    e.target.disabled = true;
+    try {
+      await api("api/vchart/foreign", { method: "POST", body: { enabled: e.target.checked } });
+      await loadState(); // a new chart rev redraws the tiles with or without it
     } finally {
       e.target.disabled = false;
     }

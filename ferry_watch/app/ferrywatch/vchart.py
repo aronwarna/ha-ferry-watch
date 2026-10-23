@@ -1823,6 +1823,14 @@ class VectorChart:
         from .foreign import ForeignSource
         self.foreign = ForeignSource(self)  # outside Finnish waters
 
+    def set_foreign(self, on: bool) -> None:
+        """Draw the Swedish and Estonian side (it costs some RAM), or Finnish waters only."""
+        on = bool(on) and self.foreign.available
+        if on != self.foreign.enabled:
+            self.foreign.enabled = on
+            self.foreign.forget()
+            self._forget()
+
     def set_mml_key(self, key: str) -> None:
         """A new Land Survey key: blocks are read again so rocks, names and land get fetched."""
         self.mml_key = key.strip()
@@ -1898,7 +1906,7 @@ class VectorChart:
         return {"blocks": len(blocks),
                 "mb": round(sum(f.stat().st_size for f in files if f.is_file()) / 1e6, 1),
                 "errors": {**self.errors, **self.foreign.errors}, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
-                "keep": self.keep_status, "mml_key": bool(self.mml_key),
+                "keep": self.keep_status, "mml_key": bool(self.mml_key), "foreign": self.foreign.enabled,
                 "memory_mb": round(self._memory_bytes / 1e6, 1),
                 "layers": self.layer_report(), "rev": self._rev()}
 

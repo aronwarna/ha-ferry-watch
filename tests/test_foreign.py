@@ -151,3 +151,16 @@ def test_band_rings_drop_shared_box_edges():
             assert not (ax == bx and ax in (0, 10) and max(ay, by) <= 4)
     island = [[(4, 4), (6, 4), (6, 6), (4, 6)]]
     assert len(F.band_rings(outer, island, box)) == 2  # a hole away from the edge stays a hole
+
+
+def test_foreign_side_can_be_turned_off(tmp_path):
+    from ferrywatch.simulate import fake_chart_layer
+    from ferrywatch.vchart import FOREIGN_PART, VectorChart
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    assert chart.foreign.enabled and FOREIGN_PART in chart._parts()
+    rev = chart._rev()
+    chart.set_foreign(False)
+    assert not chart.foreign.enabled and FOREIGN_PART not in chart._parts()
+    assert chart._rev() != rev and chart.status()["foreign"] is False
+    chart.set_foreign(True)
+    assert chart._rev() == rev

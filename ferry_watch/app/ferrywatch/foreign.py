@@ -1461,7 +1461,8 @@ class ForeignSource:
         # Stand-ins (the simulator, tests) hang off the chart's fetch_layer stand-in.
         self.fake_dtm = getattr(fake, "foreign_dtm", None) if fake is not None else None
         self.fake_osm = getattr(fake, "foreign_osm", None) if fake is not None else None
-        self.enabled = (fake is None and chart.session is not None) or self.fake_dtm is not None
+        self.available = (fake is None and chart.session is not None) or self.fake_dtm is not None
+        self.enabled = self.available
         self._grids: dict[tuple[int, int], Grid | None] = {}  # a few, in RAM while blocks are built
         self._fetching: dict[tuple[int, int], asyncio.Task] = {}
         self._failed: dict[Any, float] = {}
