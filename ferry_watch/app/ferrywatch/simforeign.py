@@ -98,10 +98,17 @@ def lzw_encode(data: bytes) -> bytes:
 
 
 def geotiff(w: int, h: int, lon0: float, lat0: float, dlon: float, dlat: float, values: list[float],
-            nodata: float = -99999.0, compression: int = 1) -> bytes:
+            nodata: float = -99999.0, compression: int = 1, predictor: int = 1) -> bytes:
     """A minimal little-endian GeoTIFF: one strip of float32, degrees; compression 1 (none),
-    5 (LZW) or 8 (Deflate)."""
+    5 (LZW) or 8 (Deflate), predictor 1 (none) or 3 (floating point)."""
     data = struct.pack(f"<{w * h}f", *values)
+    if predictor == 3:
+        out = bytearray()
+        for r in range(h):
+            row = struct.pack(f">{w}f", *values[r * w:(r + 1) * w])
+            planes = bytes(row[c * 4 + b] for b in range(4) for c in range(w))
+            out += bytes([planes[0]] + [(planes[k] - planes[k - 1]) & 0xFF for k in range(1, len(planes))])
+        data = bytes(out)
     if compression == 8:
         data = zlib.compress(data)
     elif compression == 5:
@@ -111,7 +118,7 @@ def geotiff(w: int, h: int, lon0: float, lat0: float, dlon: float, dlat: float, 
     extra = bytearray()
     base = 8  # the IFD follows the header; extra values after the IFD
     tags = [(256, 4, [w]), (257, 4, [h]), (258, 3, [32]), (259, 3, [compression]), (262, 3, [1]), (273, 4, [0]),
-            (277, 3, [1]), (278, 4, [h]), (279, 4, [len(data)]), (339, 3, [3]),
+            (277, 3, [1]), (278, 4, [h]), (279, 4, [len(data)]), (317, 3, [predictor]), (339, 3, [3]),
             (33550, 12, [dlon, dlat, 0.0]), (33922, 12, [0.0, 0.0, 0.0, lon0, lat0, 0.0]), (42113, 2, nodata_s)]
     ifd_size = 2 + 12 * len(tags) + 4
     fmt = {3: "H", 4: "I", 12: "d"}

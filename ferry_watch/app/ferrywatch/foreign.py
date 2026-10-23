@@ -367,7 +367,7 @@ def parse_geotiff(data: bytes) -> Grid:
         raise TiffError(f"sample format {fmt}/{bits} bits")
     if comp not in (1, 5, 8, 32946):
         raise TiffError(f"compression {comp}")
-    if pred not in (1, 2):
+    if pred not in (1, 2, 3):
         raise TiffError(f"predictor {pred}")
     nodata = None
     if 42113 in tags:
@@ -412,11 +412,28 @@ def parse_geotiff(data: bytes) -> Grid:
                 u.byteswap()
             raw = u.tobytes()
             del u
+        swap = (e == "<") != (sys.byteorder == "little")
+        if pred == 3:
+            # The floating-point predictor: bytes differenced along each row, stored as planes
+            # of the samples' bytes, most significant first.
+            rowb = tw * bpp
+            buf = bytearray(raw[:rows * rowb])
+            for r in range(rows):
+                o = r * rowb
+                for c in range(o + 1, o + rowb):
+                    buf[c] = (buf[c] + buf[c - 1]) & 0xFF
+                planes = bytes(buf[o:o + rowb])
+                for c in range(tw):
+                    for b in range(bpp):
+                        buf[o + c * bpp + b] = planes[b * tw + c]
+            raw = bytes(buf)
+            del buf
+            swap = sys.byteorder == "little"  # now big-endian whatever the file's order
         # Samples as a typed array (no Python object each), a strip at a time.
         vals = array(code)
         vals.frombytes(raw[:rows * tw * bpp])
         del raw
-        if (e == "<") != (sys.byteorder == "little"):
+        if swap:
             vals.byteswap()
         bx, by = (idx % across) * tw, (idx // across) * th
         for r in range(rows):
@@ -809,7 +826,7 @@ def overpass_marks_query(points: tuple, lines: tuple) -> str:
     return (f'[out:xml][timeout:{OVERPASS_TIMEOUT - 20}];'
             f'node["seamark:type"]{pb};out qt;'
             f'(way["seamark:type"~"^({ROUTEING})$"]{lb};relation["seamark:type"~"^({ROUTEING})$"]{lb};);'
-            f'out tags geom qt;'
+            f'out geom qt;'
             f'(nwr["place"~"^(island|islet|city|town|village|sea)$"]["name"]{pb};'
             f'nwr["natural"~"^(bay|strait|cape)$"]["name"]{pb};)->.names;'
             f'node.names;out qt;(way.names;relation.names;);out tags center qt;')

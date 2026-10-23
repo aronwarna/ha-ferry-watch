@@ -30,6 +30,8 @@ def test_geotiff_compressed():
         g = F.parse_geotiff(geotiff(30, 20, 0.0, 2.0, 0.1, 0.1, values, compression=compression))
         assert list(g.values) == [round(v * 10) for v in values]
     assert F._lzw_decode(lzw_encode(bytes(range(256)) * 40)) == bytes(range(256)) * 40
+    g = F.parse_geotiff(geotiff(30, 20, 0.0, 2.0, 0.1, 0.1, values, compression=8, predictor=3))
+    assert list(g.values) == [round(v * 10) for v in values]
 
 
 def test_march_rings_and_contours():
