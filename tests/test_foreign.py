@@ -164,3 +164,23 @@ def test_foreign_side_can_be_turned_off(tmp_path):
     assert chart._rev() != rev and chart.status()["foreign"] is False
     chart.set_foreign(True)
     assert chart._rev() == rev
+
+
+def test_geotiff_without_georeference_uses_the_area_asked_for():
+    import struct
+    w, h = 4, 2
+    vals = [-10.0] * (w * h)
+    # A bare little-endian float32 TIFF: no GeoTIFF tags at all.
+    pix = struct.pack("<%df" % len(vals), *vals)
+    entries = [(256, 3, 1, w), (257, 3, 1, h), (258, 3, 1, 32), (259, 3, 1, 1), (273, 4, 1, 8),
+               (277, 3, 1, 1), (278, 3, 1, h), (279, 4, 1, len(pix)), (339, 3, 1, 3)]
+    ifd_off = 8 + len(pix)
+    ifd = struct.pack("<H", len(entries)) + b"".join(
+        struct.pack("<HHI", t, typ, n) + (struct.pack("<HH", v, 0) if typ == 3 else struct.pack("<I", v))
+        for t, typ, n, v in entries) + struct.pack("<I", 0)
+    data = b"II*\x00" + struct.pack("<I", ifd_off) + pix + ifd
+    import pytest
+    with pytest.raises(F.TiffError):
+        F.parse_geotiff(data)
+    g = F.parse_geotiff(data, (24.0, 59.0, 24.4, 59.2))
+    assert g is not None

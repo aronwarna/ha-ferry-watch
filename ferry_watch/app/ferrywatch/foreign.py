@@ -329,7 +329,7 @@ class Grid:
         return -sum(val * wt for val, wt in good) / 10
 
 
-def parse_geotiff(data: bytes) -> Grid:
+def parse_geotiff(data: bytes, bbox: tuple[float, float, float, float] | None = None) -> Grid:
     """A single-band GeoTIFF in degrees (as EMODnet's WCS sends) as a Grid. Strips or tiles,
     uncompressed, Deflate or LZW, integer or float samples."""
     if data[:4] == b"II*\x00":
@@ -377,11 +377,20 @@ def parse_geotiff(data: bytes) -> Grid:
             nodata = None
     scale = tags.get(33550)
     tie = tags.get(33922)
-    if not scale or not tie:
+    matrix = tags.get(34264)
+    if scale and tie:
+        dlon, dlat = scale[0], scale[1]
+        lon0 = tie[3] - tie[0] * dlon
+        lat0 = tie[4] + tie[1] * dlat
+    elif matrix and len(matrix) >= 8 and matrix[0] and matrix[5]:
+        # A model transformation matrix instead of a pixel scale and tie point.
+        dlon, dlat, lon0, lat0 = matrix[0], -matrix[5], matrix[3], matrix[7]
+    elif bbox is not None:
+        # No georeference in the file (EMODnet's WCS sends it bare): the area asked for.
+        dlon, dlat = (bbox[2] - bbox[0]) / w, (bbox[3] - bbox[1]) / h
+        lon0, lat0 = bbox[0], bbox[3]
+    else:
         raise TiffError("no georeference")
-    dlon, dlat = scale[0], scale[1]
-    lon0 = tie[3] - tie[0] * dlon
-    lat0 = tie[4] + tie[1] * dlat
     if 322 in tags:
         tw, th = tags[322][0], tags[323][0]
         offsets, counts = tags[324], tags[325]
@@ -1526,7 +1535,7 @@ class ForeignSource:
                         ("subset", f"Lat({lat0 - pad:.5f},{lat1 + pad:.5f})"),
                         ("subset", f"Long({lon0 - pad:.5f},{lon1 + pad:.5f})"),
                     ], "depth model")
-            grid = await asyncio.to_thread(parse_geotiff, body)
+            grid = await asyncio.to_thread(parse_geotiff, body, (lon0 - pad, lat0 - pad, lon1 + pad, lat1 + pad))
             del body
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, IndexError, struct.error,
                 zlib.error) as err:

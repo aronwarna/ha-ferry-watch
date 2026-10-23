@@ -81,6 +81,7 @@ BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge
 POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
+SERVICE_DOWN_FOR = 900  # s a service that timed out is left alone
 GET_RETRIES = (3, 15)  # s to wait before asking again after a dropped connection
 CAPS_MAX_AGE = 86400  # s between reads of which layers each service has
 PAGE = 2000  # features per request; a page over MAX_RESPONSE is asked for again in halves
@@ -1805,6 +1806,7 @@ class VectorChart:
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
         self._failed: dict[tuple, float] = {}
+        self._down: dict[str, float] = {}  # service -> when it last timed out or dropped
         # file name -> (mtime, some layer failed, type names the services didn't have then)
         self._missing: dict[str, tuple[float, bool, tuple]] = {}
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
@@ -2303,10 +2305,20 @@ class VectorChart:
                 pad = margin / UNITS * size
                 bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
                 derived = DERIVED_BY.get(key)
+                services = {service_of(name) for _, name in source_names(key)}
+                down = [s for s in services if time.time() - self._down.get(s, 0) < SERVICE_DOWN_FOR]
+                if down and key != "depth":
+                    # A service that just timed out isn't asked again for every layer of every
+                    # block: those layers count as missing and are fetched again later.
+                    missing.append(key)
+                    continue
                 try:
                     absent += await self._fetch_into(builders[key], key, bx, by, bbox, builders.get(derived))
                     self.errors.pop(key, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
+                    if isinstance(err, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
+                        for service in services:
+                            self._down[service] = time.time()
                     msg = self._scrub(str(err) or type(err).__name__)
                     if self.errors.get(key) != msg:
                         _LOGGER.warning("Chart data %s for block %s,%s failed: %s", key, bx, by, msg)
@@ -2390,7 +2402,7 @@ class VectorChart:
 
     async def _get_once(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
         async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
-                                    timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                                    timeout=aiohttp.ClientTimeout(total=120, sock_connect=20, sock_read=60)) as resp:
             body = bytearray()  # grown in place: never the chunks and their join at once
             async for chunk in resp.content.iter_chunked(65536):
                 if len(body) + len(chunk) > MAX_RESPONSE:

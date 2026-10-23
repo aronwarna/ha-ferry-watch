@@ -75,7 +75,7 @@ class Faults:
         self._lock = asyncio.Lock()
 
     async def _get(self) -> Any:
-        async with self.session.get(URL, params={"language": "en", "fixed_in_hours": 0}, headers=HEADERS,
+        async with self.session.get(URL, params={"language": "en"}, headers=HEADERS,
                                     timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
             resp.raise_for_status()
             return await resp.json(content_type=None)

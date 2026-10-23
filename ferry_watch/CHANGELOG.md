@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1
+
+- Chart download no longer stalls for hours when the Land Survey service
+  doesn't answer: after a timeout its layers are skipped for 15 minutes and
+  fetched again later, so the Traficom chart keeps downloading.
+- Swedish and Estonian side: reads EMODnet's depth model even though it comes
+  without a georeference ("no georeference").
+- Faulty lights and buoys load again (Digitraffic refused a parameter).
+
 ## 0.16.0
 
 - **Swedish and Estonian side of the drawn chart**, in the same style as the
