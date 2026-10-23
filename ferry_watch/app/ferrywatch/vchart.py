@@ -99,7 +99,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 7  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 8  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -154,6 +154,11 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
         "call": ("avoin:Rdocal_L",),
     }, "line", ("_src",)),
     "pilot": (TRAFICOM_OPEN_WFS, "avoin:PilotBoardingPlace_P", "point", ("objnam",)),
+    # Submarine cables and pipelines (the paper chart's magenta wavy and dashed lines).
+    "cable": (TRAFICOM_WFS, {
+        "cable": ("rajoitettu:CableSubmarine_L", "avoin:CableSubmarine_L"),
+        "pipe": ("rajoitettu:PipelineSubmarineOnBelow_L", "avoin:PipelineSubmarineOnBelow_L"),
+    }, "line", ("_src",)),
     "call": (TRAFICOM_OPEN_WFS, "avoin:Rdocal_P", "point", ("objnam", "comcha", "orient")),
     "pier": (TRAFICOM_OPEN_WFS, {
         "pontoon": ("avoin:Pontoon_L", "avoin:Pontoon_A"), "berth": ("avoin:Berths_L",),
@@ -191,6 +196,7 @@ PARTS: dict[str, tuple[str, ...]] = {
     "more": ("shore", "light"),
     "mml": ("rock", "rockarea", "wreck", "name"),
     "tss": ("tss", "tssline", "pilot", "call", "pier", "sign"),
+    "cbl": ("cable",),
     "lake": ("lake",),
     "land": ("height", "road", "rail"),
     "mark": ("building", "buildarea", "landmark", "markh"),
@@ -272,7 +278,7 @@ COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from 
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
                "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
-               "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13,
+               "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12}
 
 
@@ -1352,6 +1358,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
       unsurveyed; orient a lane's direction of traffic in degrees, or null
     - tssline: [kind, line] kind sep (separation line), bnd (scheme boundary), vts (VTS area
       limit) or call (radio calling-in line)
+    - cable: [kind, line] kind cable (submarine cable) or pipe (submarine pipeline)
     - pilot: [x, y] pilot boarding place; call: [x, y, name, channel, orient] calling-in point
     - sign: [x, y, type, value, name] water traffic sign, type speed (value km/h), nowake,
       noanchor, nomoor, nopass, height (value m) or other
@@ -1393,6 +1400,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["tss"] = [[p[0], _num(_pad(p, 2)[1]), *rings] for p, *rings in rows["tss"]]
     if "tssline" in rows:
         tile["tssline"] = [[p[0], line] for p, line in rows["tssline"]]
+    if "cable" in rows:
+        tile["cable"] = [[p[0] or "cable", line] for p, line in rows["cable"]]
     if "pilot" in rows:
         tile["pilot"] = [[px, py] for px, py, _ in rows["pilot"]]
     if "call" in rows:

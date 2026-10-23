@@ -511,9 +511,10 @@ SIM_HERITAGE = [
 
 
 # A stretch of mainland north of the islands (lon, lat), open to the north.
-SIM_MAINLAND = [(23.95, 60.088), (24.05, 60.085), (24.15, 60.078), (24.25, 60.074), (24.33, 60.071),
+# West of 24.2°E its edge is the top of the Porkkala-like stretch of coast (simscene.py).
+SIM_MAINLAND = [(23.96, 60.10), (24.20, 60.10), (24.25, 60.074), (24.33, 60.071),
                 (24.40, 60.073), (24.47, 60.079), (24.53, 60.09), (24.58, 60.11), (24.61, 60.13),
-                (24.62, 60.45), (23.95, 60.45)]
+                (24.62, 60.45), (23.96, 60.45)]
 # The traffic separation scheme south of Porkkala: lanes running east-west with a separation
 # zone between them, a precautionary area at the east end (lat ranges, lon range).
 SIM_TSS_WEST, SIM_TSS_EAST = 23.75, 24.92
@@ -564,8 +565,23 @@ def _sim_line(points):
 
 async def fake_chart_layer(key: str, bbox) -> list[dict]:
     """Stand-in for the WFS services: islands with depth bands, contours, soundings,
-    a fairway with buoys and a boat route."""
+    a fairway with buoys and a boat route; west of them a stretch of coast like
+    Porkkala's (simscene.py)."""
+    from . import simscene
+    feats = _fake_chart_layer(key, bbox)
+    sx0, sy0, sx1, sy1 = simscene.box()
+    minx, miny, maxx, maxy = bbox
+    if minx < sx1 + 2000 and maxx > sx0 - 2000 and miny < sy1 + 2000 and maxy > sy0 - 2000:
+        if key == "sounding":  # the made-up soundings are strewn everywhere, land included
+            feats = [f for f in feats if not (sx0 <= f["geometry"]["coordinates"][0] <= sx1
+                                              and sy0 <= f["geometry"]["coordinates"][1] <= sy1)]
+        feats = feats + simscene.scene().get(key, [])
+    return feats
+
+
+def _fake_chart_layer(key: str, bbox) -> list[dict]:
     import random
+    from . import simscene
     minx, miny, maxx, maxy = bbox
     b = SIM_BANDS
     bands = [(0, 3, b[0], b[1]), (3, 6, b[1], b[2]), (6, 10, b[2], b[3])]
@@ -573,7 +589,8 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
     if key == "depth":
         outer = [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
         feats.append({"geometry": {"type": "Polygon", "coordinates": [outer] + [
-            _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS] + [_sim_line(SIM_MAINLAND + SIM_MAINLAND[:1])]},
+            _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS] + [_sim_line(SIM_MAINLAND + SIM_MAINLAND[:1]),
+                                                                              simscene.box_ring()]},
             "properties": {"DRVAL1": 10, "DRVAL2": 50}})
         for d1, d2, inner, outer_s in bands:
             for lon, lat, r in SIM_ISLANDS:

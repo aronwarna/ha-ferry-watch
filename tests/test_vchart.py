@@ -877,3 +877,14 @@ def test_major_light_characters_zoomed_out(tmp_path):
     t11, t13 = asyncio.run(run())
     assert any(t == "LFl(2) 15s" for _, _, t in t11.get("light", ()))  # Porkkala lighthouse
     assert len(t11.get("light", ())) < len(t13.get("light", ())) or len(t13["light"]) == 1
+
+
+def test_simulated_coast_has_cables_and_depths(tmp_path):
+    from ferrywatch import simscene
+    chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+    lon, lat = simscene._lonlat(2.6, 6.9)  # on the cable across the western bay
+    tile, ok = asyncio.run(chart.tile(*tile_at(lat, lon, 12)))
+    assert ok
+    assert tile["cable"] and all(kind == "cable" and len(line) >= 4 for kind, line in tile["cable"])
+    assert {row[0] for row in tile["depth"]} >= {1, 2, 3, 4}
+    assert tile["rock"] and tile["sounding"]
