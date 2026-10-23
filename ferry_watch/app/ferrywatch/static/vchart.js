@@ -48,6 +48,9 @@
   // Symbol and text sizes below are in "chart pixels"; SCALE says how many CSS pixels one
   // is at each zoom. Up to zoom 13 the paper chart's own size (1:50 000 shown at about its
   // printed scale); closer in it grows, as the paper chart does when magnified, but gentler.
+  // Built-up area tints by kind (home and other areas take C.buildArea).
+  const BUILD_AREA = { industry: "#d8d4c8", public: "#d6c9a6", church: "#d6c9a6" };
+
   const SCALE = { 8: 0.42, 9: 0.45, 10: 0.5, 11: 0.54, 12: 0.62, 13: 0.78, 14: 1.0, 15: 1.18, 16: 1.34, 17: 1.46 };
   const scaleAt = (z) => SCALE[z] ?? (z < 8 ? 0.42 : 1.55);
   const MIN_TEXT = 10; // CSS px: names stay readable when zoomed out
@@ -86,7 +89,7 @@
   };
 
   const options = { heritage: true };
-  let serverMinZoom = 10; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
+  let serverMinZoom = 8; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
 
   // --- drawing helpers ------------------------------------------------------------
 
@@ -778,7 +781,7 @@
 
   // Arrows at points of the tile's own grid where the whole arrow falls inside the area
   // and inside the tile (so none is cut at a tile edge), spaced well apart.
-  function areaArrows(ctx, rings, bearing, e, s, unit, both) {
+  function areaArrows(ctx, rings, bearing, e, s, unit, both, boxes) {
     const len = Math.min(e / 2 - 16, Math.max(48 * unit, 80 * s));
     const a = (bearing * Math.PI) / 180, ux = Math.sin(a), uy = -Math.cos(a);
     const half = 0.55 * len, wide = 0.3 * len;
@@ -792,6 +795,8 @@
         if (kept.some(([x, y]) => Math.hypot(x - gx, y - gy) < 1.9 * len)) continue;
         kept.push([gx, gy]);
         tssArrow(ctx, gx, gy, bearing, len, unit, both);
+        const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+        boxes?.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
       }
     }
   }
@@ -810,19 +815,19 @@
     ctx.restore();
   }
 
-  // Routeing measures: [kind, orient, ...rings].
-  function drawTss(ctx, rows, e, s, unit) {
+  // Routeing measures: [kind, orient, ...rings]. The arrows' boxes go into `boxes`.
+  function drawTss(ctx, rows, e, s, unit, boxes) {
     for (const [kind, orient, ...rings] of rows) {
       if (!rings.length) continue;
       if (kind === "lane") {
         fillRings(ctx, rings, C.tssLane);
-        if (orient != null) areaArrows(ctx, rings, orient, e, s, unit, false);
+        if (orient != null) areaArrows(ctx, rings, orient, e, s, unit, false, boxes);
       } else if (kind === "zone") {
         fillRings(ctx, rings, C.tssZone);
       } else if (kind === "prec" || kind === "deep" || kind === "twoway") {
         // Their "!" and "DW" are lettering, placed with the other labels.
         strokeRings(ctx, rings, C.magenta, 1.3 * unit, [10 * unit, 6 * unit]);
-        if (kind === "twoway" && orient != null) areaArrows(ctx, rings, orient, e, s, unit, true);
+        if (kind === "twoway" && orient != null) areaArrows(ctx, rings, orient, e, s, unit, true, boxes);
       } else if (kind === "dredged") {
         fillRings(ctx, rings, C.fairwayArea);
         strokeRings(ctx, rings, "#7b8184", 0.8 * unit, [5 * unit, 3 * unit]);
@@ -840,6 +845,8 @@
       if (!Array.isArray(line)) continue;
       if (kind === "sep") strokeLine(ctx, line, C.tssSep, 5 * unit);
       else if (kind === "bnd") strokeLine(ctx, line, C.magenta, 1.3 * unit, [10 * unit, 6 * unit]);
+      else if (kind === "vts") strokeLine(ctx, line, C.magenta, 1.6 * unit, [16 * unit, 4 * unit, 2 * unit, 4 * unit]);
+      else if (kind === "call") strokeLine(ctx, line, C.magenta, 1.6 * unit, [8 * unit, 5 * unit]);
       else strokeLine(ctx, line, C.magenta, unit, [6 * unit, 4 * unit]);
     }
   }
@@ -965,6 +972,26 @@
     return [x - 9 * s, y - 22 * s, x + 10 * s, y + 9 * s];
   }
 
+  // A radio calling-in point: a magenta circle with an arrow the way ships report.
+  function drawCall(ctx, x, y, orient, s, lw) {
+    const r = 8 * s;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = ctx.fillStyle = C.magenta;
+    ctx.lineWidth = 1.5 * lw;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
+    if (orient != null && Number.isFinite(+orient)) {
+      ctx.rotate((+orient * Math.PI) / 180);
+      ctx.beginPath(); ctx.moveTo(0, 0.6 * r); ctx.lineTo(0, -2 * r); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -2.5 * r); ctx.lineTo(-0.45 * r, -1.7 * r); ctx.lineTo(0.45 * r, -1.7 * r); ctx.closePath(); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(0, 0, 1.6 * s, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+    const reach = orient != null ? 2.5 * r : r;
+    return [x - reach, y - reach, x + reach, y + reach];
+  }
+
   // Signs in the water: a speed limit as a red-ringed disc with its number, no wake as a
   // crossed-out wave, no anchoring as a crossed-out magenta anchor, others a notice board.
   function drawSign(ctx, x, y, type, value, s, lw) {
@@ -995,6 +1022,42 @@
       anchor(ctx, 0, 0, 0.75 * s, lw, C.magenta);
       ctx.beginPath(); ctx.moveTo(-7 * s, -9 * s); ctx.lineTo(7 * s, 9 * s);
       ctx.lineWidth = 1.6 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
+    } else if (type === "nomoor" || type === "nopass") {
+      disc();
+      ctx.strokeStyle = ctx.fillStyle = C.black;
+      ctx.lineWidth = 1.3 * s;
+      ctx.beginPath();
+      if (type === "nomoor") {
+        // a bollard with a rope
+        ctx.fillRect(-1.6 * s, -1 * s, 3.2 * s, 5 * s);
+        ctx.fillRect(-3.4 * s, -2.6 * s, 6.8 * s, 1.8 * s);
+        ctx.moveTo(-5.5 * s, 3 * s); ctx.quadraticCurveTo(-2 * s, -4 * s, 1.6 * s, 0.4 * s);
+      } else {
+        // two ships side by side, one up, one down
+        for (const [dx, dir] of [[-2.6, -1], [2.6, 1]]) {
+          ctx.moveTo(dx * s, dir * 5 * s); ctx.lineTo((dx - 1.4) * s, dir * 1.5 * s);
+          ctx.lineTo((dx - 1.4) * s, -dir * 4.5 * s); ctx.lineTo((dx + 1.4) * s, -dir * 4.5 * s);
+          ctx.lineTo((dx + 1.4) * s, dir * 1.5 * s); ctx.closePath();
+        }
+      }
+      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-0.7 * r, -0.7 * r); ctx.lineTo(0.7 * r, 0.7 * r);
+      ctx.lineWidth = 2 * s; ctx.strokeStyle = C.red; ctx.stroke();
+    } else if (type === "height") {
+      // headroom: a white board with the clearance, arrows above and below
+      const text = value != null ? String(Math.round(value * 10) / 10).replace(".", ",") : "?";
+      ctx.font = `bold ${8.5 * s}px ${SANS}`;
+      const w = Math.max(14 * s, ctx.measureText(text).width + 5 * s);
+      ctx.fillStyle = "#ffffff"; ctx.fillRect(-w / 2, -6 * s, w, 12 * s);
+      ctx.lineWidth = 1.2 * lw; ctx.strokeStyle = C.black; ctx.strokeRect(-w / 2, -6 * s, w, 12 * s);
+      ctx.fillStyle = C.black;
+      for (const dir of [-1, 1]) {
+        ctx.beginPath(); ctx.moveTo(0, dir * 6 * s); ctx.lineTo(-2.4 * s, dir * 9.5 * s); ctx.lineTo(2.4 * s, dir * 9.5 * s); ctx.closePath(); ctx.fill();
+      }
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(text, 0, 0.5 * s);
+      ctx.restore();
+      return [x - w / 2, y - 10 * s, x + w / 2, y + 10 * s];
     } else {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(-7 * s, -7 * s, 14 * s, 14 * s);
@@ -1020,6 +1083,7 @@
     light: { size: 16 },
     lightName: { size: 17, weight: 700, spacing: 0.07, upper: true },
     racon: { size: 16, color: C.magenta },
+    call: { size: 14, color: C.magenta },
     mark: { size: 15 },
     heritage: { size: 14, italic: true, color: C.magenta },
     fort: { size: 14, italic: true, color: C.fort },
@@ -1181,6 +1245,14 @@
       }
     }
 
+    // Radio calling-in points: their VHF channel, and the name up close.
+    for (const [x, y, name, channel] of data.call || []) {
+      const lines = [];
+      if (zoom >= 13 && name) lines.push([name, "call"]);
+      if (channel) lines.push([/^\d/.test(channel) ? `Ch ${channel}` : channel, "call"]);
+      if (lines.length) add({ prio: PRIO.light, rank: 4, x, y, lines, sym: [-9, -9, 9, 9] });
+    }
+
     // Precautionary areas' "!" and deep-water routes' "DW", once in a while across the area.
     for (const [kind, , ...rings] of data.tss || []) {
       if ((kind !== "prec" && kind !== "deep") || !rings.length) continue;
@@ -1276,8 +1348,42 @@
       ctx.fillStyle = C.land;
       ctx.fill("evenodd");
     }
-    // Built-up areas, under the water so the shore stays crisp.
-    for (const [, ...rings] of data.buildarea || []) if (rings.length && Array.isArray(rings[0])) fillRings(ctx, rings, C.buildArea);
+    // Built-up areas, under the water so the shore stays crisp; industry greyer, public
+    // buildings and churches a shade darker.
+    for (const [kind, ...rings] of data.buildarea || []) {
+      if (rings.length && Array.isArray(rings[0])) fillRings(ctx, rings, BUILD_AREA[kind] || C.buildArea);
+    }
+
+    // Lakes, height contours, roads and railways, buildings: all under the water, so
+    // none of it shows over the depth areas.
+    for (const rings of data.lake || []) {
+      if (!Array.isArray(rings) || !rings.length) continue;
+      fillRings(ctx, rings, C.lake);
+      strokeRings(ctx, rings, C.contour, 0.8 * unit);
+    }
+    const heightsLabelled = new Set();
+    for (const [metres, line] of data.height || []) {
+      if (!Array.isArray(line)) continue;
+      const major = metres % 20 === 0;
+      let gap = null;
+      if (zoom >= 13 && major && (coords.x + coords.y) % 2 === 1 && !heightsLabelled.has(metres)) {
+        const size = Math.max(9 * unit, 11 * s);
+        gap = alongLine(ctx, label, line, e, {
+          text: String(metres), font: `${size}px ${SANS}`, size, color: C.heightText, need: 50 * unit, pad: 1.5 * unit,
+        }) || null;
+        if (gap) heightsLabelled.add(metres);
+      }
+      strokeLine(ctx, line, C.height, (major ? 0.9 : 0.6) * unit, null, gap);
+    }
+    if (data.road || data.rail) drawRoads(ctx, data.road || [], data.rail || [], zoom, unit);
+    if (data.building?.length) {
+      ctx.fillStyle = C.black;
+      for (const [x, y, size] of data.building) {
+        const side = (size === 2 ? 8 : 4.5) * s; // 1 small, 2 large
+        ctx.fillRect(x - side / 2, y - side / 2, side, side);
+      }
+    }
+
 
     // 2. Water on its own canvas, then a crisp coastline: the water grown by a pixel,
     // painted black, with the water on top.
@@ -1302,36 +1408,6 @@
       ctx.restore();
     }
 
-    // 3. On land: lakes, height contours, roads and railways, buildings.
-    for (const rings of data.lake || []) {
-      if (!Array.isArray(rings) || !rings.length) continue;
-      fillRings(ctx, rings, C.lake);
-      strokeRings(ctx, rings, C.contour, 0.8 * unit);
-    }
-    const heightsLabelled = new Set();
-    for (const [metres, line] of data.height || []) {
-      if (!Array.isArray(line)) continue;
-      const major = metres % 20 === 0;
-      let gap = null;
-      if (zoom >= 14 && major && (coords.x + coords.y) % 2 === 1 && !heightsLabelled.has(metres)) {
-        const size = Math.max(9 * unit, 11 * s);
-        gap = alongLine(ctx, label, line, e, {
-          text: String(metres), font: `${size}px ${SANS}`, size, color: C.heightText, need: 50 * unit, pad: 1.5 * unit,
-        }) || null;
-        if (gap) heightsLabelled.add(metres);
-      }
-      strokeLine(ctx, line, C.height, (major ? 0.9 : 0.6) * unit, null, gap);
-    }
-    if (data.road || data.rail) drawRoads(ctx, data.road || [], data.rail || [], zoom, unit);
-    if (data.building?.length) {
-      ctx.fillStyle = C.black;
-      const mpu = 40075016.7 / 2 ** zoom / e / 2; // metres per tile unit, at about 60°N
-      for (const [x, y, size] of data.building) {
-        const side = Math.min(14 * s, Math.max(3.2 * s, (size || 0) / mpu));
-        ctx.fillRect(x - side / 2, y - side / 2, side, side);
-      }
-    }
-
     // 4. Main merchant fairways (class 1) in grey over the depths; anchorages outlined.
     const anchors = [];
     for (const row of data.farea || []) {
@@ -1353,7 +1429,7 @@
     }
 
     // 5. Traffic separation schemes and other routeing measures.
-    if (data.tss) drawTss(ctx, data.tss, e, s, unit);
+    if (data.tss) drawTss(ctx, data.tss, e, s, unit, marks); // soundings keep off the arrows
     if (data.tssline) drawTssLines(ctx, data.tssline, unit);
 
     // 6. The small-craft trunk route's green band.
@@ -1580,12 +1656,15 @@
     for (const [x, y] of data.pilot || []) {
       symbol(drawPilot(ctx, x, y, s, lw), x, y);
     }
+    for (const [x, y, , , orient] of data.call || []) {
+      symbol(drawCall(ctx, x, y, orient, s, lw), x, y);
+    }
     for (const [x, y, type, value] of data.sign || []) {
       symbol(drawSign(ctx, x, y, type, value, s, lw), x, y);
     }
 
     // 16. Soundings where no label or symbol is; then the labels along lines.
-    if (zoom >= 13) {
+    if (zoom >= 12) {
       // The overlay puts a label in its first spot clear of symbols with the least clutter
       // round it: keep soundings off that spot too, as far as the tile can tell.
       cands.forEach((cand, i) => {
@@ -1816,7 +1895,7 @@
   const layers = new Set();
 
   const ChartLayer = L.GridLayer.extend({
-    options: { minZoom: 10, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
+    options: { minZoom: 8, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
 
     createTile(coords, done) {
       const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -1844,7 +1923,7 @@
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((data) => {
             if (data.pending) {
-              if (!waiting && !shown) {
+              if (!waiting && !shown && coords.z > OVERVIEW_Z) {
                 // Open water meanwhile, so the map underneath doesn't show its "no data" text.
                 const ctx = canvas.getContext("2d");
                 ctx.fillStyle = C.depth[4];
