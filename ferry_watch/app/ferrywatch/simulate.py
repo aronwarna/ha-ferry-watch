@@ -403,6 +403,39 @@ SIM_HERITAGE = [
 ]
 
 
+# A stretch of mainland north of the islands (lon, lat), open to the north.
+SIM_MAINLAND = [(23.95, 60.088), (24.05, 60.085), (24.15, 60.078), (24.25, 60.074), (24.33, 60.071),
+                (24.40, 60.073), (24.47, 60.079), (24.53, 60.09), (24.58, 60.11), (24.61, 60.13),
+                (24.62, 60.45), (23.95, 60.45)]
+# The traffic separation scheme south of Porkkala: lanes running east-west with a separation
+# zone between them, a precautionary area at the east end (lat ranges, lon range).
+SIM_TSS_WEST, SIM_TSS_EAST = 23.75, 24.92
+SIM_LANE_NORTH = (59.905, 59.935)  # westbound
+SIM_TSS_ZONE = (59.89, 59.905)
+SIM_LANE_SOUTH = (59.86, 59.89)  # eastbound
+# Landmarks: lon, lat, kind, height (None: the height is a separate label, as MML keeps them)
+SIM_LANDMARKS = [(24.43, 60.112, "mast", 131), (24.425, 60.108, "mast", None), (24.437, 60.107, "mast", 59),
+                 (24.36, 60.09, "chimney", 45), (24.20, 60.10, "wind", 150), (24.39, 60.008, "tower", 20)]
+SIM_HEIGHT_LABELS = [(24.4256, 60.1084, "mast", 82)]
+
+
+def _sim_box(lon0: float, lat0: float, lon1: float, lat1: float):
+    return _sim_line([(lon0, lat0), (lon1, lat0), (lon1, lat1), (lon0, lat1), (lon0, lat0)])
+
+
+def _sim_building(lon: float, lat: float, w: float, h: float):
+    """A building w x h ground metres (web-mercator metres are about twice that at 60°N)."""
+    from .vchart import lonlat_to_mercator
+    x, y = lonlat_to_mercator(lon, lat)
+    return [[x - w, y - h], [x + w, y - h], [x + w, y + h], [x - w, y + h], [x - w, y - h]]
+
+
+def fake_chart_catalog(service: str) -> list[str]:
+    """Stand-in for the services' capabilities: every layer the chart asks for is there."""
+    from .vchart import SOURCES, service_of, source_names
+    return [name for key in SOURCES for _, name in source_names(key) if service_of(name) == service]
+
+
 def _sim_ring(lon: float, lat: float, radius: float, scale: float, wobble: float = 0.22):
     from .vchart import lonlat_to_mercator
     cx, cy = lonlat_to_mercator(lon, lat)
@@ -433,7 +466,7 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
     if key == "depth":
         outer = [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
         feats.append({"geometry": {"type": "Polygon", "coordinates": [outer] + [
-            _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS]},
+            _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS] + [_sim_line(SIM_MAINLAND + SIM_MAINLAND[:1])]},
             "properties": {"DRVAL1": 10, "DRVAL2": 50}})
         for d1, d2, inner, outer_s in bands:
             for lon, lat, r in SIM_ISLANDS:
@@ -445,6 +478,11 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
             for lon, lat, r in SIM_ISLANDS:
                 feats.append({"geometry": {"type": "LineString", "coordinates": _sim_ring(lon, lat, r, s)},
                               "properties": {"VALDCO": depth}})
+        # Deeper contours out in the gulf, for the overview.
+        for depth, lat in ((20, 59.955), (50, 59.875)):
+            line = [(23.8 + i * 0.05, lat + 0.004 * math.sin(i)) for i in range(25)]
+            feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line(line)},
+                          "properties": {"VALDCO": depth}})
     elif key == "sounding":
         rnd = random.Random(int(minx) ^ int(miny))
         for _ in range(400):
@@ -512,7 +550,6 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
         feats.append({"geometry": {"type": "LineString", "coordinates": _sim_line([(24.3905, 60.0115), (24.388, 60.016)])},
                       "properties": {}})
     elif key == "rock":
-        import math
         from .vchart import lonlat_to_mercator
         rnd = random.Random(int(minx) ^ int(miny) ^ 7)
         for lon, lat, r in SIM_ISLANDS:
@@ -546,8 +583,106 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
         names = [(24.40, 60.005, "Rönnskär", "swe", 35070), (24.40, 60.003, "Rönnskari", "fin", 35070),
                  (24.47, 60.02, "Stora Fågelskär", "swe", 35070), (24.33, 60.03, "Långholmen", "swe", 35070),
                  (24.60, 60.03, "Porkkala", "fin", 48120), (24.50, 59.94, "Porkkalanselkä", "fin", 36490),
-                 (24.25, 59.995, "Kallbådan", "swe", 35070), (24.70, 60.00, "Mäkiluoto", "fin", 35070)]
+                 (24.25, 59.995, "Kallbådan", "swe", 35070), (24.70, 60.00, "Mäkiluoto", "fin", 35070),
+                 (24.44, 60.12, "Kirkkonummi", "fin", 48111), (24.60, 59.80, "Suomenlahti", "fin", 36490)]
         for lon, lat, text, lang, code in names:
             feats.append({"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))},
                           "properties": {"teksti": text, "kieli": lang, "kohdeluokka": code}})
+    else:
+        feats = _fake_routeing_and_land(key)
     return feats
+
+
+def _fake_routeing_and_land(key: str) -> list[dict]:
+    """Traffic separation, harbour structures, signs and land detail for the made-up chart.
+    Keys of layers with several sources come as "layer.tag"."""
+    from .vchart import lonlat_to_mercator
+
+    def area(coords, **props):
+        return {"geometry": {"type": "Polygon", "coordinates": [coords]}, "properties": props}
+
+    def line(points, **props):
+        return {"geometry": {"type": "LineString", "coordinates": _sim_line(points)}, "properties": props}
+
+    def point(lon, lat, **props):
+        return {"geometry": {"type": "Point", "coordinates": list(lonlat_to_mercator(lon, lat))}, "properties": props}
+
+    w, e = SIM_TSS_WEST, SIM_TSS_EAST
+    if key == "tss.lane":
+        return [area(_sim_box(w, SIM_LANE_NORTH[0], e, SIM_LANE_NORTH[1]), ORIENT=270),
+                area(_sim_box(w, SIM_LANE_SOUTH[0], e, SIM_LANE_SOUTH[1]), ORIENT=90)]
+    if key == "tss.zone":  # both of Traficom's spellings have it: kept once
+        return [area(_sim_box(w + 0.05, SIM_TSS_ZONE[0], e, SIM_TSS_ZONE[1]))]
+    if key == "tss.prec":
+        return [area(_sim_ring(e + 0.07, 59.8975, 1600, 1.0, 0.0))]
+    if key == "tss.dredged":
+        return [area(_sim_box(24.405, 60.0625, 24.425, 60.068), DRVAL1=4.5)]
+    if key == "tss.unsurveyed":
+        return [area(_sim_ring(24.75, 60.05, 400, 1.0, 0.1))]
+    if key == "tssline.sep":
+        return [line([(w, SIM_TSS_ZONE[0] + 0.0075), (w + 0.05, SIM_TSS_ZONE[0] + 0.0075)])]
+    if key == "tssline.bnd":
+        return [line([(w, SIM_LANE_NORTH[1]), (e, SIM_LANE_NORTH[1])]), line([(w, SIM_LANE_SOUTH[0]), (e, SIM_LANE_SOUTH[0])])]
+    if key == "tssline.vts":
+        return [area(_sim_box(23.6, 59.7, 25.2, 60.25), OBJNAM="Helsinki VTS")]
+    if key == "tssline.call":
+        return [line([(24.30, 59.93), (24.30, 59.965)])]
+    if key == "pilot":
+        return [point(24.62, 59.95, OBJNAM="Porkkala")]
+    if key == "call":
+        return [point(24.30, 59.947, OBJNAM="Porkkala", COMCHA="71", ORIENT=180)]
+    if key == "pier.pontoon":
+        return [line([(24.400, 60.0732), (24.400, 60.0712)]),
+                area(_sim_box(24.4035, 60.0722, 24.4045, 60.0716))]
+    if key == "pier.berth":
+        return [line([(24.392, 60.0716), (24.396, 60.0717)])]
+    if key == "sign":
+        return [point(24.395, 60.034, vlmlajityyppi=11, vlmtyyppi="Nopeusrajoitus", rajoitusarvo=10,
+                      nimifi="Porkkalan salmi"),
+                point(24.45, 60.002, vlmlajityyppi=13, vlmtyyppi="Aallokon aiheuttamisen kielto", rajoitusarvo=0,
+                      nimifi=None),
+                point(24.475, 60.032, vlmlajityyppi=6, vlmtyyppi="Ankkurin käyttökielto", rajoitusarvo=None,
+                      nimifi="Rönnskär")]
+    if key == "lake.lake":
+        return [area(_sim_ring(24.30, 60.16, 700, 1.0))]
+    if key == "lake.river":
+        return [area(_sim_box(24.495, 60.10, 24.50, 60.16))]
+    if key == "height":
+        feats = []
+        for lon, lat, r in SIM_ISLANDS:  # islands rise 5 m a ring
+            for i, s in enumerate((0.75, 0.5, 0.25)[:max(1, int(r // 400))]):
+                feats.append(line_ring(lon, lat, r, s, korkeusarvo=5 * (i + 1)))
+        for i, m in enumerate(range(10, 70, 5)):  # the mast hill on the mainland
+            feats.append(line_ring(24.43, 60.11, 1800 - 130 * i, 1.0, korkeusarvo=m))
+        return feats
+    if key == "road":
+        return [line([(23.96, 60.125), (24.30, 60.12), (24.45, 60.13), (24.61, 60.14)], kohdeluokka=12121),
+                line([(24.40, 60.125), (24.405, 60.10), (24.40, 60.076)], kohdeluokka=12141),
+                line([(24.392, 60.0), (24.41, 60.012)], kohdeluokka=12313),
+                line([(24.40, 60.076), (24.40, 60.03)], kohdeluokka=12312)]  # an ice road: not drawn
+    if key == "rail":
+        return [line([(23.96, 60.20), (24.61, 60.215)], kohdeluokka=14111)]
+    if key == "building":
+        feats = []
+        for i in range(24):  # houses along the shore
+            lon, lat = 24.34 + 0.007 * i, 60.089 + 0.003 * math.sin(i)
+            feats.append(area(_sim_building(lon, lat, 6 + (i % 4) * 4, 5 + (i % 3) * 3), kohdeluokka=42211))
+        feats.append(area(_sim_building(24.395, 60.0755, 80, 50), kohdeluokka=42241))  # a harbour shed
+        feats.append(area(_sim_building(24.45, 60.122, 15, 10), kohdeluokka=42270))  # the church
+        feats.append(area(_sim_building(24.40, 60.006, 5, 4), kohdeluokka=42231))  # a cabin on Rönnskär
+        return feats
+    if key.startswith("landmark."):
+        kind = key.split(".")[1]
+        return [point(lon, lat, korkeus=h) for lon, lat, k, h in SIM_LANDMARKS if k == kind]
+    if key.startswith("markh."):
+        kind = key.split(".")[1]
+        return [point(lon, lat, korkeusarvo=h) for lon, lat, k, h in SIM_HEIGHT_LABELS if k == kind]
+    return []
+
+
+def line_ring(lon: float, lat: float, radius: float, scale: float, **props) -> dict:
+    return {"geometry": {"type": "LineString", "coordinates": _sim_ring(lon, lat, radius, scale, 0.15)},
+            "properties": props}
+
+
+fake_chart_layer.catalog = fake_chart_catalog

@@ -4,22 +4,29 @@ Traficom's chart service is scanned paper chart sheets, so sheet edges and inset
 boxes show where they meet. This draws the chart itself instead, the way apps
 like Luotsi do, from:
 
-- Traficom's depth data (depth areas, contours, soundings),
+- Traficom's depth data (depth areas, contours, soundings) and routeing (traffic
+  separation schemes, precautionary areas, dredged and unsurveyed areas),
+- Traficom's open data (shore structures, pontoons, pilot boarding places, VTS limits),
 - Väylävirasto's fairway data (fairway lines and areas, leading lines, buoys,
-  beacons, lights and restricted areas),
-- the National Land Survey's rocks, wrecks and place names (with an API key), and
+  beacons, lights, restricted areas and water traffic signs),
+- the National Land Survey's rocks, wrecks, place names and land detail (height
+  contours, lakes, roads, railways, buildings, masts and chimneys; with an API key), and
 - Museovirasto's register of wrecks, underwater heritage sites and coastal defences.
 
 Data is fetched lazily in blocks (zoom-11 map tiles, about 10 km across) the
 first time part of the map is viewed, kept on the NAS for a month, and cut into
 small map tiles on request. Land is whatever isn't water: the panel paints the
 Finnish area in the land colour and draws the depth areas over it, so islands
-line up exactly with the depths around them.
+line up exactly with the depths around them. Zoomed out (zooms 8-9) tiles are cut
+from a coarse copy at the head of each block file on disk, and kept on disk too.
+
+Which layers each service has is read from its capabilities once a day, so a layer
+a service doesn't have (or names differently) is left out instead of failing.
 
 RAM is the scarce resource on a small NAS, so blocks are stored and kept in memory
 as flat int32 arrays (about 8 bytes a vertex, where parsed JSON takes about 150),
-each block file holds three levels of detail so zoomed-out tiles only read a
-simplified copy, and downloads are parsed a page at a time.
+each block file holds levels of detail so zoomed-out tiles only read a simplified
+copy, and downloads are parsed a page at a time.
 """
 
 from __future__ import annotations
@@ -30,12 +37,15 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import time
 from array import array
 from collections import OrderedDict
+from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -51,35 +61,63 @@ VAYLA_WFS = "https://avoinapi.vaylapilvi.fi/vaylatiedot/vesivaylatiedot/wfs"
 MML_API = "https://avoin-paikkatieto.maanmittauslaitos.fi/maastotiedot/features/v1"
 # Finnish Heritage Agency's registers (CC BY 4.0, no key).
 MV_WFS = "https://geoserver.museovirasto.fi/geoserver/rajapinta/wfs"
-ATTRIBUTION = ("Chart data: Traficom (depths), Väylävirasto (fairways, aids), "
-               "Maanmittauslaitos (rocks, names), Museovirasto (wrecks, heritage sites and defences, CC BY 4.0). "
-               "Not for navigation.")
+ATTRIBUTION = ("Chart data: Traficom (depths, routeing, harbour structures), Väylävirasto (fairways, aids, signs), "
+               "Maanmittauslaitos (rocks, names, land), Museovirasto (wrecks, heritage sites and defences, "
+               "CC BY 4.0). Not for navigation.")
+# Type names by prefix: anything without one is a Land Survey collection.
+SERVICES = {"rajoitettu": TRAFICOM_WFS, "avoin": TRAFICOM_OPEN_WFS, "vesivaylatiedot": VAYLA_WFS}
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
-MIN_Z = 10  # below this the panel shows Traficom's overview chart
+BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks' levels, below it from their overview levels
+MIN_Z = 8  # below this the panel shows Traficom's overview chart
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
 POINT_BUFFER = 64  # wider for points: symbols and their text reach past the tile edge
-POINT_BUFFERS = {"sector": 320, "aid": 128, "light": 128, "name": 256, "sounding": 128}
-BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge
+POINT_BUFFERS = {"sector": 320, "aid": 128, "light": 128, "name": 256, "sounding": 128, "landmark": 128,
+                 "sign": 96, "call": 128, "building": 16}
+BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge...
+POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
+CAPS_MAX_AGE = 86400  # s between reads of which layers each service has
 PAGE = 2000  # features per request; a page over MAX_RESPONSE is asked for again in halves
 MML_PAGE = 1000
-MAX_RESPONSE = 8 * 1024 * 1024  # bytes; a bigger page is asked for again in halves
-MEMORY_BYTES = 24 * 1024 * 1024  # parsed blocks kept in RAM, by their array sizes...
+MML_PAGES = {"height": 250, "building": 500, "road": 500, "lake": 250}  # long or dense features: smaller pages
+# Bytes; a bigger page is asked for again in halves. Parsing a page is the biggest use of RAM
+# here, about seven times its size (a 4 MB page of depth areas takes some 30 MB for a moment).
+MAX_RESPONSE = 4 * 1024 * 1024
+# Parsed blocks kept in RAM, by their array sizes (blocks with land detail take a few MB
+# each at full detail, so the cache holds a handful of them)...
+MEMORY_BYTES = 16 * 1024 * 1024
 MEMORY_BLOCKS = 64  # ...and by count; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
-TILE_REV = 5  # bump when tiles change, so browsers don't keep drawing cached old ones
+# s without a tile request after which what's in RAM is let go: the chart is mostly not
+# being looked at, and on a small NAS those MB are better left to the rest of the system.
+IDLE_FORGET = 300
+# s an overview tile is shown as cut although blocks in it changed since: while blocks are
+# being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
+OVERVIEW_RECUT = 60
+TILE_REV = 6  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
 # units, smallest feature kept in block units). Zoomed-out tiles read only the first.
 LEVELS = ((11, 24, 64), (13, 8, 16), (99, 0, 0))
+# A coarser copy of what overview charts show, ahead of LEVELS in each file, from which the
+# zoom-8 and 9 tiles are cut (192 block units is about 60 m on the ground).
+OVERVIEW_LEVEL = (9, 192, 512)
+# Land Survey data is digitised to a metre or so; simplifying the full detail by about half a
+# metre is invisible on the chart and halves the size of contours and roads.
+FULL_TOL = {"height": 6, "road": 4, "rail": 4, "lake": 4, "buildarea": 2}
 
-# What to fetch: layer key -> (service, type name, kind, properties to keep)
-SOURCES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+# What to fetch: layer key -> (service, type names, kind, properties to keep). A layer drawn
+# from several types (the parts of a traffic separation scheme, kinds of landmark) maps a
+# short tag for each to its type names, and the tag is kept as the "_src" property. Every
+# name the service has is fetched, so a misspelt duplicate (Traficom has some) or a second
+# guess at a Land Survey collection id costs nothing when it doesn't exist, and features
+# found under two names are kept once.
+SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, ...]]] = {
     "depth": (TRAFICOM_WFS, "rajoitettu:DepthArea_A", "area", ("drval1", "drval2")),
     "contour": (TRAFICOM_WFS, "rajoitettu:DepthContour_L", "line", ("valdco",)),
     "sounding": (TRAFICOM_WFS, "rajoitettu:Sounding_P", "point", ("depth",)),
@@ -97,7 +135,50 @@ SOURCES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "rockarea": (MML_API, "vesikivikko", "area", ("kohdeluokka",)),
     "wreck": (MML_API, "hylky", "point", ("kohdeluokka",)),
     "name": (MML_API, "paikannimi", "point", ("teksti", "kieli", "kohdeluokka")),
+    # Routeing (S-57 names; ORIENT is a lane's direction of traffic).
+    "tss": (TRAFICOM_WFS, {
+        "lane": ("rajoitettu:TrafficSeparationSchemeLanePart_A",),
+        "zone": ("rajoitettu:TrafficSeparationZone_A", "rajoitettu:TrafficSeaparationZone_A"),
+        "prec": ("rajoitettu:PrecautionaryArea_A",),
+        "deep": ("rajoitettu:DeepWaterRoutePart_A",),
+        "twoway": ("rajoitettu:TwoWayRoutePart_A",),
+        "dredged": ("rajoitettu:DredgedArea_A",),
+        "unsurveyed": ("rajoitettu:UnsurveyedArea_A",),
+    }, "area", ("_src", "orient")),
+    # Lines; areas given here (VTS areas) are kept as their outlines.
+    "tssline": (TRAFICOM_WFS, {
+        "sep": ("rajoitettu:TrafficSeparationLine_L", "rajoitettu:TrafficSeaparationLine_L"),
+        "bnd": ("rajoitettu:TrafficSeparationSchemeBoundary_L",),
+        "vts": ("avoin:VTSArea_A",),
+        "call": ("avoin:Rdocal_L",),
+    }, "line", ("_src",)),
+    "pilot": (TRAFICOM_OPEN_WFS, "avoin:PilotBoardingPlace_P", "point", ("objnam",)),
+    "call": (TRAFICOM_OPEN_WFS, "avoin:Rdocal_P", "point", ("objnam", "comcha", "orient")),
+    "pier": (TRAFICOM_OPEN_WFS, {
+        "pontoon": ("avoin:Pontoon_L", "avoin:Pontoon_A"), "berth": ("avoin:Berths_L",),
+        "dam": ("avoin:Dam_L", "avoin:Dam_A"), "gate": ("avoin:Gate_L",),
+    }, "line", ("_src",)),
+    "sign": (VAYLA_WFS, "vesivaylatiedot:vesiliikennemerkit_uusi", "point",
+             ("vlmlajityyppi", "vlmtyyppi", "rajoitusarvo", "nimifi")),
+    # Land Survey topographic database. Collection ids are guesses matched against the
+    # service's own list; see _mml_match.
+    "lake": (MML_API, {"lake": ("jarvi",), "river": ("virtavesialue",)}, "area", ("_src",)),
+    "height": (MML_API, "korkeuskayra", "line", ("korkeusarvo",)),
+    "road": (MML_API, "tieviiva", "line", ("kohdeluokka",)),
+    "rail": (MML_API, "rautatie", "line", ("kohdeluokka",)),
+    # Buildings as points with a size (see build_into); big ones also as areas, in "buildarea".
+    "building": (MML_API, "rakennus", "point", ("kohdeluokka", "_size")),
+    "buildarea": (MML_API, {}, "area", ("kohdeluokka",)),
+    "landmark": (MML_API, {
+        "mast": ("masto",), "chimney": ("savupiippu",), "wind": ("tuulivoimala",),
+        "tower": ("nakotorni", "torni", "vesitorni"), "church": ("kirkko",),
+    }, "point", ("_src", "korkeus", "korkeusarvo", "teksti")),
+    # Heights printed beside masts and chimneys, where the database keeps them apart; joined
+    # to the landmark they belong to (join_heights) and not kept.
+    "markh": (MML_API, {"mast": ("mastonkorkeus",), "chimney": ("savupiipunkorkeus",)}, "point",
+              ("_src", "korkeusarvo", "teksti")),
 }
+DERIVED = {"buildarea": "building"}  # layers filled while fetching another one
 
 # Each block is stored in parts, one file each, so a part added later (or one that
 # needs an API key) is fetched on its own without downloading the rest again. A layer
@@ -108,7 +189,15 @@ PARTS: dict[str, tuple[str, ...]] = {
     "fw": ("farea", "fline", "lead", "route", "restrict"),
     "more": ("shore", "light"),
     "mml": ("rock", "rockarea", "wreck", "name"),
+    "tss": ("tss", "tssline", "pilot", "call", "pier", "sign"),
+    "lake": ("lake",),
+    "land": ("height", "road", "rail"),
+    "mark": ("building", "buildarea", "landmark", "markh"),
 }
+MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
+# Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
+# ever seen zoomed out.
+PART_MIN_Z = {"land": 12, "mark": 12}
 
 # Navigation aid types, as one letter for the panel.
 AID_TYPES = {
@@ -126,6 +215,27 @@ ROCK_TYPES = {38511: 1, 38512: 2, 38513: 3}
 WRECK_TYPES = {16721: 1, 16722: 2, 16712: 3}
 # Depth contours as the paper chart shows them; Traficom's data has more.
 CONTOURS = (3, 6, 10, 20, 50, 100, 200)
+OVERVIEW_CONTOURS = (20, 50, 100, 200)
+OVERVIEW_TSS = ("lane", "zone", "prec", "deep", "twoway")  # routeing drawn on overview charts
+OVERVIEW_TSSLINE = ("sep", "bnd")
+OVERVIEW_FAIRWAYS = (1, 2)  # merchant fairways (VL1-VL2)
+
+# MML road classes: 1 major (classes I-II), 2 minor (III and driveways), 3 track or path. Ferry
+# lines and winter roads (over the ice) are left out. Unknown classes count as minor.
+ROAD_CLASSES = {12111: 1, 12112: 1, 12121: 1, 12122: 1, 12131: 2, 12132: 2, 12141: 2,
+                12313: 3, 12314: 3, 12316: 3, 12151: 0, 12152: 0, 12153: 0, 12312: 0}
+# MML building classes by their first four digits; 42270 is a church.
+BUILDING_KINDS = {4221: "home", 4222: "public", 4223: "home", 4224: "industry", 4225: "public", 4226: "other"}
+CHURCH = 42270
+SMALL_BUILDING = 300  # m² of footprint: smaller is size 1, bigger size 2...
+BUILDING_AREA = 3000  # ...and this big is drawn by its outline (size 3, in "buildarea")
+HEIGHT_REACH = UNITS // 64  # block units (about 150 m): a height label further than this from a mast isn't its own
+# Water traffic signs (vlmlajityyppi). Only 11 = speed limit is known for sure; the rest are
+# also told by the sign's type text and name. Types sent to the panel: speed (value km/h),
+# nowake, noanchor, nomoor, nopass (no overtaking or meeting), height (headroom, value m), other.
+SIGN_CODES = {11: "speed"}
+SIGN_WORDS = (("nopeus", "speed"), ("aallo", "nowake"), ("ankkur", "noanchor"), ("kiinnit", "nomoor"),
+              ("ohitta", "nopass"), ("kohtaa", "nopass"), ("alikulku", "height"), ("korkeus", "height"))
 
 # Museovirasto's point layers with underwater sites and wrecks, and the register class
 # each one is: 0 protected ancient monument, 1 other heritage site, 2 other site,
@@ -158,9 +268,25 @@ HERITAGE_REGIONS = 6  # regions kept in RAM
 # Zoom from which each layer is drawn.
 DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
-LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 13, "farea": 11, "fline": MIN_Z,
-               "lead": 11, "route": 11, "restrict": 12, "aid": 11, "sector": 11, "shore": 12, "light": 13,
-               "rock": 12, "rockarea": 12, "wreck": 12, "name": 11, "heritage": 11}
+LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "fline": MIN_Z,
+               "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 13,
+               "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
+               "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13,
+               "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12}
+
+
+def source_names(key: str) -> list[tuple[str | None, str]]:
+    """(tag, type name) of everything a layer is fetched from; the tag is None for a layer
+    with a single source."""
+    names = SOURCES[key][1]
+    if isinstance(names, str):
+        return [(None, names)]
+    return [(tag, name) for tag, alts in names.items() for name in alts]
+
+
+def service_of(name: str) -> str:
+    prefix = name.split(":", 1)[0] if ":" in name else ""
+    return SERVICES.get(prefix, MML_API)
 
 
 # --- geometry ------------------------------------------------------------------------
@@ -341,6 +467,7 @@ class LayerBuilder:
     def __init__(self, kind: str):
         self.layer = Layer(kind)
         self._index: dict[tuple, int] = {}
+        self.seen: set | None = None  # set when one feature may come twice (under two type names)
 
     def _row(self, props) -> None:
         key = tuple(props)
@@ -472,10 +599,34 @@ def _point_shown(key: str, props: tuple, max_z: int) -> bool:
     return True
 
 
-def _reduce(key: str, layer: Layer, max_z: int, tol: float, smallest: int) -> Layer:
+def _multiple(value: Any, step: float) -> bool:
+    v = _num(value)
+    return v is not None and abs(v / step - round(v / step)) < 1e-6
+
+
+def _shown(key: str, props: tuple, max_z: int, classes: dict[int, int]) -> bool:
+    """Whether a line or area could be drawn at or below a zoom."""
+    if key == "contour":
+        d = _num(props[0])
+        return d in CONTOURS and not (max_z < 12 and d < 10) and not (max_z <= 9 and d not in OVERVIEW_CONTOURS)
+    if key == "height":
+        return max_z > 13 or _multiple(props[0], 10)  # zoom 12 shows every 20 m, 13 every 10 m
+    if max_z <= OVERVIEW_LEVEL[0]:
+        if key == "tss":
+            return props[0] in OVERVIEW_TSS
+        if key == "tssline":
+            return props[0] in OVERVIEW_TSSLINE
+        if key == "fline":
+            return classes.get(_int(_pad(props, 2)[1])) in OVERVIEW_FAIRWAYS
+    return True
+
+
+def _reduce(key: str, layer: Layer, max_z: int, tol: float, smallest: int,
+            classes: dict[int, int] | None = None) -> Layer:
     """A simplified copy of a layer for zoomed-out tiles."""
     b = LayerBuilder(layer.kind)
     co = layer.co
+    classes = classes or {}
     for i in range(layer.n):
         props = layer.props[layer.pi[i]]
         if layer.kind == "point":
@@ -485,14 +636,21 @@ def _reduce(key: str, layer: Layer, max_z: int, tol: float, smallest: int) -> La
         x0, y0, x1, y1 = layer.bbox(i)
         if x1 - x0 < smallest and y1 - y0 < smallest:
             continue
-        if key == "contour" and (_num(props[0]) not in CONTOURS or (max_z < 12 and _num(props[0]) < 10)):
+        if not _shown(key, props, max_z, classes):
             continue
+        if key == "fline" and max_z <= OVERVIEW_LEVEL[0]:
+            # Overviews have no routes to look the fairway class up in: it goes with the line.
+            props = (*_pad(props, 2)[:2], classes.get(_int(_pad(props, 2)[1])))
         if layer.kind == "line":
             b.line(props, [(co[2 * v], co[2 * v + 1]) for v in _dp(co, layer.vo[i], layer.vo[i + 1], tol)])
         else:
             rings = []
             for r in layer.rings(i):
-                kept = _dp(co, layer.vo[r], layer.vo[r + 1], tol)
+                v0, v1 = layer.vo[r], layer.vo[r + 1]
+                xs, ys = co[2 * v0:2 * v1:2], co[2 * v0 + 1:2 * v1:2]
+                if max(xs) - min(xs) < smallest and max(ys) - min(ys) < smallest:
+                    continue  # an islet or a pool too small to see, rather than a speck
+                kept = _dp(co, v0, v1, tol)
                 if len(kept) >= 3:
                     rings.append([(co[2 * v], co[2 * v + 1]) for v in kept])
             b.area(props, rings)
@@ -511,25 +669,40 @@ def make_levels(full: dict[str, Layer]) -> list[dict[str, Layer]]:
     return levels
 
 
+def make_overview(layers: dict[str, Layer]) -> dict[str, Layer]:
+    """What of a block's layers overview charts show, much simplified: depths, the deeper
+    contours, routeing, merchant fairways, major lights, towns and seas. From the full data,
+    or from LEVELS[0] for files written before overviews."""
+    max_z, tol, smallest = OVERVIEW_LEVEL
+    route = layers.get("route")
+    classes = {_int(p[1]): _int(p[0]) for p in (route.props if route else ()) if _int(p[1]) is not None}
+    return {key: _reduce(key, layer, max_z, tol, smallest, classes) for key, layer in layers.items()
+            if LAYER_MIN_Z.get(key, 99) <= max_z}
+
+
 # --- block files ----------------------------------------------------------------------
 # A block part file is gzip: a magic line, then for each level of detail a JSON header
 # line (layer kinds, property tuples, array lengths) followed by the raw int32 arrays.
-# Reading a zoomed-out level stops early, so it never touches the detailed data.
+# Reading a zoomed-out level stops early, so it never touches the detailed data. Files
+# written since overviews start with one more such section, the overview level (its
+# header says "ov"), which read_block skips: level numbers stay those of LEVELS.
 
 MAGIC = b"FWCHART2\n"
 SUFFIX = ".fwc"
 OLD_SUFFIX = ".json.gz"  # the earlier JSON format, converted on first use
 
 
-def write_block(path: Path, meta: dict, levels: list[dict[str, Layer]]) -> None:
+def write_block(path: Path, meta: dict, levels: list[dict[str, Layer]],
+                overview: dict[str, Layer] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
+    sections = ([({**meta, "ov": 1}, overview)] if overview is not None else []) + [(meta, L) for L in levels]
     with gzip.open(tmp, "wb", compresslevel=5) as f:
         f.write(MAGIC)
-        for layers in levels:
-            head = {**meta, "layers": {key: {"k": L.kind, "p": L.props,
-                                              "n": [len(getattr(L, a)) for a in Layer.ARRAYS[L.kind]]}
-                                        for key, L in layers.items()}}
+        for head_meta, layers in sections:
+            head = {**head_meta, "layers": {key: {"k": L.kind, "p": L.props,
+                                                   "n": [len(getattr(L, a)) for a in Layer.ARRAYS[L.kind]]}
+                                             for key, L in layers.items()}}
             f.write(json.dumps(head, separators=(",", ":"), ensure_ascii=False).encode() + b"\n")
             for L in layers.values():
                 for a in Layer.ARRAYS[L.kind]:
@@ -541,29 +714,47 @@ def write_block(path: Path, meta: dict, levels: list[dict[str, Layer]]) -> None:
     os.replace(tmp, path)
 
 
+def _read_section(f, keep: bool) -> tuple[dict, dict[str, Layer]]:
+    head = json.loads(f.readline())
+    layers: dict[str, Layer] = {}
+    for key, spec in head.pop("layers").items():
+        if not keep:
+            f.seek(4 * sum(spec["n"]), 1)
+            continue
+        L = Layer(spec["k"])
+        L.props = [tuple(p) for p in spec["p"]]
+        for name, n in zip(Layer.ARRAYS[spec["k"]], spec["n"]):
+            arr = array("i")
+            arr.fromfile(f, n)
+            if sys.byteorder != "little":
+                arr.byteswap()
+            setattr(L, name, arr)
+        layers[key] = L
+    return head, layers
+
+
 def read_block(path: Path, level: int) -> tuple[dict, dict[str, Layer]]:
     """(meta, layers) of one level of a block file."""
     with gzip.open(path, "rb") as f:
         if f.read(len(MAGIC)) != MAGIC:
             raise ValueError(f"{path.name} is not a chart block")
-        for lvl in range(level + 1):
-            head = json.loads(f.readline())
-            layers: dict[str, Layer] = {}
-            for key, spec in head.pop("layers").items():
-                names = Layer.ARRAYS[spec["k"]]
-                if lvl < level:
-                    f.seek(4 * sum(spec["n"]), 1)
-                    continue
-                L = Layer(spec["k"])
-                L.props = [tuple(p) for p in spec["p"]]
-                for name, n in zip(names, spec["n"]):
-                    arr = array("i")
-                    arr.fromfile(f, n)
-                    if sys.byteorder != "little":
-                        arr.byteswap()
-                    setattr(L, name, arr)
-                layers[key] = L
-        return head, layers
+        lvl = 0
+        while True:
+            head, layers = _read_section(f, lvl == level)
+            if head.get("ov"):
+                continue  # the overview level
+            if lvl == level:
+                return head, layers
+            lvl += 1
+
+
+def read_overview(path: Path) -> dict[str, Layer]:
+    """A block file's overview level; made from its first level for files older than overviews."""
+    with gzip.open(path, "rb") as f:
+        if f.read(len(MAGIC)) != MAGIC:
+            raise ValueError(f"{path.name} is not a chart block")
+        head, layers = _read_section(f, True)
+    return layers if head.get("ov") else make_overview(layers)
 
 
 def read_meta(path: Path) -> dict:
@@ -748,36 +939,93 @@ def _points(geom: dict) -> list:
 
 
 
-def build_into(b: LayerBuilder, bx: int, by: int, key: str, features: list[dict]) -> None:
+def _signature(tag: str | None, geom: dict) -> tuple:
+    """Enough of a feature's geometry to tell the same feature fetched under two names."""
+    coords = geom.get("coordinates")
+    first = coords
+    while isinstance(first, list) and first and isinstance(first[0], list):
+        first = first[0]
+    size = len(coords) if isinstance(coords, list) else 0
+    inner = coords[0] if size and isinstance(coords[0], list) else None
+    return (tag, geom.get("type"), tuple(round(v, 1) for v in (first or [])[:2]), size,
+            len(inner) if isinstance(inner, list) else 0)
+
+
+def _ring_area(pts: list) -> float:
+    return abs(sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]))) / 2
+
+
+def build_into(b: LayerBuilder, bx: int, by: int, key: str, features: Iterable[dict], tag: str | None = None,
+               extra: LayerBuilder | None = None, lonlat: bool = False) -> None:
     """Clip a page of a layer's features to the block (with a margin) and add what the
-    panel draws to the layer being built."""
-    project = to_block(bx, by)
+    panel draws to the layer being built. ``tag`` is kept as the "_src" property, ``extra``
+    gets a building's outline when it's big enough to draw, and ``lonlat`` says the
+    coordinates are degrees (the Land Survey's) rather than web-mercator metres."""
+    to_b = to_block(bx, by)
+    if lonlat:
+        def project(lon, lat):
+            return to_b(*lonlat_to_mercator(lon, lat))
+    else:
+        project = to_b
     kind, wanted = SOURCES[key][2], SOURCES[key][3]
     margin = UNITS * TILE_BUFFER / EXTENT  # a block-sized tile's buffer, the largest needed
     lo, hi = -margin, UNITS + margin
-    plo, phi = -BLOCK_POINT_MARGIN, UNITS + BLOCK_POINT_MARGIN
+    pm = POINT_MARGINS.get(key, BLOCK_POINT_MARGIN)
+    plo, phi = -pm, UNITS + pm
+    tol = FULL_TOL.get(key, 0)
+    minx, miny, maxx, maxy = block_bounds(bx, by)
+    # Ground metres in a block unit, for building sizes.
+    unit_m = (maxx - minx) / UNITS * math.cos(math.radians(mercator_to_lonlat(0, (miny + maxy) / 2)[1]))
     for f in features:
         geom = f.get("geometry")
-        if not geom:
+        if not geom or not geom.get("coordinates"):
             continue
+        if b.seen is not None:
+            sig = _signature(tag, geom)
+            if sig in b.seen:
+                continue
+            b.seen.add(sig)
         raw = {k.lower(): v for k, v in (f.get("properties") or {}).items()}
-        props = [_scalar(raw.get(p)) for p in wanted]
+        if tag is not None:
+            raw["_src"] = tag
         if kind == "area":
             rings = []
             for ring in _rings(geom):
                 clipped = clip_ring([project(*c[:2]) for c in ring], lo, lo, hi, hi)
+                if tol:
+                    clipped = simplify(clipped, tol)
                 if len(clipped) >= 3:
                     rings.append(clipped)
-            b.area(props, rings)
+            b.area([_scalar(raw.get(p)) for p in wanted], rings)
         elif kind == "line":
-            for line in _lines(geom):
+            props = [_scalar(raw.get(p)) for p in wanted]
+            # Areas given for a line layer (VTS areas, pontoons) are kept as their outlines.
+            for line in _lines(geom) or [ring for ring in _rings(geom)]:
                 for part in clip_line([project(*c[:2]) for c in line], lo, lo, hi, hi):
-                    b.line(props, part)
+                    b.line(props, simplify(part, tol) if tol else part)
         else:
-            for c in _points(geom):
-                x, y = project(*c[:2])
+            rings = _rings(geom)
+            if rings:
+                # An area as a point (buildings): its middle, with its size.
+                outer = [project(*c[:2]) for c in rings[0]]
+                x0, y0, x1, y1 = _bbox(outer)
+                pts = [((x0 + x1) / 2, (y0 + y1) / 2)]
+                m2 = _ring_area(outer) * unit_m * unit_m
+                raw["_size"] = 3 if m2 >= BUILDING_AREA else 2 if m2 >= SMALL_BUILDING else 1
+                if extra is not None and raw["_size"] == 3:
+                    clipped = clip_ring(simplify(outer, FULL_TOL.get("buildarea", 0)), lo, lo, hi, hi)
+                    if len(clipped) >= 3:
+                        extra.area([_scalar(raw.get(p)) for p in SOURCES[DERIVED_BY[key]][3]], [clipped])
+            else:
+                pts = [project(*c[:2]) for c in _points(geom)] or \
+                      [project(*c[:2]) for line in _lines(geom) for c in line[:1]]
+            props = [_scalar(raw.get(p)) for p in wanted]
+            for x, y in pts:
                 if plo <= x <= phi and plo <= y <= phi:
                     b.point(props, x, y)
+
+
+DERIVED_BY = {source: derived for derived, source in DERIVED.items()}
 
 
 def build_block(bx: int, by: int, layers: dict[str, list[dict]]) -> dict[str, Layer]:
@@ -785,9 +1033,37 @@ def build_block(bx: int, by: int, layers: dict[str, list[dict]]) -> dict[str, La
     out = {}
     for key, features in layers.items():
         b = LayerBuilder(SOURCES[key][2])
-        build_into(b, bx, by, key, features)
+        extra = LayerBuilder(SOURCES[DERIVED_BY[key]][2]) if key in DERIVED_BY else None
+        build_into(b, bx, by, key, features, extra=extra)
         out[key] = b.layer
+        if extra is not None:
+            out[DERIVED_BY[key]] = extra.layer
     return out
+
+
+def join_heights(marks: Layer, labels: Layer | None) -> Layer:
+    """Landmarks as (kind, height, name), the height from the landmark itself or from the
+    nearest height label of its kind (the Land Survey keeps a mast's height as a text beside it)."""
+    found = []
+    if labels is not None:
+        for i in range(labels.n):
+            tag, value, text = _pad(labels.props[labels.pi[i]], 3)[:3]
+            h = _num(value) if _num(value) is not None else _num(re.sub(r"[^\d.]", "", str(text or "")) or None)
+            if h is not None:
+                found.append((tag, labels.co[2 * i], labels.co[2 * i + 1], h))
+    b = LayerBuilder("point")
+    for i in range(marks.n):
+        tag, h1, h2, name = _pad(marks.props[marks.pi[i]], 4)[:4]
+        x, y = marks.co[2 * i], marks.co[2 * i + 1]
+        height = _num(h1) if _num(h1) is not None else _num(h2)
+        if height is None:
+            near = [(abs(lx - x) + abs(ly - y), h) for t, lx, ly, h in found
+                    if t == tag and abs(lx - x) <= HEIGHT_REACH and abs(ly - y) <= HEIGHT_REACH]
+            height = min(near)[1] if near else None
+        if height is not None and height == int(height):
+            height = int(height)
+        b.point((tag, height, str(name).strip() if name else None), x, y)
+    return b.layer
 
 
 def heritage_props(feature: dict) -> tuple | None:
@@ -918,29 +1194,25 @@ def _run_pts(layer: Layer, v0: int, v1: int, x0: float, y0: float, x1: float, y1
     return out
 
 
-def _fairway_classes(blocks: dict[tuple[int, int], dict | None]) -> dict[int, int]:
-    """Fairway number -> class (1 main merchant fairway ... 6), from the blocks' routes."""
-    classes: dict[int, int] = {}
-    for data in blocks.values():
-        route = (data or {}).get("route")
-        for props in route.props if route else ():
-            jnro, vl = _int(props[1]), _int(props[0])
-            if jnro is not None and vl is not None:
-                classes[jnro] = vl
-    return classes
-
-
-def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]) -> dict[str, Any]:
-    """The chart features for one map tile, in tile units (0..EXTENT, y down)."""
+def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None] | Iterable[tuple]) -> dict[str, Any]:
+    """The chart features for one map tile, in tile units (0..EXTENT, y down). ``blocks``
+    may also be (key, data) pairs made as they're needed, so that overview tiles never
+    hold more than one block's data at a time."""
     tile: dict[str, Any] = {"e": EXTENT}
     rows: dict[str, list] = {}  # layer -> [props, geometry...] or [x, y, props], before formatting
     lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
     tol = 0.35 if z >= 12 else 0.5
     land_rects: list[tuple[float, float, float, float]] = []
     seen_points: set = set()
-    for (bx, by), data in blocks.items():
+    classes: dict[int, int] = {}  # fairway number -> class (1 main merchant fairway ... 6), from the routes
+    for (bx, by), data in blocks.items() if isinstance(blocks, dict) else blocks:
         if not data:
             continue
+        route = data.get("route")
+        for props in route.props if route else ():
+            jnro, vl = _int(props[1]), _int(props[0])
+            if jnro is not None and vl is not None:
+                classes[jnro] = vl
         # Block units -> tile units, and the tile (with buffer) in block units for quick skips.
         if z >= BLOCK_Z:
             n = 2 ** (z - BLOCK_Z)
@@ -1010,6 +1282,11 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                         continue
                 if key == "fline" and z < 11 and p[0] is None:
                     continue  # boat routes only once zoomed in
+                if key == "height" and z < 14 and not _multiple(p[0], 20 if z < 13 else 10):
+                    continue
+                if key == "road" and (ROAD_CLASSES.get(_int(p[0]), 2) == 0
+                                      or (z < 13 and ROAD_CLASSES.get(_int(p[0]), 2) > 2)):
+                    continue  # paths only from zoom 13; no ferry lines or ice roads
                 pts = _run_pts(layer, layer.vo[i], layer.vo[i + 1], bx0, by0, bx1, by1)
                 for part in clip_line(conv(pts), lo, lo, hi, hi):
                     flat = _flat(simplify(part, tol))
@@ -1023,17 +1300,70 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         land = [_flat(part) for part in (clip_ring(ring, *rect) for rect in land_rects) if len(part) >= 3]
         if land:
             tile["land"] = land
-    _format(tile, rows, z, _fairway_classes(blocks))
+    _format(tile, rows, z, classes)
     return {k: v for k, v in tile.items() if v != []}
 
 
 def _pad(p: tuple, n: int) -> tuple:
     """Properties padded to n values (older files kept fewer for some layers)."""
+    p = tuple(p)
     return p if len(p) >= n else p + (None,) * (n - len(p))
 
 
+def _metres(value: Any) -> float | int | None:
+    v = _num(value)
+    return int(v) if v is not None and v == int(v) else v
+
+
+def _building_kind(code: Any) -> str:
+    code = _int(code)
+    if code == CHURCH:
+        return "church"
+    return BUILDING_KINDS.get(code // 10 if code else 0, "other")
+
+
+def _sign(props: tuple) -> tuple[str, float | int | None]:
+    """A water traffic sign's (type, value): see SIGN_CODES."""
+    code, kind, value, name = _pad(props, 4)[:4]
+    sign = SIGN_CODES.get(_int(code))
+    if sign is None:
+        text = f"{kind or ''} {name or ''}".lower()
+        sign = next((s for word, s in SIGN_WORDS if word in text), "other")
+    v = _metres(value)
+    return sign, v if v else None  # 0 is how the data says "no value"
+
+
 def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) -> None:
-    """Turn collected rows into what the panel reads (see static/vchart.js)."""
+    """Turn collected rows into what the panel reads (see static/vchart.js).
+
+    Tile coordinates are 0..512 (``e``) with a buffer past each edge; rings and lines are
+    flat [x0, y0, x1, y1, ...]. Keys and rows, by layer:
+
+    - land: [ring, ...] the Finnish area where chart data is (painted under depths)
+    - depth: [band, ...rings] band 0 drying, 1 0-3 m, 2 3-6 m, 3 6-10 m, 4 deeper; deep first
+    - contour: [metres, line]; farea: [type, draught, class, ...rings]; fline: [draught, class, line]
+    - lead: [bearing, line]; band: [line]; restrict: [types, value, ...rings]; shore: [line]
+      (shore structures, pontoons, berths, dams and gates)
+    - rockarea: [kind, ...rings]; sector: [x, y, from°, to°, colour]; light: [x, y, text]
+    - aid: [x, y, type, category, lit, name, colours]; sounding: [x, y, depth]
+    - rock / wreck: [x, y, kind]; heritage: see _heritage_rows; name: [x, y, text, kind]
+    - tss: [kind, orient, ...rings] kind lane, zone, prec, deep, twoway, dredged or
+      unsurveyed; orient a lane's direction of traffic in degrees, or null
+    - tssline: [kind, line] kind sep (separation line), bnd (scheme boundary), vts (VTS area
+      limit) or call (radio calling-in line)
+    - pilot: [x, y] pilot boarding place; call: [x, y, name, channel, orient] calling-in point
+    - sign: [x, y, type, value, name] water traffic sign, type speed (value km/h), nowake,
+      noanchor, nomoor, nopass, height (value m) or other
+    - height: [metres, line] land contours: every 20 m at zoom 12, 10 m at 13, all from 14
+    - lake: [...rings] lakes and rivers (drawn on land, under the depth areas)
+    - road: [class, line] 1 major, 2 minor, 3 track or path (from zoom 13); rail: [line]
+    - building: [x, y, size] size 1 small, 2 large; buildings big enough to draw their
+      outline are in buildarea: [kind, ...rings] kind home, public, industry, church or other
+    - landmark: [x, y, kind, height, name] kind mast, chimney, wind, tower or church;
+      height in metres or null
+    - cover (overview tiles, zooms 8-9): the share of the tile's blocks the overview has, 0..1;
+      where it's under 1 the rest is not drawn yet
+    """
     def vl(jnro: Any) -> int | None:
         return classes.get(_int(jnro)) if jnro is not None else None
 
@@ -1046,8 +1376,9 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["farea"] = [[_int(code), _num(draught), vl(jnro), *rings]
                          for p, *rings in rows["farea"] for code, draught, jnro in [_pad(p, 3)[:3]]]
     if "fline" in rows:
-        tile["fline"] = [[_num(draught), vl(jnro), line]
-                         for p, line in rows["fline"] for draught, jnro in [_pad(p, 2)[:2]]]
+        # Overview lines carry their class (there are no routes to look it up in).
+        tile["fline"] = [[_num(draught), vl(jnro) if vl(jnro) is not None else _int(own), line]
+                         for p, line in rows["fline"] for draught, jnro, own in [_pad(p, 3)[:3]]]
     if "lead" in rows:
         tile["lead"] = [[_num(_pad(p, 1)[0]), line] for p, line in rows["lead"]]
     if "route" in rows:
@@ -1055,8 +1386,41 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["band"] = [[line] for p, line in rows["route"] if _int(p[0]) == 4]
     if "restrict" in rows:
         tile["restrict"] = [[p[0], _num(p[1]), *rings] for p, *rings in rows["restrict"]]
-    if "shore" in rows:
-        tile["shore"] = [[line] for _, line in rows["shore"]]
+    if "shore" in rows or "pier" in rows:
+        tile["shore"] = [[line] for _, line in rows.get("shore", []) + rows.get("pier", [])]
+    if "tss" in rows:
+        tile["tss"] = [[p[0], _num(_pad(p, 2)[1]), *rings] for p, *rings in rows["tss"]]
+    if "tssline" in rows:
+        tile["tssline"] = [[p[0], line] for p, line in rows["tssline"]]
+    if "pilot" in rows:
+        tile["pilot"] = [[px, py] for px, py, _ in rows["pilot"]]
+    if "call" in rows:
+        tile["call"] = [[px, py, name, str(ch) if ch is not None else None, _num(orient)]
+                        for px, py, p in rows["call"] for name, ch, orient in [_pad(p, 3)[:3]]]
+    if "sign" in rows:
+        tile["sign"] = [[px, py, *_sign(p), _pad(p, 4)[3]] for px, py, p in rows["sign"]]
+    if "height" in rows:
+        tile["height"] = [[_metres(p[0]), line] for p, line in rows["height"]]
+    if "lake" in rows:
+        tile["lake"] = [rings for _, *rings in rows["lake"]]
+    if "road" in rows:
+        tile["road"] = [[ROAD_CLASSES.get(_int(p[0]), 2), line] for p, line in rows["road"]]
+    if "rail" in rows:
+        tile["rail"] = [[line] for _, line in rows["rail"]]
+    if "buildarea" in rows:
+        tile["buildarea"] = [[_building_kind(p[0]), *rings] for p, *rings in rows["buildarea"]]
+    landmarks = [[px, py, *_pad(p, 3)[:3]] for px, py, p in rows.get("landmark", ())]
+    if "building" in rows:
+        buildings = []
+        for px, py, p in rows["building"]:
+            code, size = _pad(p, 2)[:2]
+            if _int(code) == CHURCH:
+                landmarks.append([px, py, "church", None, None])  # a church symbol, not a square
+            elif size != 3:  # big ones are drawn by their outline
+                buildings.append([px, py, 2 if size == 2 else 1])
+        tile["building"] = buildings
+    if landmarks:
+        tile["landmark"] = landmarks
     if "rockarea" in rows:
         tile["rockarea"] = [[ROCK_TYPES.get(_int(_pad(p, 1)[0]), 0), *rings] for p, *rings in rows["rockarea"]]
 
@@ -1090,7 +1454,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                          if t and str(t).strip() not in ("-", "")]
     if "sounding" in rows:
         tile["sounding"] = _thin_soundings([[px, py, p[0]] for px, py, p in rows["sounding"]],
-                                           64 if z <= 13 else 128)
+                                           64 if z == 13 else 128)  # sparse at zoom 12, as on charts
     if "rock" in rows:
         tile["rock"] = [[px, py, ROCK_TYPES.get(_int(p[0]), 1)] for px, py, p in rows["rock"]]
     if "wreck" in rows:
@@ -1131,10 +1495,20 @@ ISLAND_ENDINGS = ("skär", "skäret", "holm", "holmen", "holmarna", "ö", "ön",
 WATER_ENDINGS = ("fjärd", "fjärden", "viken", "vik", "selkä", "lahti", "sund", "sundet", "salmi",
                  "fladan", "träsk", "träsket", "järvi", "bukt", "bukten", "strömmen", "ström", "selet")
 OPEN_WATER_ENDINGS = ("fjärd", "fjärden", "selkä", "selät")  # big open waters, named sooner
-# Coastal towns named on overview charts. The feature classes can't tell towns from villages.
+# Coastal towns named on overview charts, the whole coast from the Gulf of Finland to the
+# Bay of Bothnia. The feature classes can't tell towns from villages.
 COASTAL_TOWNS = {"Hanko", "Hangö", "Tammisaari", "Ekenäs", "Inkoo", "Ingå", "Kirkkonummi", "Kyrkslätt",
                  "Espoo", "Esbo", "Helsinki", "Helsingfors", "Porvoo", "Borgå", "Loviisa", "Lovisa",
-                 "Kotka", "Hamina", "Fredrikshamn", "Paldiski", "Tallinn"}
+                 "Kotka", "Hamina", "Fredrikshamn", "Paldiski", "Tallinn",
+                 "Turku", "Åbo", "Naantali", "Nådendal", "Parainen", "Pargas", "Uusikaupunki", "Nystad",
+                 "Rauma", "Raumo", "Pori", "Björneborg", "Kristiinankaupunki", "Kristinestad",
+                 "Kaskinen", "Kaskö", "Vaasa", "Vasa", "Uusikaarlepyy", "Nykarleby", "Pietarsaari",
+                 "Jakobstad", "Kokkola", "Karleby", "Raahe", "Brahestad", "Oulu", "Uleåborg", "Kemi",
+                 "Tornio", "Torneå", "Maarianhamina", "Mariehamn", "Salo", "Kemiönsaari", "Kimitoön"}
+# Seas named on overview charts (with names like "-lahti" that small bays have too).
+BIG_WATERS = {"Suomenlahti", "Finska viken", "Saaristomeri", "Skärgårdshavet", "Selkämeri", "Bottenhavet",
+              "Perämeri", "Bottenviken", "Merenkurkku", "Kvarken", "Norra Kvarken", "Ahvenanmeri", "Ålands hav",
+              "Itämeri", "Östersjön", "Pohjanlahti", "Bottniska viken", "Saaristomeren", "Ahvenanmeren"}
 
 
 def _name_kind(code: int | None, text: str = "") -> str:
@@ -1142,7 +1516,7 @@ def _name_kind(code: int | None, text: str = "") -> str:
     low = text.lower()
     if code is not None and 48000 <= code < 49000:
         return "s"
-    if (code is not None and 36000 <= code < 37000) or low.endswith(WATER_ENDINGS):
+    if (code is not None and 36000 <= code < 37000) or low.endswith(WATER_ENDINGS) or text in BIG_WATERS:
         return "w"
     if code in (35060, 35070) or low.endswith(ISLAND_ENDINGS):
         return "i"
@@ -1152,8 +1526,10 @@ def _name_kind(code: int | None, text: str = "") -> str:
 def _name_min_z(code: int | None, kind: str, text: str) -> int:
     """Zoom from which a name shows: big waters and towns first, islands next, inland names
     only up close."""
+    if text in BIG_WATERS:
+        return 8
     if kind == "s":
-        return 11 if text in COASTAL_TOWNS else 13
+        return 8 if text in COASTAL_TOWNS else 13
     if text.isupper():
         return 16  # all-capital names are mostly stations, airports and the like
     if kind == "w":
@@ -1206,7 +1582,8 @@ def _names(rows: list, tile: dict, z: int) -> list:
         kind = _name_kind(code, text)
         if z < _name_min_z(code, kind, text):
             continue
-        if cells is not None and kind != "i" and text not in COASTAL_TOWNS and (px >> 5, py >> 5) not in cells:
+        if cells is not None and kind != "i" and text not in COASTAL_TOWNS and text not in BIG_WATERS \
+                and (px >> 5, py >> 5) not in cells:
             # Away from the shore: inland villages, bogs and lakes stay off the sea chart
             # until zoomed right in. Open-water names far out at sea stay.
             if kind != "w" or not _in_water(tile, px, py):
@@ -1258,17 +1635,13 @@ def mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
     return x * 180 / HALF, math.degrees(2 * math.atan(math.exp(y * math.pi / HALF)) - math.pi / 2)
 
 
-def _to_mercator(coords: Any) -> Any:
-    """GeoJSON coordinates from lon/lat to web-mercator metres, at any nesting depth."""
-    if coords and isinstance(coords[0], (int, float)):
-        return lonlat_to_mercator(coords[0], coords[1])
-    return [_to_mercator(c) for c in coords]
-
-
-def _mml_features(page: dict) -> list[dict]:
-    """MML features with lon/lat geometry converted, and the name text under one key."""
-    out = []
-    for f in page.get("features") or []:
+def _mml_features(page: dict) -> Iterator[dict]:
+    """MML features (lon/lat, for build_into's ``lonlat``) with the name text under one key.
+    Each is taken out of the page as it's used, so a big page is never held twice."""
+    feats = page.get("features") or []
+    feats.reverse()
+    while feats:
+        f = feats.pop()
         geom = f.get("geometry")
         if not geom or not geom.get("coordinates"):
             continue
@@ -1276,10 +1649,92 @@ def _mml_features(page: dict) -> list[dict]:
         text = props.get("teksti") or props.get("nimi") or props.get("teksti_fin") or props.get("name")
         if isinstance(text, dict):  # a text with its language
             text = text.get("teksti") or text.get("text") or next(iter(text.values()), None)
-        out.append({"geometry": {"type": geom["type"], "coordinates": _to_mercator(geom["coordinates"])},
-                    "properties": {**props, "teksti": text}})
-    return out
+        props["teksti"] = text
+        yield f
 
+
+def wfs_type_names(caps: str) -> set[str]:
+    """Feature type names in a WFS GetCapabilities document."""
+    names = set()
+    for block in re.findall(r"<(?:\w+:)?FeatureType\b.*?</(?:\w+:)?FeatureType>", caps, re.S):
+        m = re.search(r"<(?:\w+:)?Name>\s*([^<\s]+)\s*</(?:\w+:)?Name>", block)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _wfs_match(name: str, names: set[str]) -> str | None:
+    """A type name as a WFS lists it: the same, or with another prefix or none (matched by
+    the part after the colon, ignoring case)."""
+    if name in names:
+        return name
+    local = name.split(":")[-1].lower()
+    return next((n for n in sorted(names) if n.split(":")[-1].lower() == local), None)
+
+
+def _mml_match(candidate: str, ids: set[str]) -> str | None:
+    """A Land Survey collection id for a guessed one: the same, or the same but for case,
+    underscores and dashes."""
+    if candidate in ids:
+        return candidate
+    norm = candidate.lower().replace("_", "").replace("-", "")
+    return next((i for i in sorted(ids) if i.lower().replace("_", "").replace("-", "") == norm), None)
+
+
+def _unknown_type(err: Exception) -> bool:
+    """Whether a failed request says the service has no such layer (rather than being down)."""
+    if not isinstance(err, _HTTPError):
+        return False
+    text = err.text.lower()
+    # 200: some WFS servers send their exception report with it.
+    return err.status == 404 or (err.status in (200, 400) and any(
+        s in text for s in ("typename", "feature type", "unknown", "not found", "no such", "does not exist")))
+
+
+def _with_limit(url: str, params: dict[str, str] | None, limit: int) -> tuple[str, dict[str, str] | None]:
+    """The same request for fewer features a page (``limit`` in the params, or in a next-page link)."""
+    if params is not None:
+        return url, {**params, "limit": str(limit)}
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "limit"]
+    return urlunsplit(parts._replace(query=urlencode(query + [("limit", str(limit))]))), None
+
+
+
+def finish_part(built: dict[str, Layer]) -> dict[str, Layer]:
+    """A fetched part as it's stored: landmarks get their heights and the height labels go."""
+    labels = built.pop("markh", None)
+    if "landmark" in built:
+        built["landmark"] = join_heights(built["landmark"], labels)
+    return built
+
+
+# --- overviews (zooms 8-9) ------------------------------------------------------------
+# Overview tiles are cut from the overview level at the head of each block file on disk,
+# not from downloads of their own: a WFS query over a large area would bring every vertex
+# of the archipelago's depth areas only to throw nearly all of it away, where the blocks
+# already hold a simplified copy. A tile reads its blocks (16 at zoom 9, 64 at zoom 8) one
+# at a time and keeps nothing in RAM; a whole region's overview kept in memory would take
+# 100 MB and more in the archipelago. Cut tiles are kept on disk until a block in them
+# changes. So the overview shows the blocks that have been fetched (all of the Gulf of
+# Finland with "Keep chart on NAS"), and tiles say how much of them is there ("cover").
+
+# Parts with anything for overviews; the rest aren't read.
+OVERVIEW_PARTS = tuple(p for p, keys in PARTS.items()
+                       if any(LAYER_MIN_Z.get(k, 99) <= OVERVIEW_LEVEL[0] for k in keys))
+
+
+def overview_blocks(files: dict[tuple[int, int], list[Path]]) -> Iterator[tuple[tuple[int, int], dict]]:
+    """Each block's overview layers, read as they're asked for (for make_tile). ``files``
+    are a block's part files in PARTS order: a layer in a later part replaces an earlier one's."""
+    for key, paths in files.items():
+        layers: dict[str, Layer] = {}
+        for path in paths:
+            try:
+                layers.update(read_overview(path))
+            except (OSError, ValueError, EOFError, KeyError) as err:
+                _LOGGER.debug("Overview skips %s: %s", path.name, err)
+        yield key, layers
 
 
 class VectorChart:
@@ -1288,7 +1743,9 @@ class VectorChart:
                  mml_key: str = ""):
         self.dir = directory
         self.session = session
-        self.fetch_layer = fetch_layer  # None: the real services, a page at a time
+        # None: the real services, a page at a time. A stand-in may have a ``catalog``
+        # attribute, service url -> the type names it has, standing in for capabilities.
+        self.fetch_layer = fetch_layer
         self.mml_key = mml_key
         self._memory: OrderedDict[tuple[int, int, int], tuple[dict, int]] = OrderedDict()
         self._memory_bytes = 0
@@ -1299,25 +1756,66 @@ class VectorChart:
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
         self._failed: dict[tuple, float] = {}
-        self._missing: dict[Path, tuple[float, bool]] = {}  # file -> (mtime, some layer failed)
+        # file name -> (mtime, some layer failed, type names the services didn't have then)
+        self._missing: dict[str, tuple[float, bool, tuple]] = {}
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
         self._coast: OrderedDict[tuple[int, int], tuple] = OrderedDict()  # block -> (region, coastal sites)
+        self._caps: dict[str, set[str]] = {}  # service -> type names (collection ids) it has
+        self._caps_at: dict[str, float] = {}  # service -> when they were read
+        self._caps_loaded = False
+        self._absent: set[str] = set()  # type names a service answered it doesn't have
+        self._logged: dict[str, str] = {}  # what was last logged about a thing, so it's logged once
         self._logged_props: set[str] = set()
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
         self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
+        self._last_tile = 0.0
+        self._idle: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
 
     def set_mml_key(self, key: str) -> None:
-        """A new Land Survey key: blocks are read again so rocks and names get fetched."""
+        """A new Land Survey key: blocks are read again so rocks, names and land get fetched."""
         self.mml_key = key.strip()
         self._forget()
-        self._failed = {k: t for k, t in self._failed.items() if k[-1] != "mml"}
-        for layer in PARTS["mml"]:
-            self.errors.pop(layer, None)
+        self._failed = {k: t for k, t in self._failed.items() if k[-1] not in MML_PARTS and k[-1] != MML_API}
+        self._caps.pop(MML_API, None)
+        self._caps_at.pop(MML_API, None)
+        for part in MML_PARTS:
+            for layer in PARTS[part]:
+                self.errors.pop(layer, None)
 
     def _forget(self) -> None:
         self._memory.clear()
         self._memory_bytes = 0
+
+    def _touch(self) -> None:
+        """A tile was asked for: RAM caches are kept until IDLE_FORGET after the last one."""
+        self._last_tile = time.monotonic()
+        loop = asyncio.get_running_loop()
+        if self._idle is None or self._idle[0] is not loop:
+            self._idle = (loop, loop.call_later(IDLE_FORGET, self._idle_check))
+
+    def _idle_check(self) -> None:
+        loop = self._idle[0]
+        left = IDLE_FORGET - (time.monotonic() - self._last_tile)
+        if left > 0:
+            self._idle = (loop, loop.call_later(left, self._idle_check))
+            return
+        self._idle = None
+        freed = self._memory_bytes / 1e6
+        self._forget()
+        self._coast.clear()
+        self._regions.clear()
+        _LOGGER.debug("Chart not looked at for %s s: %.1f MB let go", IDLE_FORGET, freed)
+
+    def _scrub(self, text: str) -> str:
+        """Text for a log or the panel, without the API key in it."""
+        return text.replace(self.mml_key, "***") if self.mml_key else text
+
+    def _log_once(self, what: str, msg: str, *args: Any) -> None:
+        line = msg % args
+        if self._logged.get(what) != line:
+            self._logged[what] = line
+            _LOGGER.info("%s", self._scrub(line))
 
     async def check_mml_key(self, key: str) -> str | None:
         """None if the Land Survey accepts the key, else what went wrong."""
@@ -1327,13 +1825,16 @@ class VectorChart:
             await self._get_json(f"{MML_API}/collections/vesikivi/items",
                                  {"bbox": "24.40,59.98,24.42,59.99", "limit": "1", "api-key": key.strip()}, "rock")
         except aiohttp.ClientError as err:
-            return str(err)
+            return str(err).replace(key.strip(), "***") if key.strip() else str(err)
         except (asyncio.TimeoutError, ValueError) as err:
             return str(err) or type(err).__name__
         return None
 
-    def _parts(self) -> list[str]:
-        return [part for part in PARTS if part != "mml" or self.mml_key]
+    def _parts(self, level: int | None = None) -> list[str]:
+        """The parts blocks are made of (those a tile of a level of detail needs)."""
+        max_z = LEVELS[level][0] if level is not None else 99
+        return [part for part in PARTS if (part not in MML_PARTS or self.mml_key)
+                and PART_MIN_Z.get(part, 0) <= max_z]
 
     def _path(self, bx: int, by: int, part: str = "", suffix: str = SUFFIX) -> Path:
         return self.dir / "blocks" / f"{bx}_{by}{'.' + part if part else ''}{suffix}"
@@ -1344,9 +1845,143 @@ class VectorChart:
         blocks = {f.name.split(".")[0] for f in files if f.name.endswith((SUFFIX, OLD_SUFFIX))}
         return {"blocks": len(blocks),
                 "mb": round(sum(f.stat().st_size for f in files if f.is_file()) / 1e6, 1),
-                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "keep": self.keep_status,
-                "mml_key": bool(self.mml_key), "memory_mb": round(self._memory_bytes / 1e6, 1),
-                "rev": f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"}
+                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
+                "keep": self.keep_status, "mml_key": bool(self.mml_key),
+                "memory_mb": round(self._memory_bytes / 1e6, 1),
+                "layers": self.layer_report(), "rev": self._rev()}
+
+    def _rev(self) -> str:
+        """Changes whenever tiles would: a new tile format, or parts added or dropped."""
+        return f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"
+
+    # --- which layers the services have ---
+
+    def layer_report(self) -> dict[str, list[str]]:
+        """Type names found and missing at the services whose capabilities have been read."""
+        found, missing = set(), set()
+        for key in SOURCES:
+            for _, name in source_names(key):
+                service = service_of(name)
+                if service == MML_API and not self.mml_key:
+                    continue
+                got = self._resolve(name)
+                if got is None:
+                    missing.add(name)
+                elif service in self._caps:
+                    found.add(name if got == name else f"{name} ({got})")
+        return {"found": sorted(found), "missing": sorted(missing)}
+
+    def _resolve(self, name: str) -> str | None:
+        """The name to ask a service for, or None when it's known not to have it. Names are
+        tried as they are while a service's capabilities can't be read."""
+        if name in self._absent:
+            return None
+        service = service_of(name)
+        have = self._caps.get(service)
+        if have is None:
+            return name
+        return _mml_match(name, have) if service == MML_API else _wfs_match(name, have)
+
+    def _targets(self, key: str) -> tuple[list[tuple[str | None, str, str]], list[str]]:
+        """A layer's (tag, type name, name to ask for) the services have, and the type names they don't."""
+        targets, absent = [], []
+        for tag, name in source_names(key):
+            # Depths are always asked for: without them there's no chart, and a block made
+            # without them because of a misread list would stay blank for a month.
+            got = self._resolve(name) or (name if key == "depth" and name not in self._absent else None)
+            if got is None:
+                absent.append(name)
+            else:
+                targets.append((tag, name, got))
+        return targets, absent
+
+    def _caps_path(self) -> Path:
+        return self.dir / "layers.json"
+
+    def _load_caps(self) -> None:
+        if self._caps_loaded:
+            return
+        self._caps_loaded = True
+        try:
+            saved = json.loads(self._caps_path().read_text())["services"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        for service, entry in saved.items():
+            if service not in self._caps and isinstance(entry, dict):
+                self._set_caps(service, set(entry.get("names") or ()), entry.get("t", 0), save=False)
+
+    def _set_caps(self, service: str, names: set[str], at: float | None = None, save: bool = True) -> None:
+        wanted = sorted({name for key in SOURCES for _, name in source_names(key) if service_of(name) == service})
+        match = _mml_match if service == MML_API else _wfs_match
+        if not any(match(n, names) for n in wanted):
+            # A list that has none of what the chart has always fetched is more likely misread
+            # than right: rather try every layer than draw none.
+            self._log_once(f"caps {service}", "Chart layers at %s: none of ours among %s listed; trying them all",
+                           urlsplit(service).netloc, len(names))
+            self._failed[("caps", service)] = time.time()
+            return
+        self._caps[service] = names
+        self._caps_at[service] = time.time() if at is None else at
+        self._absent = {n for n in self._absent if service_of(n) != service}
+        if save:
+            try:
+                self.dir.mkdir(parents=True, exist_ok=True)
+                tmp = self._caps_path().with_suffix(".tmp")
+                tmp.write_text(json.dumps({"services": {s: {"t": self._caps_at[s], "names": sorted(n)}
+                                                        for s, n in self._caps.items()}}))
+                os.replace(tmp, self._caps_path())
+            except OSError as err:
+                _LOGGER.warning("Could not store the chart layer list: %s", err)
+        found =[n for n in wanted if self._resolve(n)]
+        missing = [n for n in wanted if not self._resolve(n)]
+        self._log_once(f"caps {service}", "Chart layers at %s: found %s; missing %s", urlsplit(service).netloc,
+                       ", ".join(found) or "none", ", ".join(missing) or "none")
+        if service == MML_API and missing:
+            # The guessed collection ids that didn't match, beside the real ones, to put right.
+            self._log_once("mml ids", "Land Survey collections: %s", ", ".join(sorted(names)))
+
+    async def _discover(self, service: str) -> None:
+        """Read which layers a service has (WFS capabilities, or the Land Survey's collection
+        list) once a day, kept on disk so a restart needn't ask again."""
+        if self.fetch_layer is not None:
+            catalog = getattr(self.fetch_layer, "catalog", None)
+            if catalog is not None and service not in self._caps:
+                names = catalog(service)
+                if names is not None:
+                    self._set_caps(service, set(names), save=False)
+            return
+        self._load_caps()
+        if self.session is None or time.time() - self._caps_at.get(service, 0) < CAPS_MAX_AGE:
+            return
+        if (service == MML_API and not self.mml_key) or \
+                time.time() - self._failed.get(("caps", service), 0) < FAILED_RETRY:
+            return
+        key = ("caps", service)
+        task = self._fetching.get(key)
+        if task is None:
+            task = asyncio.create_task(self._read_caps(service))
+            self._fetching[key] = task
+            task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
+        await asyncio.shield(task)
+
+    async def _read_caps(self, service: str) -> None:
+        try:
+            if service == MML_API:
+                page = await self._get_json(f"{MML_API}/collections", {"f": "json", "api-key": self.mml_key},
+                                            "collections")
+                names = {c["id"] for c in page.get("collections") or [] if isinstance(c, dict) and c.get("id")}
+            else:
+                body = await self._get_bytes(service, {"service": "WFS", "version": "2.0.0",
+                                                       "request": "GetCapabilities"}, "capabilities")
+                names = await asyncio.to_thread(wfs_type_names, body.decode("utf-8", "replace"))
+            if not names:
+                raise ValueError("no layers listed")
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+            self._failed[("caps", service)] = time.time()
+            self._log_once(f"caps {service}", "Could not read which chart layers %s has (%s); trying them all",
+                           urlsplit(service).netloc, str(err) or type(err).__name__)
+            return
+        self._set_caps(service, names)
 
     def _fresh(self, key: tuple[int, int]) -> bool:
         for part in self._parts():
@@ -1392,6 +2027,9 @@ class VectorChart:
         connections to Home Assistant, and a tile request held open for half a
         minute would stall the rest of the panel (and Home Assistant's own UI).
         """
+        self._touch()
+        if z < BLOCK_MIN_Z:
+            return await self._overview_tile(z, x, y, wait)
         keys = blocks_for(z, x, y)
         level = level_for(z)
         now = time.monotonic()
@@ -1440,7 +2078,7 @@ class VectorChart:
         return time.monotonic() - self._wanted.get(key, time.monotonic()) > FORGET_AFTER
 
     async def _load(self, bx: int, by: int, level: int) -> dict | None:
-        parts = self._parts()
+        parts = self._parts(level)
         have = []
         try:
             for part in parts:
@@ -1476,7 +2114,8 @@ class VectorChart:
                 if part == "":
                     return None
                 continue
-            self._missing[path] = (path.stat().st_mtime, bool(meta.get("missing")))
+            self._missing[path.name] = (path.stat().st_mtime, bool(meta.get("missing")),
+                                        tuple(meta.get("absent") or ()))
             layers.update(got)
         return layers
 
@@ -1520,29 +2159,33 @@ class VectorChart:
         return age is not None
 
     async def _has_missing(self, path: Path) -> bool:
-        """Whether some layer of a part failed when it was fetched (it's then fetched again sooner)."""
+        """Whether some layer of a part failed when it was fetched, or a service has since
+        listed one it didn't have then (the part is then fetched again sooner)."""
         try:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
             return False
-        known = self._missing.get(path)
+        known = self._missing.get(path.name)
         if known is None or known[0] != mtime:
             try:
                 meta = await asyncio.to_thread(read_meta, path)
             except (OSError, ValueError, EOFError):
                 return True
-            known = self._missing[path] = (mtime, bool(meta.get("missing")))
-        return known[1]
+            known = self._missing[path.name] = (mtime, bool(meta.get("missing")), tuple(meta.get("absent") or ()))
+        return known[1] or any(service_of(n) in self._caps and self._resolve(n) for n in known[2])
 
     async def _convert(self, old: Path, path: Path) -> None:
         """Rewrite a block file from the earlier JSON format, keeping its age."""
         try:
             async with self._reading:
                 mtime = old.stat().st_mtime
-                meta, levels = await asyncio.to_thread(convert_old, old)
-                await asyncio.to_thread(write_block, path, meta, levels)
+
+                def convert() -> None:
+                    meta, levels = convert_old(old)
+                    write_block(path, meta, levels, make_overview(levels[-1]))
+
+                await asyncio.to_thread(convert)
                 os.utime(path, (mtime, mtime))
-                del levels
         except FileNotFoundError:
             return
         except (OSError, ValueError, EOFError) as err:
@@ -1556,91 +2199,146 @@ class VectorChart:
         bounds = block_bounds(bx, by)
         size = bounds[2] - bounds[0]
         keys = PARTS[part]
-        built: dict[str, Layer] = {}
+        builders = {key: LayerBuilder(SOURCES[key][2]) for key in keys}
         missing: list[str] = []
-        if not near_finland(bounds):
-            built = {key: Layer(SOURCES[key][2]) for key in keys}  # nothing to fetch out there
-        async with self._limit:
-            if not built and self._stale((bx, by)):
-                raise _Skipped  # the map moved on while this block waited its turn
-            started = time.monotonic()
-            for key in keys if not built else ():
+        absent: list[str] = []
+        near = near_finland(bounds)  # nothing to fetch out there
+        fetched = [key for key in keys if key not in DERIVED] if near else []
+        for service in {service_of(name) for key in fetched for _, name in source_names(key)}:
+            await self._discover(service)
+        started = time.monotonic()
+        for i, key in enumerate(fetched):
+            # The download slot is held a layer at a time, so a block someone is looking at
+            # never waits for the whole of a big part being kept on disk.
+            async with self._limit:
+                if i == 0 and self._stale((bx, by)):
+                    raise _Skipped  # the map moved on while this block waited its turn
                 # Points reach further past the block than lines and areas need to.
-                pad = BLOCK_POINT_MARGIN / UNITS * size if SOURCES[key][2] == "point" else size * TILE_BUFFER / EXTENT
+                margin = POINT_MARGINS.get(key, BLOCK_POINT_MARGIN) if SOURCES[key][2] == "point" \
+                    else UNITS * TILE_BUFFER / EXTENT
+                pad = margin / UNITS * size
                 bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
-                builder = LayerBuilder(SOURCES[key][2])
+                derived = DERIVED_BY.get(key)
                 try:
-                    await self._fetch_into(builder, key, bx, by, bbox)
+                    absent += await self._fetch_into(builders[key], key, bx, by, bbox, builders.get(derived))
                     self.errors.pop(key, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
-                    msg = str(err) or type(err).__name__
+                    msg = self._scrub(str(err) or type(err).__name__)
                     if self.errors.get(key) != msg:
                         _LOGGER.warning("Chart data %s for block %s,%s failed: %s", key, bx, by, msg)
                     self.errors[key] = msg
                     if key == "depth":
                         return False  # without depths there's no chart to draw
-                    builder = LayerBuilder(SOURCES[key][2])
+                    builders[key] = LayerBuilder(SOURCES[key][2])
+                    if derived:
+                        builders[derived] = LayerBuilder(SOURCES[derived][2])
                     missing.append(key)
-                built[key] = builder.layer
-            if part and len(missing) == len(keys):
-                return False  # nothing of this part came through; tried again later
+        if part and fetched and len(missing) == len(fetched):
+            return False  # nothing of this part came through; tried again later
+        built = finish_part({key: b.layer for key, b in builders.items()})
+        del builders
+        if "sign" in built:
+            sign = built["sign"]
+            self._log_once("sign codes", "Water traffic sign types seen: %s", ", ".join(sorted(
+                {f"{p[0]}/{p[1]}={_sign(p)[0]}" for p in sign.props})[:40]) or "none")
         path = self._path(bx, by, part)
-        levels = await asyncio.to_thread(make_levels, built)
-        await asyncio.to_thread(write_block, path, {"v": 2, "missing": missing}, levels)
-        self._missing[path] = (path.stat().st_mtime, bool(missing))
+
+        def write() -> None:
+            write_block(path, {"v": 2, "missing": missing, "absent": absent}, make_levels(built),
+                        make_overview(built))
+
+        await asyncio.to_thread(write)
+        self._missing[path.name] = (path.stat().st_mtime, bool(missing), tuple(absent))
         self.blocks_fetched += 1
         _LOGGER.info("Chart block %s,%s%s: %s in %.1f s", bx, by, f" ({part})" if part else "",
                      ", ".join(f"{L.n} {k}" for k, L in built.items()), time.monotonic() - started)
         return True
 
     async def _fetch_into(self, builder: LayerBuilder, key: str, bx: int, by: int,
-                          bbox: tuple[float, float, float, float]) -> None:
-        """Fetch one layer for a block, building each page into the layer as it comes so
-        only one page of raw data is ever in memory."""
-        def add(features: list[dict]) -> None:
-            if features and key not in self._logged_props:
-                # Logged once, to show which fields a service actually returns.
-                self._logged_props.add(key)
-                _LOGGER.info("Chart data %s fields: %s", key, ", ".join(sorted(features[0].get("properties") or {})))
-            build_into(builder, bx, by, key, features)
+                          bbox: tuple[float, float, float, float], extra: LayerBuilder | None = None) -> list[str]:
+        """Fetch one layer for a block from each of its sources, building each page into the
+        layer as it comes so only one page of raw data is ever in memory. Returns the type
+        names the services turned out not to have."""
+        targets, absent = self._targets(key)
+        if len({tag for tag, _, _ in targets}) < len(targets):
+            builder.seen = set()  # two names for one thing: the same feature may come under both
 
-        if self.fetch_layer is not None:
-            features = await self.fetch_layer(key, bbox)
-            await asyncio.to_thread(add, features)
-        elif SOURCES[key][0] == MML_API:
-            await self._fetch_mml(key, bbox, add)
-        else:
-            await self._fetch_wfs(key, bbox, add)
+        for tag, name, ask in targets:
+            def add(features: Iterable[dict], tag: str | None = tag, lonlat: bool = False) -> None:
+                it = iter(features)
+                first = next(it, None)
+                if first is None:
+                    return
+                if key not in self._logged_props:
+                    # Logged once, to show which fields a service actually returns.
+                    self._logged_props.add(key)
+                    _LOGGER.info("Chart data %s fields: %s", key, ", ".join(sorted(first.get("properties") or {})))
+                build_into(builder, bx, by, key, chain((first,), it), tag, extra, lonlat)
 
-    async def _get_json(self, url: str, params: dict[str, str] | None, what: str) -> dict:
+            try:
+                if self.fetch_layer is not None:
+                    features = await self.fetch_layer(key if tag is None else f"{key}.{tag}", bbox)
+                    await asyncio.to_thread(add, features)
+                elif service_of(name) == MML_API:
+                    await self._fetch_mml(key, bbox, lambda feats, add=add: add(feats, lonlat=True), ask)
+                else:
+                    await self._fetch_wfs(key, bbox, add, ask)
+            except _HTTPError as err:
+                if not _unknown_type(err) or key == "depth":
+                    raise
+                # The service hasn't got it (its capabilities couldn't be read, or are out
+                # of date): an empty layer, not a failure.
+                self._absent.add(name)
+                absent.append(name)
+                self._log_once(f"absent {name}", "Chart layer %s is not there: %s", name, str(err)[:120])
+        return absent
+
+    async def _get_bytes(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
         async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
                                     timeout=aiohttp.ClientTimeout(total=120)) as resp:
-            chunks, size = [], 0
+            body = bytearray()  # grown in place: never the chunks and their join at once
             async for chunk in resp.content.iter_chunked(65536):
-                size += len(chunk)
-                if size > MAX_RESPONSE:
+                if len(body) + len(chunk) > MAX_RESPONSE:
                     raise _TooBig(f"more than {MAX_RESPONSE // 1048576} MB of {what} data for one area")
-                chunks.append(chunk)
-            body = b"".join(chunks)
-            del chunks
-            if resp.status != 200 or not body.lstrip().startswith(b"{"):
-                raise aiohttp.ClientError(
-                    f"HTTP {resp.status}: {body[:200].decode('utf-8', 'replace').strip()}")
+                body += chunk
+            if resp.status != 200:
+                raise _HTTPError(resp.status, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
+        return body
+
+    async def _get_json(self, url: str, params: dict[str, str] | None, what: str) -> dict:
+        body = await self._get_bytes(url, params, what)
+        if not body[:256].lstrip().startswith(b"{"):
+            # Some services answer an error with 200 and an XML exception report.
+            raise _HTTPError(200, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
         return await asyncio.to_thread(json.loads, body)  # off the event loop
 
     async def _fetch_wfs(self, key: str, bbox: tuple[float, float, float, float],
-                         sink: Callable[[list[dict]], None] | None = None) -> list[dict]:
+                         sink: Callable[[list[dict]], None] | None = None, name: str | None = None) -> list[dict]:
         """A WFS layer in a bbox, a page at a time. Each page goes to ``sink`` (in a
         thread) and is then dropped; without a sink the features are returned."""
-        url, type_name, _, props = SOURCES[key]
+        type_name = name or source_names(key)[0][1]
+        url, props = service_of(type_name), SOURCES[key][3]
         params = {
             "service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": type_name,
             "srsName": "EPSG:3857", "outputFormat": "application/json",
             "bbox": ",".join(f"{v:.1f}" for v in bbox) + ",EPSG:3857",
         }
         if url == VAYLA_WFS:
-            params["propertyName"] = ",".join((*props, "geom"))
-        return await self._paged(url, params, key, sink)
+            params["propertyName"] = ",".join((*(p for p in props if p[0] != "_"), "geom"))
+        delivered = False
+
+        def through(features: list[dict]) -> None:
+            nonlocal delivered
+            delivered = True
+            sink(features)
+
+        try:
+            return await self._paged(url, params, key, through if sink else None)
+        except _HTTPError as err:
+            if err.status != 400 or "propertyName" not in params or delivered:
+                raise
+            del params["propertyName"]  # a field the layer doesn't have: ask for all of them
+            return await self._paged(url, params, key, sink)
 
     async def _paged(self, url: str, params: dict[str, str], what: str,
                      sink: Callable[[list[dict]], None] | None) -> list[dict]:
@@ -1673,24 +2371,103 @@ class VectorChart:
             del got
 
     async def _fetch_mml(self, key: str, bbox: tuple[float, float, float, float],
-                         sink: Callable[[list[dict]], None]) -> None:
-        """An MML OGC API Features collection in a bbox, following its next-page links."""
-        _, collection, _, _ = SOURCES[key]
+                         sink: Callable[[Iterable[dict]], None], name: str | None = None) -> None:
+        """An MML OGC API Features collection in a bbox, following its next-page links. A
+        page over MAX_RESPONSE is asked for again with half the features."""
+        collection = name or source_names(key)[0][1]
         lon0, lat0 = mercator_to_lonlat(bbox[0], bbox[1])
         lon1, lat1 = mercator_to_lonlat(bbox[2], bbox[3])
-        url: str | None = f"{MML_API}/collections/{collection}/items"
+        limit = MML_PAGES.get(key, MML_PAGE)
+        url: str = f"{MML_API}/collections/{collection}/items"
         params: dict[str, str] | None = {"bbox": f"{lon0:.6f},{lat0:.6f},{lon1:.6f},{lat1:.6f}",
-                                         "limit": str(MML_PAGE), "api-key": self.mml_key}
-        for _ in range(500):
-            page = await self._get_json(url, params, key)
-            await asyncio.to_thread(lambda p=page: sink(_mml_features(p)))
+                                         "limit": str(limit), "api-key": self.mml_key}
+        for _ in range(5000):
+            try:
+                page = await self._get_json(url, params, key)
+            except _TooBig:
+                if limit <= 25:
+                    raise
+                limit //= 2
+                url, params = _with_limit(url, params, limit)
+                continue
             nxt = next((link.get("href") for link in page.get("links") or []
                         if link.get("rel") == "next" and link.get("href")), None)
-            if not nxt or not page.get("features"):
+            more = bool(page.get("features"))
+            await asyncio.to_thread(lambda p=page: sink(_mml_features(p)))
+            del page
+            if not nxt or not more:
                 break
             url, params = nxt, None
             if "api-key=" not in url:
                 url += ("&" if "?" in url else "?") + f"api-key={self.mml_key}"
+
+    # --- overview tiles (zooms 8-9) ---
+
+    async def _overview_tile(self, z: int, x: int, y: int,
+                             wait: float | None) -> tuple[dict[str, Any], bool] | None:
+        key = ("overview", z, x, y)
+        task = self._fetching.get(key)
+        if task is None:
+            task = asyncio.create_task(self._make_overview_tile(z, x, y))
+            self._fetching[key] = task
+            task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
+        if not task.done():
+            done, still = await asyncio.wait([asyncio.shield(task)], timeout=wait)
+            if still:
+                return None
+        return task.result()
+
+    async def _make_overview_tile(self, z: int, x: int, y: int) -> tuple[dict[str, Any], bool]:
+        """The tile stored on disk while none of its blocks changed (or it was cut less
+        than OVERVIEW_RECUT ago), else cut again from the blocks' overview levels."""
+        parts = [p for p in self._parts() if p in OVERVIEW_PARTS]
+        rev = self._rev()
+
+        def scan() -> tuple[dict[tuple[int, int], list[Path]], float]:
+            files: dict[tuple[int, int], list[Path]] = {}
+            newest = 0.0
+            for bx, by in blocks_for(z, x, y):
+                paths = []
+                for part in parts:
+                    path = self._path(bx, by, part)
+                    try:
+                        newest = max(newest, path.stat().st_mtime)
+                    except FileNotFoundError:
+                        if not part:
+                            break  # no block here yet
+                        continue
+                    paths.append(path)
+                if paths:
+                    files[(bx, by)] = paths
+            return files, newest
+
+        files, newest = await asyncio.to_thread(scan)
+        have = [list(k) for k in files]
+        path = self.dir / "overview" / f"{z}_{x}_{y}.json.gz"
+        try:
+            cached = await asyncio.to_thread(_read_json, path)
+        except (OSError, ValueError, EOFError):
+            cached = None
+        if cached is not None and cached.get("rev") == rev:
+            fresh = cached.get("newest", 0) >= newest and cached.get("have") == have
+            if fresh or time.time() - cached.get("made", 0) < OVERVIEW_RECUT:
+                return cached["tile"], cached["complete"] and fresh
+        # Blocks that may hold Finnish data, and how many of them are there.
+        near = await asyncio.to_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
+        got = sum(k in files for k in near)
+        async with self._cutting:
+            tile = await asyncio.to_thread(make_tile, z, x, y, overview_blocks(files))
+        if near:
+            tile["cover"] = round(got / len(near), 2)
+        complete = got == len(near)
+        if files:
+            try:
+                await asyncio.to_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
+                                                            "made": time.time(), "tile": tile,
+                                                            "complete": complete})
+            except OSError as err:
+                _LOGGER.warning("Could not store chart overview tile %s/%s/%s: %s", z, x, y, err)
+        return tile, complete
 
     # --- heritage sites ---
 
@@ -1838,7 +2615,7 @@ class VectorChart:
 
     def prune(self) -> None:
         """Drop blocks nobody has looked at for two refresh periods."""
-        for root in (self.dir / "blocks", self.dir / "heritage"):
+        for root in (self.dir / "blocks", self.dir / "heritage", self.dir / "overview"):
             if not root.exists():
                 continue
             for p in root.iterdir():
@@ -1851,6 +2628,15 @@ class VectorChart:
 
 class _TooBig(ValueError):
     pass
+
+
+class _HTTPError(aiohttp.ClientError):
+    """A service answered with an error; ``text`` is the start of what it said."""
+
+    def __init__(self, status: int, text: str):
+        super().__init__(f"HTTP {status}: {text[:200]}")
+        self.status = status
+        self.text = text
 
 
 def _age(path: Path) -> float | None:
