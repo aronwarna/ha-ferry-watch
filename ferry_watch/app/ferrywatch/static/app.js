@@ -125,9 +125,13 @@
         ...(overview ? [FerryChart.rasterLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
           minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 9, zIndex: 2,
         })] : []),
-        FerryChart.layer({ attribution: "Depths © Traficom · Fairways © Väylävirasto · not for navigation", zIndex: 3 }),
+        FerryChart.layer({
+          attribution: "Depths © Traficom · Fairways © Väylävirasto · abroad: depths © EMODnet Bathymetry, "
+            + "coast and sea marks © OpenStreetMap contributors · not for navigation",
+          zIndex: 3,
+        }),
+        // No OpenSeaMap tiles here: the drawn chart draws the sea marks abroad itself.
         oceanLabels(6),
-        seamarksAbroad(),
       ]);
     }
     if (!info?.layers?.length) return L.layerGroup([streets(), seamarks()]);

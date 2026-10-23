@@ -86,8 +86,12 @@ def test_failed_depths_give_no_land(tmp_path):
 
 
 def test_land_only_where_finland_is(tmp_path):
-    # A tile off Tallinn has depth data from the simulation but lies outside Finnish waters.
-    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    # A tile off Tallinn lies outside Finnish waters: no Finnish land there (without the
+    # foreign stand-ins, so nothing from foreign.py either).
+    async def finnish_only(key, bbox):
+        return await fake_chart_layer(key, bbox)
+
+    chart = VectorChart(tmp_path, None, finnish_only)
     tile, _ = asyncio.run(chart.tile(*tile_at(59.5, 24.75, 12)))
     assert "land" not in tile
     x, y = lonlat_to_mercator(24.4, 60.0)
@@ -207,7 +211,9 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
         assert chart.keep_status["last_ok"]
         # No key: no Land Survey parts. Each source once a block; heritage sites once for the region.
         per_block = sum(len(vchart.source_names(key)) for part in chart._parts() for key in vchart.PARTS[part])
-        assert {p for p in vchart.PARTS if p not in vchart.MML_PARTS} == set(chart._parts())
+        # A stand-in without foreign stand-ins (see foreign.py): no foreign part either.
+        assert {p for p in vchart.PARTS if p not in vchart.MML_PARTS and p != vchart.FOREIGN_PART} == \
+            set(chart._parts())
         assert len(asked) == 2 * per_block + 1
         assert asked.count("heritage") == 1
         task.cancel()

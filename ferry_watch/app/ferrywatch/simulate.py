@@ -571,7 +571,13 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
     bands = [(0, 3, b[0], b[1]), (3, 6, b[1], b[2]), (6, 10, b[2], b[3])]
     feats: list[dict] = []
     if key == "depth":
-        outer = [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
+        # Traficom's depths end at the Finnish sea border (the Estonian side is drawn from
+        # the foreign stand-ins below).
+        from .vchart import FINNISH_WATERS_M, clip_ring
+        outer = [list(p) for p in clip_ring(FINNISH_WATERS_M, minx, miny, maxx, maxy)]
+        if len(outer) < 3:
+            return []
+        outer.append(outer[0])
         feats.append({"geometry": {"type": "Polygon", "coordinates": [outer] + [
             _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS] + [_sim_line(SIM_MAINLAND + SIM_MAINLAND[:1])]},
             "properties": {"DRVAL1": 10, "DRVAL2": 50}})
@@ -592,8 +598,11 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
                           "properties": {"VALDCO": depth}})
     elif key == "sounding":
         rnd = random.Random(int(minx) ^ int(miny))
+        from .foreign import in_finland_m
         for _ in range(400):
             x, y = rnd.uniform(minx, maxx), rnd.uniform(miny, maxy)
+            if not in_finland_m(x, y):
+                continue  # Traficom's soundings end at the sea border too
             feats.append({"geometry": {"type": "Point", "coordinates": [x, y]},
                           "properties": {"DEPTH": round(rnd.uniform(4, 60), 1)}})
     elif key == "fline":
@@ -793,3 +802,7 @@ def line_ring(lon: float, lat: float, radius: float, scale: float, **props) -> d
 
 
 fake_chart_layer.catalog = fake_chart_catalog
+# Outside Finnish waters: a made-up depth model and OpenStreetMap (see foreign.py).
+from .simforeign import fake_dtm as _fake_dtm, fake_osm as _fake_osm  # noqa: E402
+fake_chart_layer.foreign_dtm = _fake_dtm
+fake_chart_layer.foreign_osm = _fake_osm

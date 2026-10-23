@@ -24,6 +24,17 @@ sidebar.
     of Finland ahead. With a free Land Survey (Maanmittauslaitos) API key,
     pasted in the same place, it also shows rocks, rock clusters, wrecks and
     place names.
+    Outside Finnish waters (the Estonian coast, the Åland Sea and the Swedish
+    coast from south of Stockholm up the Gulf of Bothnia) it is drawn in the
+    same style from open European data, so there is no visible edge where
+    Finland's data ends: depths and contours from the **EMODnet Bathymetry**
+    depth model (about 115 m apart, CC BY 4.0), and the coastline, buoys,
+    beacons, lights with their characters and sectors, rocks, wrecks, traffic
+    separation schemes, leading lines and names from **OpenStreetMap**
+    (OpenSeaMap's sea mark tagging, © OpenStreetMap contributors, ODbL, read
+    through the Overpass API). There are no soundings there, and the depths
+    are a smoothed model, so shoals can be shallower than shown. Sweden's and
+    Estonia's own charts aren't open data, so they aren't used.
   - **Official** is Traficom's electronic chart (the S-57 data official ENCs
     are made from), drawn by Traficom's own S-57 view service: everything on
     the official chart, seamless.
@@ -374,7 +385,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored.
+(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
 
 ## If a ship never shows up
 
@@ -391,6 +402,10 @@ by name.
 - Ice chart: E.U. Copernicus Marine Service Information (FMI's Baltic sea ice concentration).
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.
+- Drawn chart outside Finnish waters: depths from the [EMODnet Bathymetry](https://emodnet.ec.europa.eu/en/bathymetry)
+  digital terrain model (EMODnet Bathymetry Consortium, CC BY 4.0); coastline, sea marks, lights, routeing
+  and names © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, with
+  [OpenSeaMap](https://www.openseamap.org)'s sea mark tagging, via the Overpass API.
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart and depth data © Traficom (Traficom hydrographic data

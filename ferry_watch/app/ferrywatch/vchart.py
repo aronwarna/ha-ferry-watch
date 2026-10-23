@@ -63,7 +63,8 @@ MML_API = "https://avoin-paikkatieto.maanmittauslaitos.fi/maastotiedot/features/
 MV_WFS = "https://geoserver.museovirasto.fi/geoserver/rajapinta/wfs"
 ATTRIBUTION = ("Chart data: Traficom (depths, routeing, harbour structures), Väylävirasto (fairways, aids, signs), "
                "Maanmittauslaitos (rocks, names, land), Museovirasto (wrecks, heritage sites and defences, "
-               "CC BY 4.0). Not for navigation.")
+               "CC BY 4.0). Outside Finland: depths EMODnet Bathymetry (CC BY 4.0); coast, sea marks, routeing "
+               "and names © OpenStreetMap contributors (ODbL), OpenSeaMap. Not for navigation.")
 # Type names by prefix: anything without one is a Land Survey collection.
 SERVICES = {"rajoitettu": TRAFICOM_WFS, "avoin": TRAFICOM_OPEN_WFS, "vesivaylatiedot": VAYLA_WFS}
 
@@ -194,7 +195,13 @@ PARTS: dict[str, tuple[str, ...]] = {
     "lake": ("lake",),
     "land": ("height", "road", "rail"),
     "mark": ("building", "buildarea", "landmark", "markh"),
+    # Outside Finnish waters (see foreign.py): the same layers from open European data, merged
+    # into the Finnish ones when read rather than replacing them; "xland" is the land under them.
+    "fx": ("depth", "contour", "aid", "sector", "light", "rock", "wreck", "name", "tss", "tssline", "lead",
+           "pilot", "xland"),
 }
+FOREIGN_PART = "fx"
+
 MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
 # Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
 # ever seen zoomed out.
@@ -273,7 +280,8 @@ LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "f
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
                "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13,
-               "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12}
+               "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
+               "xland": MIN_Z}
 
 
 def source_names(key: str) -> list[tuple[str | None, str]]:
@@ -1301,6 +1309,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         land = [_flat(part) for part in (clip_ring(ring, *rect) for rect in land_rects) if len(part) >= 3]
         if land:
             tile["land"] = land
+    if rows.get("xland"):
+        # Land outside Finland, under the foreign depth areas (see foreign.py).
+        tile["land"] = tile.get("land", []) + [ring for _, *rings in rows["xland"] for ring in rings]
     _format(tile, rows, z, classes)
     return {k: v for k, v in tile.items() if v != []}
 
@@ -1510,11 +1521,18 @@ COASTAL_TOWNS = {"Hanko", "Hangö", "Tammisaari", "Ekenäs", "Inkoo", "Ingå", "
                  "Rauma", "Raumo", "Pori", "Björneborg", "Kristiinankaupunki", "Kristinestad",
                  "Kaskinen", "Kaskö", "Vaasa", "Vasa", "Uusikaarlepyy", "Nykarleby", "Pietarsaari",
                  "Jakobstad", "Kokkola", "Karleby", "Raahe", "Brahestad", "Oulu", "Uleåborg", "Kemi",
-                 "Tornio", "Torneå", "Maarianhamina", "Mariehamn", "Salo", "Kemiönsaari", "Kimitoön"}
+                 "Tornio", "Torneå", "Maarianhamina", "Mariehamn", "Salo", "Kemiönsaari", "Kimitoön",
+                 # Across the gulfs (OpenStreetMap's names, see foreign.py).
+                 "Stockholm", "Norrtälje", "Östhammar", "Öregrund", "Gävle", "Söderhamn", "Hudiksvall",
+                 "Sundsvall", "Härnösand", "Örnsköldsvik", "Umeå", "Skellefteå", "Piteå", "Luleå", "Haparanda",
+                 "Nynäshamn", "Kapellskär", "Grisslehamn", "Sillamäe", "Kunda", "Loksa", "Haapsalu",
+                 "Narva-Jõesuu", "Kärdla", "Muuga", "Sankt-Peterburg", "Санкт-Петербург", "Vyborg", "Выборг",
+                 "Primorsk", "Приморск", "Ust-Luga", "Усть-Луга", "Kronshtadt", "Кронштадт"}
 # Seas named on overview charts (with names like "-lahti" that small bays have too).
 BIG_WATERS = {"Suomenlahti", "Finska viken", "Saaristomeri", "Skärgårdshavet", "Selkämeri", "Bottenhavet",
               "Perämeri", "Bottenviken", "Merenkurkku", "Kvarken", "Norra Kvarken", "Ahvenanmeri", "Ålands hav",
-              "Itämeri", "Östersjön", "Pohjanlahti", "Bottniska viken", "Saaristomeren", "Ahvenanmeren"}
+              "Itämeri", "Östersjön", "Pohjanlahti", "Bottniska viken", "Saaristomeren", "Ahvenanmeren",
+              "Soome laht", "Läänemeri", "Финский залив", "Balti meri"}
 
 
 def _name_kind(code: int | None, text: str = "") -> str:
@@ -1733,10 +1751,14 @@ OVERVIEW_PARTS = tuple(p for p, keys in PARTS.items()
 def overview_blocks(files: dict[tuple[int, int], list[Path]]) -> Iterator[tuple[tuple[int, int], dict]]:
     """Each block's overview layers, read as they're asked for (for make_tile). ``files``
     are a block's part files in PARTS order: a layer in a later part replaces an earlier one's."""
+    from .foreign import merge_into
     for key, paths in files.items():
         layers: dict[str, Layer] = {}
         for path in paths:
             try:
+                if path.name.endswith(f".{FOREIGN_PART}{SUFFIX}"):
+                    merge_into(layers, read_overview(path))  # foreign rows add to the Finnish ones
+                    continue
                 layers.update(read_overview(path))
             except (OSError, ValueError, EOFError, KeyError) as err:
                 _LOGGER.debug("Overview skips %s: %s", path.name, err)
@@ -1777,6 +1799,8 @@ class VectorChart:
         self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
         self._last_tile = 0.0
         self._idle: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
+        from .foreign import ForeignSource
+        self.foreign = ForeignSource(self)  # outside Finnish waters
 
     def set_mml_key(self, key: str) -> None:
         """A new Land Survey key: blocks are read again so rocks, names and land get fetched."""
@@ -1811,6 +1835,7 @@ class VectorChart:
         self._forget()
         self._coast.clear()
         self._regions.clear()
+        self.foreign.forget()
         _LOGGER.debug("Chart not looked at for %s s: %.1f MB let go", IDLE_FORGET, freed)
 
     def _scrub(self, text: str) -> str:
@@ -1840,7 +1865,7 @@ class VectorChart:
         """The parts blocks are made of (those a tile of a level of detail needs)."""
         max_z = LEVELS[level][0] if level is not None else 99
         return [part for part in PARTS if (part not in MML_PARTS or self.mml_key)
-                and PART_MIN_Z.get(part, 0) <= max_z]
+                and (part != FOREIGN_PART or self.foreign.enabled) and PART_MIN_Z.get(part, 0) <= max_z]
 
     def _path(self, bx: int, by: int, part: str = "", suffix: str = SUFFIX) -> Path:
         return self.dir / "blocks" / f"{bx}_{by}{'.' + part if part else ''}{suffix}"
@@ -1851,7 +1876,7 @@ class VectorChart:
         blocks = {f.name.split(".")[0] for f in files if f.name.endswith((SUFFIX, OLD_SUFFIX))}
         return {"blocks": len(blocks),
                 "mb": round(sum(f.stat().st_size for f in files if f.is_file()) / 1e6, 1),
-                "errors": self.errors, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
+                "errors": {**self.errors, **self.foreign.errors}, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
                 "keep": self.keep_status, "mml_key": bool(self.mml_key),
                 "memory_mb": round(self._memory_bytes / 1e6, 1),
                 "layers": self.layer_report(), "rev": self._rev()}
@@ -2140,6 +2165,10 @@ class VectorChart:
                 continue
             self._missing[path.name] = (path.stat().st_mtime, bool(meta.get("missing")),
                                         tuple(meta.get("absent") or ()))
+            if part == FOREIGN_PART:
+                from .foreign import merge_into
+                merge_into(layers, got)  # foreign rows add to the Finnish ones
+                continue
             layers.update(got)
         return layers
 
@@ -2220,6 +2249,8 @@ class VectorChart:
             pass
 
     async def _fetch_part(self, bx: int, by: int, part: str) -> bool:
+        if part == FOREIGN_PART:
+            return await self.foreign.fetch_part(bx, by)
         bounds = block_bounds(bx, by)
         size = bounds[2] - bounds[0]
         keys = PARTS[part]
@@ -2484,7 +2515,8 @@ class VectorChart:
         except (OSError, ValueError, EOFError):
             cached = None
         if cached is not None and cached.get("rev") == rev:
-            fresh = cached.get("newest", 0) >= newest and cached.get("have") == have
+            fresh = cached.get("newest", 0) >= newest and cached.get("have") == have \
+                and cached.get("foreign", True)  # a depth model that couldn't be had is asked for again
             if fresh or time.time() - cached.get("made", 0) < OVERVIEW_RECUT:
                 return cached["tile"], cached["complete"] and fresh
         # Blocks that may hold Finnish data, and how many of them are there.
@@ -2495,11 +2527,16 @@ class VectorChart:
         if near:
             tile["cover"] = round(got / len(near), 2)
         complete = got == len(near)
-        if files:
+        # Outside Finland the overview is drawn straight from the depth model.
+        from .foreign import add_overview
+        foreign, foreign_ok = await self.foreign.overview(z, x, y)
+        add_overview(tile, foreign)
+        complete = complete and foreign_ok
+        if files or foreign:
             try:
                 await asyncio.to_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
                                                             "made": time.time(), "tile": tile,
-                                                            "complete": complete})
+                                                            "complete": complete, "foreign": foreign_ok})
             except OSError as err:
                 _LOGGER.warning("Could not store chart overview tile %s/%s/%s: %s", z, x, y, err)
         return tile, complete
