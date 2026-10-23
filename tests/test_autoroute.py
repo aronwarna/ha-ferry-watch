@@ -119,3 +119,32 @@ def test_router_downloads_then_plans_on_simulated_chart(tmp_path):
         assert deep.get("error") or deep["points"] != second["points"]
 
     asyncio.run(run())
+
+
+def test_start_joins_each_nearby_part_of_the_network():
+    # A boat channel that stops short of the main fairway, and a start right by the channel:
+    # the start must also join the main fairway, the end being on it.
+    channel = merc(*[(59.99 - i * 0.002, 24.37 + i * 0.01) for i in range(7)])  # six short pieces
+    main = merc((59.95, 24.30), (59.955, 24.50), (59.975, 24.62))
+    g = build_graph([channel, main])
+    assert len(set(g.comp)) == 2
+    route = find_route(g, (59.986, 24.405), (59.976, 24.63))
+    assert "error" not in route, route
+
+
+def test_graph_kept_only_while_small(tmp_path, monkeypatch):
+    from ferrywatch import autoroute
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer)
+        router = AutoRouter(chart)
+        start, end = (59.972, 24.60), (59.946, 24.40)
+        await router.route(start, end, 1.5)
+        await router._downloading
+        await router.route(start, end, 1.5)
+        assert router._cache is not None  # small: kept for re-planning
+        monkeypatch.setattr(autoroute, "CACHE_MAX_BYTES", 0)
+        await router.route(start, end, 2.0)
+        assert router._cache is None  # too big: dropped right after use
+
+    asyncio.run(run())

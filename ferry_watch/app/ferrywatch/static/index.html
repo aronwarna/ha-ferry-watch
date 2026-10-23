@@ -22,6 +22,9 @@
         <button type="button" data-layer="satellite">Satellite</button>
         <button type="button" data-layer="chart">Chart</button>
       </div>
+      <button type="button" id="route-button" class="panel icon-button" aria-label="Measure and plan a route" title="Measure and plan a route" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 16.5L16.5 3.5l4 4-13 13z"/><path d="M7.5 12.5l2 2M10 10l2.5 2.5M12.5 7.5l2 2"/></svg>
+      </button>
       <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
       </button>
@@ -147,6 +150,36 @@
     </div>
   </section>
 
+  <section id="route" class="route-panel panel" hidden aria-label="Route">
+    <div class="route-head">
+      <div class="route-sum grow">
+        <strong id="route-total">Route</strong>
+        <span id="route-eta" class="small muted"></span>
+      </div>
+      <label class="route-speed small" title="Speed for the ETA">at <input id="route-speed" type="number" inputmode="decimal" min="0.5" max="60" step="0.5" aria-label="Speed in knots"> kn</label>
+      <button type="button" class="icon-button plain" id="route-close" aria-label="Close the route tool">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <ol id="route-points" class="route-points" aria-label="Points and legs"></ol>
+    <p id="route-hint" class="small muted route-hint" role="status"></p>
+    <div id="route-auto" class="route-auto" hidden>
+      <label class="small">Draught <input id="route-draught" type="number" inputmode="decimal" min="0" max="15" step="0.1" aria-label="Draught in metres"> m</label>
+      <button type="button" id="route-plan" class="primary">Plan along fairways</button>
+    </div>
+    <div class="route-actions">
+      <button type="button" id="route-undo" class="icon-button" aria-label="Undo" title="Undo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      </button>
+      <button type="button" id="route-clear" class="icon-button" aria-label="Clear the route" title="Clear">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13"/></svg>
+      </button>
+      <button type="button" id="route-auto-button" class="route-auto-button" aria-expanded="false" title="Plan automatically along the marked fairways">Auto</button>
+      <input id="route-name" type="text" placeholder="Route name" maxlength="60" autocomplete="off" aria-label="Route name">
+      <button type="button" id="route-save" class="primary">Save</button>
+    </div>
+  </section>
+
   <dialog id="ships-dialog">
     <div class="dialog-head">
       <div class="segmented tabs" role="tablist" aria-label="Menu">
@@ -170,6 +203,8 @@
     </div>
     <div data-pane="layers" role="tabpanel" hidden>
       <div id="layers-list"></div>
+      <h3>Routes</h3>
+      <div id="routes-list"></div>
       <h3>Fleets</h3>
       <p class="small muted">Switched-on fleets are shown on the map with their latest trip. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
       <div id="fleets-list"></div>
@@ -198,6 +233,8 @@
         <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
         <li>Sea conditions: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
         <li>Charts: Traficom, Väylävirasto, Maanmittauslaitos; wrecks and coastal heritage: Museovirasto</li>
+        <li>Weather stations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+        <li>Harbours: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL), via the Overpass API</li>
         <li>Maps: Esri, OpenSeaMap; rescue aircraft: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a></li>
         <li>Sunrise and sunset are worked out on the NAS. Not for navigation.</li>
       </ul>
@@ -231,6 +268,7 @@
   <script src="static/vendor/leaflet/leaflet.js"></script>
   <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/vchart.js"></script>
+  <script src="static/navmath.js"></script>
   <script src="static/app.js"></script>
 </body>
 </html>

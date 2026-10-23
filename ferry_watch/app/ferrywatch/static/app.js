@@ -28,10 +28,20 @@
   let faultsOn = store.get("fw-faults") !== "0";
   let faultsData = null, faultsAt = 0, faultsLayer = null, faultsLoading = false;
   const FAULTS_REFRESH = 30 * 60 * 1000;
+  // Harbours (see below) are drawn differently on the chart, so switching maps redraws them.
+  let harboursOn = store.get("fw-harbours") !== "0";
+  let harbourLayer = null;
+  // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
+  // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
+  // the marks on the first.
+  let markCanvas = null;
+  const sharedCanvas = () => markCanvas || (markCanvas = L.canvas({ padding: 0.3, tolerance: 6 }));
 
   // --- map and layers -------------------------------------------------------
 
-  const map = L.map("map", { zoomControl: false, attributionControl: true, worldCopyJump: true })
+  // A fixed maxZoom: otherwise Leaflet clamps the zoom to the first layer added when the view
+  // switches (the chart's ocean base stops at 10), and tapping Chart at zoom 12 zoomed out to 10.
+  const map = L.map("map", { zoomControl: false, attributionControl: true, worldCopyJump: true, maxZoom: 19 })
     .setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   window.ferryMap = map; // handy from the browser console
@@ -159,7 +169,7 @@
 
   // Tap a buoy, beacon, light, wreck or heritage site on the drawn chart to see what it is.
   map.on("click", (e) => {
-    if (activeLayer !== layers.chart || chartStyle !== "drawn" || map.getZoom() < 11) return;
+    if (route.on || activeLayer !== layers.chart || chartStyle !== "drawn" || map.getZoom() < 11) return;
     const hit = FerryChart.aidAt(map, e.latlng);
     if (!hit) return;
     const link = hit.link && /^https:\/\//.test(hit.link.href || hit.link) &&
@@ -184,6 +194,7 @@
     });
     store.set("fw-layer", name);
     renderChartStyle();
+    restyleHarbours();
   }
 
   document.querySelectorAll("[data-layer]").forEach((b) => {
@@ -628,6 +639,11 @@
   async function focusShip(mmsi, { fit = true } = {}) {
     const entry = ships.get(mmsi);
     if (!entry || editing) return;
+    if (route.on) { // measuring: a tapped ship becomes a point, to see how far it is
+      const p = entry.info.position;
+      if (p) addRoutePoint(L.latLng(p.lat, p.lon));
+      return;
+    }
     clearReplay();
     focused?.line?.remove();
     const mine = { mmsi, line: null, points: [] };
@@ -1308,6 +1324,7 @@
   async function setEditing(on) {
     editing = on;
     if (!on) cancelDrawing();
+    if (on && route.on) setRouteMode(false);
     if (on && focused) unfocus();
     if (on) clearReplay();
     $("areas").hidden = !on;
@@ -1519,6 +1536,7 @@
 
   async function showPassage(p) {
     if (editing) setEditing(false);
+    if (route.on) setRouteMode(false);
     if (focused) unfocus();
     clearReplay();
     const data = await api(`api/track/${p.mmsi}?since=${p.ts - REPLAY_WINDOW}&until=${p.ts + REPLAY_WINDOW}`);
@@ -2049,6 +2067,21 @@
         onChange: async (on) => { await api("api/weather", { method: "POST", body: { enabled: on } }); await loadState(); },
       }),
       switchRow({
+        title: "Weather stations", color: "#0284c7", checked: stationsOn,
+        count: stationsOn && stationsData?.stations ? `${stationsData.stations.length} stations` : "",
+        note: stationsOn && stationsData?.error
+          ? `Couldn't reach the Finnish Meteorological Institute just now (${stationsData.error}). It tries again in a few minutes.`
+          : "Wind at FMI's coastal and sea stations in m/s, the arrow pointing where it blows. Tap one for gusts, temperatures and the past 24 hours. Read every 10 minutes while the map is open.",
+        extra: stationsOn ? windLegend() : null,
+        onChange: async (on) => { setStations(on); renderLayers(); },
+      }),
+      switchRow({
+        title: "Harbours", color: HARBOUR_RED, checked: harboursOn,
+        count: harboursOn && harbourCount ? `${harbourCount} in view` : "",
+        note: harbourNote || "Marinas and harbours from OpenStreetMap with their services, from zoom 11. Tap one for its card. Downloaded once a month.",
+        onChange: async (on) => { setHarbours(on); renderLayers(); },
+      }),
+      switchRow({
         title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
         note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
         extra: trafficOn ? trafficLegend() : null,
@@ -2067,6 +2100,7 @@
         onChange: async (on) => { heritageOn = on; store.set("fw-heritage", on ? "1" : "0"); applyHeritage(); },
       }),
     );
+    renderRoutesList();
     renderFleets();
   }
 
@@ -2311,7 +2345,7 @@
 
   function drawTraffic(rows) {
     if (!trafficLayer) {
-      trafficCanvas = L.canvas({ padding: 0.3 });
+      trafficCanvas = sharedCanvas();
       trafficLayer = L.layerGroup().addTo(map);
     }
     const seen = new Set();
@@ -2439,18 +2473,975 @@
     if (faultsOn && activeLayer === layers.chart) faultsLayer.addTo(map);
   }
 
+  // --- measure and plan a route: nautical miles, true bearings, ETA ------------------------
+  // Tap the map to add points, drag one to move it, tap it to remove it. Not a navigation
+  // tool: no guidance, just planning and measuring. The route being drawn is kept in this
+  // browser between visits; saved routes are kept by the add-on.
+
+  const NavM = window.NavMath;
+  const ROUTE_COLOR = "#c026d3";
+  const ROUTE_MAX_POINTS = 200;
+  const route = { on: false, points: [], undo: [], id: null, name: "", auto: false, status: null };
+  let routeSpeed = Number(store.get("fw-route-speed")) || 25;
+  let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
+  let routeLayer = null; // { group, casing, line, labels, markers }
+  const routeMarkers = [];
+  let savedRoutes = [];
+  const savedLayer = L.layerGroup().addTo(map);
+  try {
+    const draft = JSON.parse(store.get("fw-route-draft") || "null");
+    if (Array.isArray(draft?.points)) Object.assign(route, { points: draft.points, id: draft.id ?? null, name: draft.name || "" });
+  } catch { /* no draft */ }
+
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  const latLngOf = (ll) => [round6(ll.lat), round6(((ll.lng + 540) % 360) - 180)];
+
+  function setRouteMode(on) {
+    if (on === route.on) return;
+    route.on = on;
+    store.set("fw-route-open", on ? "1" : "0");
+    if (on) {
+      if (editing) setEditing(false);
+      if (focused) unfocus();
+      clearReplay();
+      map.closePopup();
+    } else {
+      setAuto(false);
+    }
+    $("route").hidden = !on;
+    $("route-button").setAttribute("aria-pressed", String(on));
+    document.body.classList.toggle("route-open", on);
+    map.getContainer().classList.toggle("measuring", on);
+    $("route-speed").value = String(routeSpeed);
+    $("route-draught").value = String(routeDraught);
+    $("route-name").value = route.name;
+    drawRoute();
+    renderSavedRoutes(); // not clickable while measuring, and the one being edited isn't drawn twice
+  }
+
+  function routeIcon(i, n) {
+    const kind = i === 0 ? " start" : i === n - 1 ? " end" : "";
+    return L.divIcon({ className: "rp-icon", html: `<span class="rp${kind}">${i + 1}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] });
+  }
+
+  function pushUndo() {
+    route.undo.push(JSON.stringify(route.points));
+    if (route.undo.length > 60) route.undo.shift();
+  }
+
+  function undoRoute() {
+    if (!route.undo.length) return;
+    route.points = JSON.parse(route.undo.pop());
+    route.status = null;
+    drawRoute();
+  }
+
+  function addRoutePoint(ll) {
+    if (route.points.length >= ROUTE_MAX_POINTS) return;
+    pushUndo();
+    route.points.push(latLngOf(ll));
+    if (route.auto && route.points.length === 2) planAuto();
+    else drawRoute();
+  }
+
+  function makeRouteMarker() {
+    const m = L.marker([0, 0], { draggable: true, keyboard: false, zIndexOffset: 2000, autoPan: true });
+    m.on("dragstart", () => { pushUndo(); m.dragged = true; });
+    m.on("drag", () => {
+      const i = routeMarkers.indexOf(m);
+      if (i >= 0) route.points[i] = latLngOf(m.getLatLng());
+      scheduleRouteDraw();
+    });
+    // Leaflet may still send a click when a drag ends; that must not delete the point.
+    m.on("dragend", () => { setTimeout(() => { m.dragged = false; }, 60); drawRoute(); });
+    m.on("click", () => {
+      if (m.dragged) return;
+      const i = routeMarkers.indexOf(m);
+      if (i < 0) return;
+      pushUndo();
+      route.points.splice(i, 1);
+      drawRoute();
+    });
+    return m;
+  }
+
+  let routeFrame = 0;
+  function scheduleRouteDraw() {
+    if (!routeFrame) routeFrame = requestAnimationFrame(() => { routeFrame = 0; drawRoute(); });
+  }
+
+  function drawRoute() {
+    if (!route.on) {
+      routeLayer?.group.remove();
+      return;
+    }
+    if (!routeLayer) {
+      const group = L.layerGroup();
+      routeLayer = {
+        group,
+        casing: L.polyline([], { color: "#fff", weight: 7, opacity: 0.85, interactive: false }).addTo(group),
+        line: L.polyline([], { color: ROUTE_COLOR, weight: 3.5, opacity: 1, interactive: false }).addTo(group),
+        labels: L.layerGroup().addTo(group),
+        markers: L.layerGroup().addTo(group),
+      };
+    }
+    if (!map.hasLayer(routeLayer.group)) routeLayer.group.addTo(map);
+    const pts = route.points;
+    routeLayer.casing.setLatLngs(pts);
+    routeLayer.line.setLatLngs(pts);
+    while (routeMarkers.length > pts.length) routeMarkers.pop().remove();
+    pts.forEach((p, i) => {
+      let m = routeMarkers[i];
+      if (!m) {
+        m = makeRouteMarker();
+        routeMarkers.push(m);
+        m.setLatLng(p).addTo(routeLayer.markers);
+      }
+      const ll = m.getLatLng();
+      if (ll.lat !== p[0] || ll.lng !== p[1]) m.setLatLng(p);
+      const key = `${i}/${pts.length}`;
+      if (m.iconKey !== key) { m.iconKey = key; m.setIcon(routeIcon(i, pts.length)); }
+    });
+    drawLegLabels();
+    renderRoutePanel();
+    store.set("fw-route-draft", JSON.stringify({ points: pts, id: route.id, name: route.name }));
+  }
+
+  // "2.2 NM · 214°" on each leg long enough on screen to hold it.
+  function drawLegLabels() {
+    if (!routeLayer) return;
+    routeLayer.labels.clearLayers();
+    const pts = route.points;
+    for (let i = 1; i < pts.length; i++) {
+      const a = map.latLngToContainerPoint(pts[i - 1]), b = map.latLngToContainerPoint(pts[i]);
+      if (a.distanceTo(b) < 120) continue;
+      const leg = NavM.legs([pts[i - 1], pts[i]])[0];
+      L.marker(map.containerPointToLatLng(a.add(b).divideBy(2)), {
+        interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "leg-label", html: `<span>${NavM.nm(leg.nm)} · ${NavM.degrees(leg.bearing)}</span>`, iconSize: null }),
+      }).addTo(routeLayer.labels);
+    }
+  }
+  map.on("zoomend", () => { if (route.on) drawLegLabels(); });
+
+  function routeSummary(points, speed) {
+    const total = NavM.totalNm(points);
+    const eta = NavM.etaSeconds(total, speed);
+    return { total, eta, text: `${NavM.nm(total)} · ${points.length - 1} ${points.length === 2 ? "leg" : "legs"}${eta != null ? ` · ${NavM.duration(eta)} at ${speed} kn` : ""}` };
+  }
+
+  function renderRoutePanel() {
+    const pts = route.points;
+    const legs = NavM.legs(pts);
+    const { total, eta } = routeSummary(pts, routeSpeed);
+    setText($("route-total"), pts.length > 1 ? NavM.nm(total) : pts.length ? "1 point" : "Route");
+    setText($("route-eta"), pts.length > 1 && eta != null ? `${NavM.duration(eta)} · ETA ${clock(now() + eta)}` : "");
+    let hint = "";
+    if (route.status) hint = route.status.text;
+    else if (route.auto) hint = pts.length < 2 ? "Tap the start, then the end." : "From the first point to the last, along the marked fairways. Planning only, not for navigation.";
+    else if (pts.length < 2) hint = "Tap the map to add points. Drag a point to move it, tap it to remove it.";
+    setText($("route-hint"), hint);
+    $("route-hint").hidden = !hint;
+    $("route-hint").classList.toggle("error", Boolean(route.status?.error));
+
+    const items = [];
+    pts.forEach((p, i) => {
+      if (i > 0) {
+        const leg = legs[i - 1];
+        const li = document.createElement("li");
+        li.className = "rp-leg";
+        const t = NavM.etaSeconds(leg.nm, routeSpeed);
+        li.innerHTML = `<span class="leg-n">${i}–${i + 1}</span><strong>${NavM.nm(leg.nm)}</strong><span>${NavM.degrees(leg.bearing)}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
+        items.push(li);
+      }
+      const li = document.createElement("li");
+      li.className = "rp-row";
+      const n = document.createElement("span");
+      n.className = `rp${i === 0 ? " start" : i === pts.length - 1 && i > 0 ? " end" : ""}`;
+      n.textContent = String(i + 1);
+      const where = document.createElement("span");
+      where.className = "grow";
+      where.textContent = NavM.position(p[0], p[1]);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "icon-button plain";
+      del.setAttribute("aria-label", `Remove point ${i + 1}`);
+      del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>';
+      del.addEventListener("click", () => { pushUndo(); route.points.splice(i, 1); drawRoute(); });
+      where.addEventListener("click", () => map.panTo(p));
+      li.append(n, where, del);
+      items.push(li);
+    });
+    $("route-points").replaceChildren(...items);
+    $("route-points").hidden = !items.length;
+    $("route-undo").disabled = !route.undo.length;
+    $("route-clear").disabled = !pts.length && !route.id;
+    $("route-save").disabled = pts.length < 2;
+    $("route-save").textContent = route.id ? "Update" : "Save";
+    $("route-plan").disabled = pts.length < 2;
+    $("route-plan").textContent = pts.length < 2 ? "Tap start and end" : "Plan along fairways";
+  }
+
+  function setAuto(on) {
+    route.auto = on;
+    route.status = null;
+    $("route-auto").hidden = !on;
+    $("route-auto-button").setAttribute("aria-expanded", String(on));
+    $("route-auto-button").classList.toggle("active", on);
+    if (route.on) renderRoutePanel();
+  }
+
+  // The route from the first point to the last along the marked fairways, worked out by
+  // the add-on from the drawn chart's fairway lines. The points can be edited afterwards.
+  async function planAuto() {
+    const pts = route.points;
+    if (pts.length < 2) return;
+    const a = pts[0], b = pts[pts.length - 1];
+    route.status = { text: "Planning along the marked fairways…" };
+    drawRoute();
+    try {
+      const res = await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}`);
+      if (res.error) {
+        route.status = { text: res.error, error: true };
+      } else {
+        pushUndo(); // undo brings back the start and end
+        route.points = res.points;
+        setAuto(false);
+        const notes = [`Along the marked fairways for ${routeDraught} m draught. Check it on the chart: planning only, not for navigation.`,
+          ...(res.warnings || []), res.downloading ? "Some chart areas are still downloading; plan again in a minute for a better route." : ""];
+        route.status = { text: notes.filter(Boolean).join(" ") };
+        map.fitBounds(L.latLngBounds(res.points), { ...routePadding(), maxZoom: 13 });
+      }
+    } catch (err) {
+      route.status = { text: String(err.message || err), error: true };
+    }
+    drawRoute();
+  }
+
+  function routePadding() {
+    const panel = $("route");
+    if (window.innerWidth <= 560) return { paddingTopLeft: [30, 110], paddingBottomRight: [30, window.innerHeight - panel.getBoundingClientRect().top + 30] };
+    return { paddingTopLeft: [panel.offsetWidth + 40, 80], paddingBottomRight: [40, 40] };
+  }
+
+  async function saveRoute() {
+    const body = { name: $("route-name").value.trim(), points: route.points, speed: routeSpeed };
+    if (route.id) body.id = route.id;
+    $("route-save").disabled = true;
+    try {
+      let saved;
+      try {
+        saved = await api("api/routes", { method: "POST", body });
+      } catch (err) {
+        if (!body.id) throw err;
+        delete body.id; // deleted elsewhere meanwhile: save it as a new one
+        saved = await api("api/routes", { method: "POST", body });
+      }
+      route.id = saved.id;
+      route.name = saved.name;
+      $("route-name").value = saved.name;
+      route.status = { text: `Saved as "${saved.name}". It's listed under Menu › On the map.` };
+      await loadRoutes();
+    } catch (err) {
+      route.status = { text: String(err.message || err), error: true };
+    }
+    drawRoute();
+  }
+
+  function clearRoute() {
+    if (route.points.length) pushUndo();
+    route.points = [];
+    route.id = null;
+    route.name = "";
+    route.status = null;
+    $("route-name").value = "";
+    drawRoute();
+    renderSavedRoutes();
+  }
+
+  function editRoute(r) {
+    route.points = r.points.map((p) => [...p]);
+    route.id = r.id;
+    route.name = r.name;
+    route.undo = [];
+    route.status = null;
+    routeSpeed = r.speed || routeSpeed;
+    if (route.on) {
+      $("route-name").value = r.name;
+      $("route-speed").value = String(routeSpeed);
+      drawRoute();
+      renderSavedRoutes();
+    } else {
+      setRouteMode(true);
+    }
+    map.fitBounds(L.latLngBounds(r.points), { ...routePadding(), maxZoom: 13 });
+  }
+
+  $("route-button").addEventListener("click", () => setRouteMode(!route.on));
+  $("route-close").addEventListener("click", () => setRouteMode(false));
+  $("route-undo").addEventListener("click", undoRoute);
+  $("route-clear").addEventListener("click", clearRoute);
+  $("route-save").addEventListener("click", saveRoute);
+  $("route-name").addEventListener("keydown", (e) => { if (e.key === "Enter" && route.points.length > 1) saveRoute(); });
+  $("route-name").addEventListener("input", (e) => { route.name = e.target.value; });
+  $("route-auto-button").addEventListener("click", () => {
+    if (route.auto) { setAuto(false); return; }
+    setAuto(true);
+  });
+  $("route-plan").addEventListener("click", planAuto);
+  $("route-speed").addEventListener("change", (e) => {
+    const v = Number(String(e.target.value).replace(",", "."));
+    if (v >= 0.5 && v <= 60) { routeSpeed = Math.round(v * 10) / 10; store.set("fw-route-speed", String(routeSpeed)); }
+    e.target.value = String(routeSpeed);
+    renderRoutePanel();
+  });
+  $("route-draught").addEventListener("change", (e) => {
+    const v = Number(String(e.target.value).replace(",", "."));
+    if (v >= 0 && v <= 15) { routeDraught = Math.round(v * 10) / 10; store.set("fw-route-draught", String(routeDraught)); }
+    e.target.value = String(routeDraught);
+  });
+  map.on("click", (e) => { if (route.on) addRoutePoint(e.latlng); });
+
+  // Saved routes: a dashed line each, with the name at the start; tap one for its numbers.
+  async function loadRoutes() {
+    savedRoutes = await api("api/routes");
+    renderSavedRoutes();
+  }
+
+  function renderSavedRoutes() {
+    savedLayer.clearLayers();
+    for (const r of savedRoutes) {
+      if (!r.shown || (route.on && route.id === r.id)) continue;
+      const line = L.polyline(r.points, { color: ROUTE_COLOR, weight: 3, opacity: 0.8, dashArray: "8 6", interactive: !route.on });
+      if (!route.on) {
+        line.on("click", (e) => {
+          L.DomEvent.stop(e);
+          const mark = markNear(e.latlng); // routes start and end at harbours: those win
+          if (mark) mark.fire("click");
+          else L.popup({ className: "aid-popup", offset: [0, -2] }).setLatLng(e.latlng).setContent(savedRoutePopup(r)).openOn(map);
+        });
+      }
+      line.addTo(savedLayer);
+      // The name halfway along, where it doesn't hide the harbour the route starts from;
+      // left out while measuring, to keep the route being drawn clear.
+      if (!route.on) {
+        L.tooltip({ permanent: true, direction: "top", offset: [0, -4], className: "route-name-label" })
+          .setLatLng(halfway(r.points)).setContent(esc(r.name)).addTo(savedLayer);
+      }
+      for (const p of r.points) {
+        L.circleMarker(p, { radius: 3, color: "#fff", weight: 1.5, fillColor: ROUTE_COLOR, fillOpacity: 1, interactive: false }).addTo(savedLayer);
+      }
+    }
+    if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderRoutesList();
+  }
+
+  // A harbour or weather station mark under a tap, if any.
+  function markNear(latlng) {
+    const pt = map.latLngToContainerPoint(latlng);
+    const near = (m) => map.hasLayer(m) && map.latLngToContainerPoint(m.getLatLng()).distanceTo(pt) <= m.options.radius + 6;
+    return [...harbourMarks.values()].find(near) || [...stationMarks.values()].find(near) || null;
+  }
+
+  function halfway(points) {
+    const legs = NavM.legs(points);
+    let left = NavM.totalNm(points) / 2;
+    for (let i = 0; i < legs.length; i++) {
+      if (left <= legs[i].nm && legs[i].nm > 0) {
+        const t = left / legs[i].nm, a = points[i], b = points[i + 1];
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      }
+      left -= legs[i].nm;
+    }
+    return points[0];
+  }
+
+  function savedRoutePopup(r) {
+    const el = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = r.name;
+    const sub = document.createElement("div");
+    sub.className = "muted";
+    sub.textContent = routeSummary(r.points, r.speed).text;
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "link-button popup-action";
+    edit.textContent = "Edit route";
+    edit.addEventListener("click", () => { map.closePopup(); editRoute(r); });
+    el.append(title, sub, edit);
+    return el;
+  }
+
+  function renderRoutesList() {
+    const box = $("routes-list");
+    if (!savedRoutes.length) {
+      const p = document.createElement("p");
+      p.className = "small muted";
+      p.textContent = "Measure and plan with the ruler button at the top of the map, then Save. Saved routes are listed here.";
+      box.replaceChildren(p);
+      return;
+    }
+    const list = document.createElement("ul");
+    list.className = "ships-list routes";
+    list.replaceChildren(...savedRoutes.map((r) => {
+      const li = document.createElement("li");
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.className = "switch";
+      toggle.checked = r.shown;
+      toggle.setAttribute("aria-label", `Show ${r.name} on the map`);
+      toggle.addEventListener("change", async () => {
+        toggle.disabled = true;
+        try {
+          await api("api/routes", { method: "POST", body: { id: r.id, shown: toggle.checked } });
+          await loadRoutes();
+        } catch (err) { console.error(err); } finally { toggle.disabled = false; }
+      });
+      const grow = document.createElement("div");
+      grow.className = "grow clickable";
+      const name = document.createElement("span");
+      name.textContent = r.name;
+      const sub = document.createElement("span");
+      sub.className = "small muted";
+      sub.textContent = routeSummary(r.points, r.speed).text;
+      grow.append(name, sub);
+      grow.addEventListener("click", async () => {
+        $("ships-dialog").close();
+        if (!r.shown) {
+          await api("api/routes", { method: "POST", body: { id: r.id, shown: true } });
+          await loadRoutes();
+        }
+        map.fitBounds(L.latLngBounds(r.points), { padding: [40, 80], maxZoom: 13 });
+      });
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => { $("ships-dialog").close(); editRoute(r); });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete "${r.name}"?`)) return;
+        await api(`api/routes/${r.id}`, { method: "DELETE" });
+        if (route.id === r.id) route.id = null;
+        await loadRoutes();
+      });
+      li.append(toggle, grow, edit, del);
+      return li;
+    }));
+    box.replaceChildren(list);
+  }
+
+  // --- weather stations (FMI), live on every map --------------------------------------------
+  // Wind at each coastal and sea station: a disc coloured by strength with the speed in
+  // m/s and a pointer showing where the wind blows. Asked for every 5 minutes while the map
+  // is open (the add-on reads FMI at most every 10).
+
+  let stationsOn = store.get("fw-stations") !== "0";
+  let stationsData = null, stationsTimer = null, stationsLayer = null, stationsCanvas = null;
+  const stationMarks = new Map(); // fmisid -> StationMark
+  const stationHistory = new Map(); // fmisid -> { at, points }
+  const STATIONS_POLL = 5 * 60000;
+  const STATIONS_MIN_ZOOM = 6;
+  const FMI_CREDIT = 'Weather stations © <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">FMI</a> (CC BY 4.0)';
+  // Under 4 m/s light; orange from 11 (the small craft warning), red from 14 (gale).
+  const WIND_STEPS = [[0, "#0ea5e9", "0–3"], [4, "#16a34a", "4–7"], [8, "#ca8a04", "8–10"], [11, "#ea580c", "11–13"],
+    [14, "#dc2626", "14–20"], [21, "#7c3aed", "21+"]];
+  const windColor = (ms) => WIND_STEPS.filter(([from]) => Math.round(ms) >= from).pop()[1];
+
+  function windLegend() {
+    const ul = document.createElement("ul");
+    ul.className = "legend small";
+    for (const [, color, label] of WIND_STEPS) {
+      const li = document.createElement("li");
+      const i = document.createElement("i");
+      i.className = "round";
+      i.style.background = color;
+      li.append(i, `${label} m/s`);
+      ul.append(li);
+    }
+    return ul;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h); // older WebViews
+  }
+
+  const StationMark = L.CircleMarker.extend({
+    _updatePath() {
+      const r = this._renderer;
+      if (!r._drawing || this._empty()) return;
+      const s = this.options.station, p = this._point, ctx = r._ctx;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      if (s.ws != null) {
+        const color = windColor(s.ws), R = 11;
+        if (s.wd != null) { // a pointer on the downwind side
+          const a = (((s.wd + 180) % 360) * Math.PI) / 180;
+          ctx.save();
+          ctx.rotate(a);
+          ctx.beginPath();
+          ctx.moveTo(0, -R - 8);
+          ctx.lineTo(6.5, -R + 3);
+          ctx.lineTo(-6.5, -R + 3);
+          ctx.closePath();
+          ctx.fillStyle = color;
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 2;
+          ctx.lineJoin = "round";
+          ctx.stroke();
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, R, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.font = "700 11.5px system-ui, -apple-system, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(Math.round(s.ws)), 0, 0.5);
+      } else { // a buoy or mareograph: waves or sea temperature in a small tag
+        const text = s.wave != null ? `${s.wave.toFixed(1)} m` : `${Math.round(s.sea)}°`;
+        ctx.font = "700 11px system-ui, -apple-system, sans-serif";
+        const w = ctx.measureText(text).width + 10;
+        roundRect(ctx, -w / 2, -9, w, 18, 9);
+        ctx.fillStyle = "#0f766e";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, 0, 0.5);
+      }
+      ctx.restore();
+    },
+  });
+
+  function setStations(on) {
+    stationsOn = on;
+    store.set("fw-stations", on ? "1" : "0");
+    if (on) pollStations();
+    else {
+      clearTimeout(stationsTimer);
+      stationsLayer?.remove();
+      map.attributionControl.removeAttribution(FMI_CREDIT);
+    }
+  }
+
+  async function pollStations() {
+    clearTimeout(stationsTimer);
+    if (!stationsOn || document.hidden) return;
+    stationsTimer = setTimeout(pollStations, STATIONS_POLL);
+    try {
+      const data = await api("api/stations");
+      if (!stationsOn) return;
+      stationsData = data;
+      drawStations();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function drawStations() {
+    if (!stationsLayer) {
+      stationsCanvas = sharedCanvas();
+      stationsLayer = L.layerGroup();
+    }
+    const seen = new Set();
+    for (const s of stationsData?.stations || []) {
+      seen.add(s.id);
+      let mark = stationMarks.get(s.id);
+      if (!mark) {
+        mark = new StationMark([s.lat, s.lon], { renderer: stationsCanvas, radius: 13, stroke: false, fill: false,
+          bubblingMouseEvents: false, station: s });
+        mark.on("click", () => (route.on ? addRoutePoint(mark.getLatLng()) : openStation(mark)));
+        stationMarks.set(s.id, mark);
+      } else {
+        mark.options.station = s;
+        if (mark.isPopupOpen()) fillStationPopup(mark);
+      }
+    }
+    for (const [id, mark] of stationMarks) {
+      if (seen.has(id)) continue;
+      mark.remove();
+      stationMarks.delete(id);
+    }
+    if (!map.hasLayer(stationsLayer)) {
+      stationsLayer.addTo(map);
+      map.attributionControl.addAttribution(FMI_CREDIT);
+    }
+    declutterStations();
+  }
+
+  // Zoomed out, stations closer than a marker's width give way to their neighbours.
+  function declutterStations() {
+    if (!stationsLayer || !map.hasLayer(stationsLayer)) return;
+    const zoom = map.getZoom();
+    const kept = [];
+    const marks = [...stationMarks.values()].sort((a, b) => (b.options.station.ws ?? -1) - (a.options.station.ws ?? -1));
+    for (const mark of marks) {
+      const pt = map.project(mark.getLatLng(), zoom);
+      const show = zoom >= STATIONS_MIN_ZOOM && kept.every((q) => q.distanceTo(pt) >= 30);
+      if (show) kept.push(pt);
+      if (show && !stationsLayer.hasLayer(mark)) mark.addTo(stationsLayer);
+      else if (!show && stationsLayer.hasLayer(mark) && !mark.isPopupOpen()) mark.remove();
+    }
+  }
+  map.on("zoomend", declutterStations);
+
+  function openStation(mark) {
+    if (!mark.getPopup()) {
+      const el = document.createElement("div");
+      el.className = "stn";
+      el.innerHTML = `<div class="stn-head"><strong class="stn-name"></strong><span class="stn-age small muted"></span></div>
+        <div class="stn-wind"><svg class="stn-arrow" viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg>
+          <span class="stn-speed"></span><span class="stn-gust"></span></div>
+        <div class="stn-facts small"></div><div class="stn-spark"></div>
+        <div class="stn-foot small muted">FMI open data (CC BY 4.0)</div>`;
+      mark.bindPopup(el, { className: "fw-popup", minWidth: 250, maxWidth: 270, offset: [0, -10], autoPanPaddingTopLeft: [12, 110] });
+    }
+    fillStationPopup(mark);
+    mark.openPopup();
+    loadStationHistory(mark);
+  }
+
+  function fillStationPopup(mark) {
+    const s = mark.options.station, el = mark.getPopup()?.getContent();
+    if (!el) return;
+    el.querySelector(".stn-name").textContent = s.name;
+    el.querySelector(".stn-age").textContent = `Updated ${ago(s.ts)}`;
+    const wind = el.querySelector(".stn-wind");
+    wind.hidden = s.ws == null;
+    if (s.ws != null) {
+      const arrow = el.querySelector(".stn-arrow");
+      arrow.style.fill = windColor(s.ws);
+      arrow.style.transform = `rotate(${((s.wd ?? 0) + 180) % 360}deg)`;
+      arrow.style.visibility = s.wd == null ? "hidden" : "";
+      el.querySelector(".stn-speed").innerHTML = `<strong>${s.ws.toFixed(1)}</strong> m/s`;
+      el.querySelector(".stn-gust").textContent = [s.wg != null ? `gusts ${s.wg.toFixed(1)}` : "",
+        s.wd != null ? `from ${compass(s.wd)} ${NavM.degrees(s.wd)}` : ""].filter(Boolean).join(" · ");
+    }
+    const facts = [];
+    if (s.t != null) facts.push(`Air ${s.t.toFixed(1)} °C`);
+    if (s.sea != null) facts.push(`Sea ${s.sea.toFixed(1)} °C`);
+    if (s.wave != null) facts.push(`Waves ${s.wave.toFixed(1)} m`);
+    el.querySelector(".stn-facts").textContent = facts.join(" · ")
+      + (s.sea_from && s.sea_from !== s.name ? ` (${s.sea_from})` : "");
+  }
+
+  async function loadStationHistory(mark) {
+    const s = mark.options.station, el = mark.getPopup().getContent();
+    const box = el.querySelector(".stn-spark");
+    if (s.ws == null) { box.replaceChildren(); return; }
+    let hist = stationHistory.get(s.id);
+    if (!hist || Date.now() - hist.at > 10 * 60000) {
+      if (!hist) box.innerHTML = '<span class="small muted">Loading the past 24 hours…</span>';
+      try {
+        hist = { at: Date.now(), points: (await api(`api/stations/${s.id}/history`)).points };
+        stationHistory.set(s.id, hist);
+        if (stationHistory.size > 20) stationHistory.delete(stationHistory.keys().next().value);
+      } catch (err) {
+        box.innerHTML = '<span class="small muted">The past 24 hours are not available just now.</span>';
+        return;
+      }
+    }
+    box.innerHTML = sparkline(hist.points);
+    mark.getPopup().update();
+  }
+
+  // Wind (line) and gusts (shaded) over the past 24 hours.
+  function sparkline(points) {
+    const pts = points.filter((p) => p[1] != null || p[2] != null);
+    if (pts.length < 2) return '<span class="small muted">No wind history for this station.</span>';
+    const W = 250, H = 64, T = 6, B = 14;
+    const t1 = pts[pts.length - 1][0], t0 = t1 - 24 * 3600;
+    const top = Math.max(5, Math.ceil(Math.max(...pts.map((p) => Math.max(p[1] ?? 0, p[2] ?? 0))) / 5) * 5);
+    const x = (t) => Math.max(0, ((t - t0) / (t1 - t0)) * W);
+    const y = (v) => T + (1 - v / top) * (H - T - B);
+    const path = (i) => pts.filter((p) => p[i] != null).map((p, k) => `${k ? "L" : "M"}${x(p[0]).toFixed(1)} ${y(p[i]).toFixed(1)}`).join("");
+    const gusts = pts.filter((p) => p[2] != null);
+    const area = gusts.length > 1 ? `${path(2)}L${x(gusts[gusts.length - 1][0]).toFixed(1)} ${y(0)}L${x(gusts[0][0]).toFixed(1)} ${y(0)}Z` : "";
+    const last = pts[pts.length - 1];
+    const peak = Math.max(...gusts.map((p) => p[2]), 0);
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Wind and gusts over the past 24 hours">
+      ${[top / 2, top].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="2" y="${y(v) + 9}">${v}</text>`).join("")}
+      ${area ? `<path class="gust" d="${area}"/>` : ""}
+      <path class="wind" d="${path(1)}"/>
+      ${last[1] != null ? `<circle class="now" cx="${x(last[0])}" cy="${y(last[1])}" r="2.5"/>` : ""}
+      <line class="axis" x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}"/>
+      <text class="tick" x="0" y="${H - 2}">24 h ago</text><text class="tick end" x="${W}" y="${H - 2}">now</text>
+    </svg><div class="stn-legend small muted"><span><i class="wind"></i>wind</span><span><i class="gust"></i>gusts${peak ? `, top ${peak.toFixed(0)} m/s` : ""}</span></div>`;
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearTimeout(stationsTimer);
+    else if (stationsOn) pollStations();
+  });
+
+  // --- harbours (OpenStreetMap), from zoom 11 ------------------------------------------------
+  // On the chart: the chart's red sailboat; on the map and satellite views: a blue tag.
+
+  const HARBOUR_RED = "#d0021b";
+  const HARBOUR_MIN_ZOOM = 11;
+  const OSM_CREDIT = 'Harbours © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL)';
+  const harbourMarks = new Map(); // osm id -> HarbourMark
+  let harbourCanvas = null, harbourBox = null, harbourTimer = null, harbourMoveTimer = null, harbourBusy = false;
+  let harbourCount = 0, harbourNote = "";
+  const SERVICE_INFO = {
+    guest: ["Guest berths", '<path d="M12 3v14M8 7h8M5 13a7 7 0 0 0 14 0M5 13H3M19 13h2"/><circle cx="12" cy="4" r="1.5"/>'],
+    fuel: ["Fuel", '<path d="M5 20V5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15M3.5 20h11M5 10h8M13 9l3 2.5V17a1.5 1.5 0 0 0 3 0V8.5L16 6"/>'],
+    toilets: ["Toilets", '<circle cx="7.5" cy="5" r="1.6"/><circle cx="16.5" cy="5" r="1.6"/><path d="M7.5 8v12M5 9h5l-.5 6M14.5 9h4l2 7h-8zM15.5 16v4M17.5 16v4M12 3v18"/>'],
+    shower: ["Shower", '<path d="M4 20V8a4 4 0 0 1 4-4h2a4 4 0 0 1 4 4M10 8h8M11 12v1M14 12v1M17 12v1M12.5 15.5v1M15.5 15.5v1M14 19v1"/>'],
+    sauna: ["Sauna", '<path d="M8 3c-1.5 1.8 1.5 3 0 5M12 3c-1.5 1.8 1.5 3 0 5M16 3c-1.5 1.8 1.5 3 0 5M3 12h18M5 12v8M19 12v8M5 16h14"/>'],
+    electricity: ["Electricity", '<path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z"/>'],
+    water: ["Water", '<path d="M12 3c3 4 6 7.2 6 11a6 6 0 0 1-12 0c0-3.8 3-7 6-11z"/>'],
+    waste: ["Waste", '<path d="M4 7h16M9.5 7V4h5v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/>'],
+    slipway: ["Slipway", '<path d="M2 19h20M3 19l15-9M15 5l3 5-3 2M6 21h0"/>'],
+    restaurant: ["Restaurant", '<path d="M7 3v7M5 3v5a2 2 0 0 0 4 0V3M7 10v11M17 21V3c-2.2 1-3.5 4-3.5 8h3.5"/>'],
+  };
+
+  // A sailboat on the chart, as on Finnish paper charts; a blue tag elsewhere.
+  function boatPath(ctx, s) {
+    ctx.beginPath();
+    ctx.moveTo(-0.5 * s, -7 * s); ctx.lineTo(-0.5 * s, 2.5 * s); ctx.lineTo(-6 * s, 2.5 * s); ctx.closePath(); // mainsail
+    ctx.moveTo(0.8 * s, -5 * s); ctx.lineTo(0.8 * s, 2.5 * s); ctx.lineTo(5 * s, 2.5 * s); ctx.closePath(); // jib
+    ctx.moveTo(-7 * s, 4 * s); ctx.lineTo(7 * s, 4 * s); ctx.lineTo(5 * s, 7 * s); ctx.lineTo(-5 * s, 7 * s); ctx.closePath(); // hull
+  }
+
+  const HarbourMark = L.CircleMarker.extend({
+    _updatePath() {
+      const r = this._renderer;
+      if (!r._drawing || this._empty()) return;
+      const p = this._point, ctx = r._ctx, o = this.options;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.lineJoin = "round";
+      if (o.chart) {
+        boatPath(ctx, 1.15);
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+        ctx.fillStyle = HARBOUR_RED;
+        ctx.fill();
+      } else {
+        roundRect(ctx, -10.5, -10.5, 21, 21, 6);
+        ctx.fillStyle = "#1d4ed8";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
+        ctx.stroke();
+        ctx.translate(0, -1);
+        boatPath(ctx, 0.95);
+        ctx.fillStyle = "#fff";
+        ctx.fill();
+        ctx.translate(0, 1);
+      }
+      if (o.label) { // names when zoomed in
+        ctx.font = "600 12px system-ui, -apple-system, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = o.dark ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)";
+        ctx.fillStyle = o.dark ? "#fff" : (o.chart ? HARBOUR_RED : "#1e3a8a");
+        ctx.strokeText(o.label, 14, 0);
+        ctx.fillText(o.label, 14, 0);
+      }
+      ctx.restore();
+    },
+  });
+
+  function harbourStyle() {
+    const zoom = map.getZoom();
+    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13 };
+  }
+
+  function restyleHarbours() {
+    if (!harbourLayer) return;
+    const st = harbourStyle();
+    for (const mark of harbourMarks.values()) {
+      mark.options.chart = st.chart;
+      mark.options.dark = st.dark;
+      mark.options.label = st.labels ? mark.row[3] : "";
+    }
+    if (harbourCanvas?._map) harbourCanvas._redraw();
+  }
+
+  function setHarbours(on) {
+    harboursOn = on;
+    store.set("fw-harbours", on ? "1" : "0");
+    harbourBox = null;
+    loadHarbours();
+  }
+
+  async function loadHarbours() {
+    clearTimeout(harbourTimer);
+    const visible = harboursOn && map.getZoom() >= HARBOUR_MIN_ZOOM;
+    if (!visible) {
+      if (harbourLayer && map.hasLayer(harbourLayer)) {
+        harbourLayer.remove();
+        map.attributionControl.removeAttribution(OSM_CREDIT);
+      }
+      harbourCount = 0;
+      return;
+    }
+    const view = map.getBounds();
+    if (harbourBox?.contains(view) || harbourBusy || document.hidden) {
+      showHarbourLayer();
+      return;
+    }
+    let box = view.pad(0.5);
+    if ((box.getNorth() - box.getSouth()) * (box.getEast() - box.getWest()) > 3.5) box = view;
+    harbourBusy = true;
+    try {
+      const f = (v) => v.toFixed(4);
+      const data = await api(`api/harbours?bbox=${f(box.getWest())},${f(box.getSouth())},${f(box.getEast())},${f(box.getNorth())}`);
+      harbourNote = data.pending ? "Downloading the harbours from OpenStreetMap…"
+        : data.error && !data.harbours.length ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+      if (data.pending) harbourTimer = setTimeout(loadHarbours, 5000);
+      else harbourBox = box;
+      if (harboursOn) drawHarbours(data.harbours);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      harbourBusy = false;
+    }
+  }
+
+  function showHarbourLayer() {
+    if (harbourLayer && !map.hasLayer(harbourLayer)) {
+      harbourLayer.addTo(map);
+      map.attributionControl.addAttribution(OSM_CREDIT);
+    }
+  }
+
+  function drawHarbours(rows) {
+    if (!harbourLayer) {
+      harbourCanvas = sharedCanvas();
+      harbourLayer = L.layerGroup();
+    }
+    const st = harbourStyle();
+    const seen = new Set();
+    for (const row of rows) {
+      seen.add(row[0]);
+      let mark = harbourMarks.get(row[0]);
+      if (!mark) {
+        mark = new HarbourMark([row[1], row[2]], { renderer: harbourCanvas, radius: 11, stroke: false, fill: false,
+          bubblingMouseEvents: false });
+        mark.on("click", () => (route.on ? addRoutePoint(mark.getLatLng()) : openHarbour(mark)));
+        mark.addTo(harbourLayer);
+        harbourMarks.set(row[0], mark);
+      }
+      mark.row = row;
+      Object.assign(mark.options, { chart: st.chart, dark: st.dark, label: st.labels ? row[3] : "" });
+    }
+    // Keep at most a few hundred: forget those far out of view.
+    if (harbourMarks.size > 800) {
+      for (const [id, mark] of harbourMarks) {
+        if (seen.has(id) || mark.isPopupOpen()) continue;
+        mark.remove();
+        harbourMarks.delete(id);
+      }
+    }
+    harbourCount = [...harbourMarks.values()].filter((m) => map.getBounds().contains(m.getLatLng())).length;
+    showHarbourLayer();
+    if (harbourCanvas._map) harbourCanvas._redraw();
+  }
+
+  function openHarbour(mark) {
+    const [, , , name, kind, services, depth, draught, website, phone] = mark.row;
+    const el = document.createElement("div");
+    el.className = "hb";
+    const title = document.createElement("strong");
+    title.className = "hb-name";
+    title.textContent = name || kind;
+    const sub = document.createElement("div");
+    sub.className = "small muted";
+    sub.textContent = [name ? kind : "", depth != null ? `depth ${depth} m` : "", draught != null ? `max draught ${draught} m` : ""]
+      .filter(Boolean).join(" · ");
+    el.append(title, sub);
+    if (services.length) {
+      const chips = document.createElement("ul");
+      chips.className = "hb-chips";
+      for (const key of services) {
+        const [label, icon] = SERVICE_INFO[key] || [key, ""];
+        const li = document.createElement("li");
+        li.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg>`;
+        li.append(label);
+        chips.append(li);
+      }
+      el.append(chips);
+    } else {
+      const none = document.createElement("div");
+      none.className = "small muted hb-none";
+      none.textContent = "No services marked in OpenStreetMap.";
+      el.append(none);
+    }
+    const links = [];
+    if (website && /^https?:\/\//.test(website)) {
+      const a = document.createElement("a");
+      a.href = website;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = website.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
+      links.push(a);
+    }
+    if (phone) {
+      const a = document.createElement("a");
+      a.href = `tel:${phone.replace(/[^+\d]/g, "")}`;
+      a.textContent = phone;
+      links.push(a);
+    }
+    if (links.length) {
+      const row = document.createElement("div");
+      row.className = "hb-links small";
+      links.forEach((a, i) => row.append(...(i ? [" · ", a] : [a])));
+      el.append(row);
+    }
+    const foot = document.createElement("div");
+    foot.className = "small muted hb-foot";
+    foot.innerHTML = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL)';
+    el.append(foot);
+    L.popup({ className: "fw-popup", minWidth: 230, maxWidth: 280, offset: [0, -8], autoPanPaddingTopLeft: [12, 110] })
+      .setLatLng(mark.getLatLng()).setContent(el).openOn(map);
+  }
+
+  map.on("moveend", () => {
+    clearTimeout(harbourMoveTimer);
+    harbourMoveTimer = setTimeout(loadHarbours, 300);
+  });
+  map.on("zoomend", restyleHarbours);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadHarbours(); });
+
   // --- keyboard and small things ------------------------------------------------------
 
   let popupOpen = false;
   map.on("popupopen", () => { popupOpen = true; });
   map.on("popupclose", () => { popupOpen = false; });
 
-  // Escape backs out of one thing at a time: drawing, a popup, the sheet, the ship card, a replay.
+  // Escape backs out of one thing at a time: a route field being typed in, drawing, a popup,
+  // the sheet, the route tool, the ship card, a replay.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || $("ships-dialog").open) return;
-    if (drawing) cancelDrawing();
+    if ($("ships-dialog").open) return;
+    const typing = e.target instanceof HTMLInputElement;
+    if (route.on && !typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      undoRoute();
+      return;
+    }
+    if (e.key !== "Escape") return;
+    if (typing && e.target.closest("#route")) e.target.blur();
+    else if (drawing) cancelDrawing();
     else if (popupOpen) map.closePopup();
     else if (!$("conditions-sheet").hidden) toggleConditions(false);
+    else if (route.on) setRouteMode(false);
     else if (focused) unfocus();
     else if (replayLayer) clearReplay();
     else if (editing) setEditing(false);
@@ -2486,5 +3477,9 @@
     else if (!focusFromNotification()) fitAllShips();
     connectSocket();
     if (trafficOn) pollTraffic();
+    if (stationsOn) pollStations();
+    loadHarbours();
+    loadRoutes().catch(console.error);
+    if (route.points.length && store.get("fw-route-open") === "1") setRouteMode(true);
   })();
 })();

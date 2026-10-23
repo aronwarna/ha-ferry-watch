@@ -24,8 +24,8 @@ from array import array
 from typing import Any
 
 from .geo import distance_m
-from .vchart import (BLOCK_Z, HALF, UNITS, block_bounds, clip_line, lonlat_to_mercator, mercator_to_lonlat,
-                     near_finland, simplify)
+from .vchart import (BLOCK_Z, HALF, LEVELS, UNITS, block_bounds, clip_line, lonlat_to_mercator,
+                     mercator_to_lonlat, near_finland, simplify)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,23 +40,30 @@ PAD_MAX_M = 10000  # ...a little more on long routes, which may detour
 MAX_BLOCKS = 60
 BLOCK_WAIT = 8  # s to read one block that's on disk
 CACHE_SECONDS = 300
+CACHE_MAX_BYTES = 1024 * 1024  # a bigger graph isn't kept between requests
+FULL_LEVEL = len(LEVELS) - 1  # the blocks' full-detail level
 MAX_POINTS = 60  # in the answer
 SIMPLIFY_M = 20
 
 
 class Graph:
     """Nodes (mercator x/y and lat/lon) and undirected edges in compressed rows: node u's
-    neighbours are to[off[u]:off[u+1]], at distances w (metres)."""
+    neighbours are to[off[u]:off[u+1]], at distances w (metres). comp[u] numbers the
+    connected piece of network the node is on."""
 
-    __slots__ = ("x", "y", "lat", "lon", "off", "to", "w")
+    __slots__ = ("x", "y", "lat", "lon", "off", "to", "w", "comp")
 
     def __init__(self) -> None:
         self.x, self.y, self.lat, self.lon = array("d"), array("d"), array("d"), array("d")
-        self.off, self.to, self.w = array("i", [0]), array("i"), array("f")
+        self.off, self.to, self.w, self.comp = array("i", [0]), array("i"), array("f"), array("i")
 
     @property
     def n(self) -> int:
         return len(self.x)
+
+    def nbytes(self) -> int:
+        return sum(a.itemsize * len(a) for a in (self.x, self.y, self.lat, self.lon, self.off, self.to, self.w,
+                                                 self.comp))
 
     def edges(self):
         for u in range(self.n):
@@ -187,11 +194,28 @@ def build_graph(lines: list[list[tuple[float, float]]]) -> Graph:
             g.to[fill[a]] = b
             g.w[fill[a]] = w
             fill[a] += 1
+    del edges, fill
+    g.comp = array("i", [-1]) * g.n
+    for root in range(g.n):
+        if g.comp[root] >= 0:
+            continue
+        g.comp[root] = root
+        stack = [root]
+        while stack:
+            u = stack.pop()
+            for k in range(g.off[u], g.off[u + 1]):
+                v = g.to[k]
+                if g.comp[v] < 0:
+                    g.comp[v] = root
+                    stack.append(v)
     return g
 
 
 def _nearest_edges(g: Graph, x: float, y: float, limit: int) -> list[tuple[float, int, int, float, float]]:
-    """The fairway pieces nearest a point: (ground metres, u, v, foot x, foot y)."""
+    """The fairway pieces nearest a point: (ground metres, u, v, foot x, foot y). Besides
+    the nearest few, the nearest piece of each separate part of the network within
+    CONNECT_M, so a boat channel that doesn't quite reach the main fairway in the chart
+    data still lets the start or end join either."""
     k = _metres_per_unit(y)
     found = []
     for u, v in g.edges():
@@ -202,7 +226,15 @@ def _nearest_edges(g: Graph, x: float, y: float, limit: int) -> list[tuple[float
         fx, fy = ax + t * dx, ay + t * dy
         found.append((math.hypot(fx - x, fy - y) * k, u, v, fx, fy))
     found.sort()
-    return found[:limit]
+    out = found[:limit]
+    parts = {g.comp[f[1]] for f in out}
+    for f in found[limit:]:
+        if f[0] > CONNECT_M or len(out) >= limit * 2:
+            break
+        if g.comp[f[1]] not in parts:
+            parts.add(g.comp[f[1]])
+            out.append(f)
+    return out
 
 
 def find_route(g: Graph, start: tuple[float, float], end: tuple[float, float]) -> dict[str, Any]:
@@ -313,7 +345,7 @@ def blocks_between(start: tuple[float, float], end: tuple[float, float]) -> list
 class AutoRouter:
     def __init__(self, vchart: Any):
         self.vchart = vchart
-        self._cache: dict[tuple, tuple[float, Graph]] = {}
+        self._cache: tuple[tuple, float, Graph] | None = None  # one graph: (key, built, graph)
         self._downloading: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
@@ -327,27 +359,38 @@ class AutoRouter:
             except Exception:  # noqa: BLE001 - a block that fails is just left out
                 _LOGGER.debug("Chart block %s for route planning failed", key, exc_info=True)
 
+    async def _fairways(self, bx: int, by: int) -> Any:
+        """A block's fairway lines layer. Read from the block's fairway file alone when the
+        chart offers that, so depths and soundings aren't loaded (nor the chart's own block
+        cache, which the panel's tiles use, churned); otherwise through the whole block."""
+        read_parts = getattr(self.vchart, "_read_parts", None)
+        if read_parts is not None:
+            layers = await asyncio.to_thread(read_parts, bx, by, ["fw"], FULL_LEVEL)
+        else:
+            layers = await asyncio.wait_for(self.vchart.block(bx, by), BLOCK_WAIT)
+        return (layers or {}).get("fline")
+
     async def _graph(self, keys: list[tuple[int, int]], draught: float) -> Graph:
         cache_key = (tuple(keys), round(draught, 1))
         now = time.monotonic()
-        self._cache = {k: v for k, v in self._cache.items() if now - v[0] < CACHE_SECONDS}
-        if cache_key in self._cache:
-            return self._cache[cache_key][1]
+        if self._cache and (now - self._cache[1] >= CACHE_SECONDS or self._cache[0] != cache_key):
+            self._cache = None
+        if self._cache:
+            return self._cache[2]
         lines: list[list[tuple[float, float]]] = []
         for bx, by in keys:  # one block at a time: only its fairway lines are kept
             try:
-                layers = await asyncio.wait_for(self.vchart.block(bx, by), BLOCK_WAIT)
-            except asyncio.TimeoutError:
+                fline = await self._fairways(bx, by)
+            except (asyncio.TimeoutError, OSError, ValueError, EOFError) as err:
+                _LOGGER.debug("Chart block %s,%s left out of route planning: %s", bx, by, err)
                 continue
-            fline = (layers or {}).get("fline")
             if fline is not None:
                 lines += block_lines(fline, bx, by, draught)
-            del layers, fline
+            del fline
         graph = await asyncio.to_thread(build_graph, lines)
         del lines
-        while len(self._cache) >= 2:
-            self._cache.pop(next(iter(self._cache)))
-        self._cache[cache_key] = (now, graph)
+        # Kept for re-planning in the same area only while small; a big one goes right away.
+        self._cache = (cache_key, now, graph) if graph.nbytes() <= CACHE_MAX_BYTES else None
         return graph
 
     async def route(self, start: tuple[float, float], end: tuple[float, float], draught: float) -> dict[str, Any]:
