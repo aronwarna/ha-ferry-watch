@@ -98,7 +98,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 6  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 7  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -269,7 +269,7 @@ HERITAGE_REGIONS = 6  # regions kept in RAM
 DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "fline": MIN_Z,
-               "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 13,
+               "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
                "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12}
@@ -1450,8 +1450,13 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["aid"] = aids
     if "light" in rows:
         # Light characters as printed next to the light, e.g. "Iso WRG 4s".
+        # Zoomed out, only the characters of the major lights drawn (as overview charts do).
+        major = None if z >= 13 else {((round(a[0]) >> 2) + dx, (round(a[1]) >> 2) + dy)
+                                      for a in tile.get("aid", ()) if a[2] in MAJOR_AIDS
+                                      for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
         tile["light"] = [[px, py, str(t).strip()] for px, py, (t,) in rows["light"]
-                         if t and str(t).strip() not in ("-", "")]
+                         if t and str(t).strip() not in ("-", "")
+                         and (major is None or (round(px) >> 2, round(py) >> 2) in major)]
     if "sounding" in rows:
         tile["sounding"] = _thin_soundings([[px, py, p[0]] for px, py, p in rows["sounding"]],
                                            64 if z == 13 else 128)  # sparse at zoom 12, as on charts

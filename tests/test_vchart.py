@@ -821,3 +821,15 @@ def test_dense_land_block_stays_small(tmp_path):
     assert len(levels[1]["height"].co) < len(built["height"].co)
     assert sum(L.nbytes() for L in built.values()) < 10 * (kept + 6000) + 50_000
     assert vchart.read_overview(path) == {}
+
+
+def test_major_light_characters_zoomed_out(tmp_path):
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+        t11, _ = await chart.tile(*tile_at(60.005, 24.40, 11))
+        t13, _ = await chart.tile(*tile_at(60.005, 24.40, 13))
+        return t11, t13
+
+    t11, t13 = asyncio.run(run())
+    assert any(t == "LFl(2) 15s" for _, _, t in t11.get("light", ()))  # Porkkala lighthouse
+    assert len(t11.get("light", ())) < len(t13.get("light", ())) or len(t13["light"]) == 1

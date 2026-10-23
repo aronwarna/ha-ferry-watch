@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.13.0
+
+- **Drawn chart, closer to the paper chart**: labels are now placed across the
+  whole screen so names, light characters and depth figures no longer sit on
+  top of each other; paper-chart buoys, beacons and bold light flares; major
+  lights' characters from zoom 10; heritage names only when zoomed in.
+- **Traffic separation schemes** (lanes with direction arrows, separation
+  zones and lines, precautionary areas, deep-water routes), pilot boarding
+  places, radio calling-in points, VTS limits and water traffic signs.
+- **Land detail** with the Land Survey key: height curves, lakes, roads,
+  railways, buildings, masts, chimneys and wind turbines.
+- The drawn chart now works zoomed out (from zoom 8) and along the whole
+  Finnish coast, Gulf of Bothnia and Archipelago Sea included.
+- Fixed the black areas over the sea in the zoomed-out raster chart.
+- **Route tool** (ruler button): tap to measure and plan routes in nautical
+  miles with bearings and ETA, save them, and **Auto** to plan along the
+  marked fairways for your draught. For planning only, not navigation.
+- **Weather stations**: live wind from all FMI coastal stations on the map,
+  with gusts, temperature and a 24 h graph.
+- **Harbours** from OpenStreetMap with their services.
+- Uses less memory: smaller chart caches and download pages, parsed chart
+  data released after 5 minutes idle.
+
 ## 0.12.0
 
 - **Drawn chart restyled** to look like Traficom's scanned chart: depth tints
