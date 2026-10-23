@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.14.0
+
+- **Ship card on phones** is now a sheet: drag it down to a small banner with
+  the ship's name and picture, tap the banner to open it again. "Show whole
+  track" folds it down by itself so the track is visible.
+- **Track playback** like MarineTraffic: play the selected ship's voyage or a
+  passage from Stats, with a time slider, speeds from ×60 to ×3600 and the
+  track coloured by speed.
+- **Aircraft history**: rescue, police and Border Guard flights are now stored
+  while the aircraft switch is on. A new view shows the last 24 h, 7 days,
+  30 days or year as glowing lines or a heat map, with a time-lapse and a tap
+  on any flight for its times, altitude and distance.
+- A tapped aircraft now shows its whole flight as a thick line coloured by
+  altitude.
+- **Weather per passage**: each passage stores the wind at Mäkiluoto (speed,
+  gusts, direction), the water temperature and, December to April, sea ice
+  at Porkkala (FMI ice thickness and the Copernicus ice chart). Stats shows it
+  on each passage and in a new Weather section comparing inner and outer
+  route by wind strength, wind direction and ice. Tap a calendar day to list
+  its passages.
+- Sailings on the outer route are now counted when a ship crosses Porkkala's
+  longitude without taking the inner route, so the comparison has both sides.
+  They don't send alerts.
+
 ## 0.13.0
 
 - **Drawn chart, closer to the paper chart**: labels are now placed across the
