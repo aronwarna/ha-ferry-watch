@@ -395,3 +395,4 @@ body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
   .wx-ice.ice { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; }
   .ah-chips button[aria-pressed="true"] { background: var(--text); color: #111318; }
 }
+#version { overflow-wrap: anywhere; }

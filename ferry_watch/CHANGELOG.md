@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.2
+
+- Settings: chart problems name only the service, so the long web address
+  no longer makes the menu scroll sideways.
+
 ## 0.16.1
 
 - Chart download no longer stalls for hours when the Land Survey service

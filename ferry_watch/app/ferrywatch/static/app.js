@@ -1322,7 +1322,7 @@
       ? `Traficom (${state.chart.layers.map((l) => l.title).join(", ")})` : "OpenSeaMap sea marks";
     const vc = state.vchart;
     const drawn = vc ? ` · Drawn chart: ${vc.blocks} areas downloaded (${vc.mb} MB)${
-      Object.keys(vc.errors || {}).length ? `, problems with ${Object.entries(vc.errors).map(([k, e]) => `${k} (${e})`).join(", ")}` : ""}` : "";
+      Object.keys(vc.errors || {}).length ? `, problems with ${Object.entries(vc.errors).map(([k, e]) => `${k} (${String(e).replace(/https?:\/\/([^/\s]+)\S*/g, "$1")})`).join(", ")}` : ""}` : "";
     $("version").textContent = `Ferry Watch ${state.version} · ${state.positions_stored.toLocaleString()} positions stored · Scanned chart: ${chartSource}${drawn}`;
   }
 
