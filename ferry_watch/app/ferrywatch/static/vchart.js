@@ -17,7 +17,7 @@
   const C = {
     land: "#f9efca",
     coast: "#000000",
-    depth: ["#c9e0b4", "#e4f1fb", "#e4f1fb", "#e4f1fb", "#ffffff"], // drying, 0-3, 3-6, 6-10, deeper
+    depth: ["#c9e0b4", "#e4f1fb", "#e4f1fb", "#e4f1fb", "#ffffff", "#ffffff"], // drying, 0-3, 3-6, 6-10, deeper, unsurveyed
     contour: "#00a3e7", // 10 m and deeper, and their labels
     contourShallow: "#008bc5", // 3 m dotted, 6 m dashed
     sounding: "#000000",
@@ -40,7 +40,7 @@
     tssLane: "rgba(157, 50, 137, 0.07)",
     tssZone: "rgba(157, 50, 137, 0.26)",
     tssSep: "rgba(157, 50, 137, 0.5)",
-    hatch: "#8e9599",
+    unsurveyed: "#a9cce8", // the key's lines across an unsurveyed area
   };
   const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", Roboto, sans-serif';
   const SERIF = '"Times New Roman", Times, "Liberation Serif", "Noto Serif", serif';
@@ -867,16 +867,17 @@
     }
   }
 
+  // An unsurveyed area as the key draws it: thin light blue lines across, on the water's white.
   function hatch(ctx, rings, e, unit) {
     ctx.save();
     ctx.beginPath();
     for (const ring of rings) path(ctx, ring, true);
     ctx.clip("evenodd");
     ctx.beginPath();
-    const step = 7 * unit;
-    for (let d = -e; d < e * 2; d += step) { ctx.moveTo(d, 0); ctx.lineTo(d + e, e); }
-    ctx.strokeStyle = C.hatch;
-    ctx.lineWidth = 0.7 * unit;
+    const step = 3 * unit;
+    for (let y = step / 2 - e * 0.1; y < e * 1.1; y += step) { ctx.moveTo(-e * 0.1, y); ctx.lineTo(e * 1.1, y); }
+    ctx.strokeStyle = C.unsurveyed;
+    ctx.lineWidth = 0.6 * unit;
     ctx.stroke();
     ctx.restore();
   }
@@ -895,11 +896,11 @@
         strokeRings(ctx, rings, C.magenta, 1.3 * unit, [10 * unit, 6 * unit]);
         if (kind === "twoway" && orient != null) areaArrows(ctx, rings, orient, e, s, unit, true, boxes);
       } else if (kind === "dredged") {
-        fillRings(ctx, rings, C.fairwayArea);
+        // The water under it is in the band of its least depth (painted with the depths).
         strokeRings(ctx, rings, "#7b8184", 0.8 * unit, [5 * unit, 3 * unit]);
       } else if (kind === "unsurveyed") {
         hatch(ctx, rings, e, unit);
-        strokeRings(ctx, rings, C.hatch, 0.8 * unit);
+        strokeRings(ctx, rings, C.black, 0.8 * unit, [6 * unit, 3 * unit]);
       } else {
         strokeRings(ctx, rings, C.magenta, unit);
       }

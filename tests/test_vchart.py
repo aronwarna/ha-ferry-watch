@@ -894,3 +894,109 @@ def test_simulated_coast_has_cables_and_depths(tmp_path):
     assert tile["cable"] and all(kind == "cable" and len(line) >= 4 for kind, line in tile["cable"])
     assert {row[0] for row in tile["depth"]} >= {1, 2, 3, 4}
     assert tile["rock"] and tile["sounding"]
+
+
+def _covered(rows, x, y):
+    """The rows (of [first, ...rings] or [[...rings]]) whose rings hold a point, even-odd."""
+    def inside(ring):
+        hit = False
+        pts = list(zip(ring[0::2], ring[1::2]))
+        j = len(pts) - 1
+        for i, (xi, yi) in enumerate(pts):
+            xj, yj = pts[j]
+            if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                hit = not hit
+            j = i
+        return hit
+    return [row for row in rows if sum(inside(r) for r in row if isinstance(r, list)) % 2]
+
+
+def _square(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def test_dredged_and_unsurveyed_holes_are_water():
+    # A block off Porkkala's coast (inside Finnish waters, away from the sea border) whose
+    # depth area has two holes: a dredged area 11 m deep and an unsurveyed area.
+    _, bx, by = tile_at(59.95, 24.3, vchart.BLOCK_Z)
+    assert not vchart.near_sea_border(bx, by)
+    whole, dredged, unsurveyed = _square(0, 0, 65536, 65536), _square(8000, 8000, 24000, 24000), \
+        _square(40000, 40000, 56000, 56000)
+    full = vchart.layers_from_rows({
+        "depth": [[[10, 20], None, [whole, dredged, unsurveyed]]],
+        "tss": [[["dredged", None, 11.0], None, [dredged]], [["unsurveyed", None, None], None, [unsurveyed]]],
+    })
+    levels = vchart.make_levels(full)
+    overview = vchart.make_overview(full)
+    for z in (8, 9, 10, 11, 12, 14):
+        data = overview if z <= vchart.OVERVIEW_LEVEL[0] else levels[vchart.level_for(z)]
+        n = 2 ** (z - vchart.BLOCK_Z)
+        if z >= vchart.BLOCK_Z:
+            # The tile with the dredged area's middle in it (and, at zoom 11, the others').
+            size = vchart.UNITS / n
+            tx, ty = bx * n + int(16000 // size), by * n + int(16000 // size)
+            ox, oy = (tx - bx * n) * size, (ty - by * n) * size
+            k = vchart.EXTENT / size
+            spots = {"dredged": (16000, 16000), "unsurveyed": (48000, 48000), "deep": (32000, 32000)}
+            spots = {name: ((px - ox) * k, (py - oy) * k) for name, (px, py) in spots.items()
+                     if z == vchart.BLOCK_Z or name == "dredged"}
+        else:
+            m = 2 ** (vchart.BLOCK_Z - z)
+            tx, ty = bx // m, by // m
+            k = vchart.EXTENT / (vchart.UNITS * m)
+            ox, oy = (bx - tx * m) * vchart.UNITS, (by - ty * m) * vchart.UNITS
+            spots = {"dredged": ((ox + 16000) * k, (oy + 16000) * k),
+                     "unsurveyed": ((ox + 48000) * k, (oy + 48000) * k)}
+        tile = vchart.make_tile(z, tx, ty, {(bx, by): data})
+        for name, (x, y) in spots.items():
+            bands = [row[0] for row in _covered(tile["depth"], x, y)]
+            want = {"dredged": [4], "unsurveyed": [vchart.UNSURVEYED], "deep": [4]}[name]
+            assert bands == want, (z, name, bands)
+        kinds = {row[0] for row in tile.get("tss", ())}
+        if z >= vchart.WATER_TSS_LIMITS_Z:
+            assert kinds == {"dredged", "unsurveyed"} if z <= vchart.BLOCK_Z else "dredged" in kinds
+        else:
+            assert not kinds & set(vchart.WATER_TSS)  # zoomed out, only the water
+
+
+def test_dredged_area_takes_the_band_of_its_least_depth():
+    whole, hole = _square(0, 0, 65536, 65536), _square(8000, 8000, 24000, 24000)
+    layers = vchart.layers_from_rows({
+        "depth": [[[10, 20], None, [whole, hole]]],
+        "tss": [[["dredged", None, 5.5], None, [hole]]],
+    })
+    tile = vchart.make_tile(11, 0, 0, {(0, 0): layers})
+    assert [row[0] for row in _covered(tile["depth"], 16000 * 512 / 65536, 16000 * 512 / 65536)] == [2]
+    # A tss part from before PART_REV (no least depth): deeper water, and fetched again.
+    old = vchart.layers_from_rows({"depth": [[[10, 20], None, [whole, hole]]],
+                                   "tss": [[["dredged", None], None, [hole]]]})
+    tile = vchart.make_tile(11, 0, 0, {(0, 0): old})
+    assert [row[0] for row in _covered(tile["depth"], 125, 125)] == [4]
+    assert vchart._fetch_again({"missing": []}, "1_2.tss.fwc")
+    assert not vchart._fetch_again({"missing": [], "rev": vchart.PART_REV["tss"]}, "1_2.tss.fwc")
+    assert not vchart._fetch_again({"missing": []}, "1_2.fwc")
+    assert vchart._fetch_again({"missing": ["depth"]}, "1_2.fwc")
+
+
+def test_sea_border_gap_is_sea_and_islands_land():
+    # A block on the Gulf of Finland's sea border south of Porkkala, where Traficom's depths
+    # stop short of FINNISH_WATERS's border: they cover the block's north half only, with an
+    # island in them.
+    _, bx, by = tile_at(59.74, 24.3, vchart.BLOCK_Z)
+    assert vchart.near_sea_border(bx, by)
+    north, island = _square(0, 0, 65536, 30000), _square(20000, 10000, 26000, 16000)
+    layers = vchart.layers_from_rows({"depth": [[[20, 50], None, [north, island]]]})
+    k = vchart.EXTENT / vchart.UNITS
+    tile = vchart.make_tile(11, bx, by, {(bx, by): layers})
+    # Find a spot in the gap that's inside FINNISH_WATERS (the border crosses the block).
+    gap = next((x, y) for y in range(34000, 65536, 2000) for x in range(1000, 65536, 4000)
+               if vchart._in_finnish_waters(bx, by, x, y))
+    gx, gy = gap[0] * k, gap[1] * k
+    assert [row[0] for row in _covered(tile["depth"], gx, gy)] == [4]
+    assert not any(_covered([[r]], gx, gy) for r in tile["land"])
+    ix, iy = 23000 * k, 13000 * k
+    assert not _covered(tile["depth"], ix, iy)
+    assert any(_covered([[r]], ix, iy) for r in tile["land"])
+    # Away from the border, land is the whole Finnish area under the depths, as before.
+    assert not vchart.near_sea_border(*tile_at(60.1, 24.4, vchart.BLOCK_Z)[1:])
+    assert not vchart.near_sea_border(*tile_at(65.8, 24.2, vchart.BLOCK_Z)[1:])  # Tornio

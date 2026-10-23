@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.3
+
+- Drawn chart: no more tan "land" out in the open sea. Out by the sea border
+  south of Porkkala and Helsinki, the Finnish waters beyond Traficom's depth
+  data are now drawn as open water (only islands there are land), and dredged
+  and unsurveyed areas are water too instead of land with a coastline round
+  them, from zoom 8 on.
+- A dredged area is coloured by the depth it is dredged to, with a dashed
+  limit; an unsurveyed area is white with thin blue lines and a dashed black
+  limit, as in Traficom's symbol key.
+- The routeing part of the chart is downloaded once more, in the background,
+  to pick up dredged depths.
 ## 0.16.2
 
 - Settings: chart problems name only the service, so the long web address

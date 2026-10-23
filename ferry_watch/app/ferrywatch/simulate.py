@@ -518,6 +518,8 @@ SIM_MAINLAND = [(23.96, 60.10), (24.20, 60.10), (24.25, 60.074), (24.33, 60.071)
 # The traffic separation scheme south of Porkkala: lanes running east-west with a separation
 # zone between them, a precautionary area at the east end (lat ranges, lon range).
 SIM_TSS_WEST, SIM_TSS_EAST = 23.75, 24.92
+# Where the made-up Finnish depths stop short of the sea border: (west, east, south) degrees.
+SIM_DATA_SOUTH = (23.9, 24.9, 59.80)
 SIM_LANE_NORTH = (59.905, 59.935)  # westbound
 SIM_TSS_ZONE = (59.89, 59.905)
 SIM_LANE_SOUTH = (59.86, 59.89)  # eastbound
@@ -589,14 +591,22 @@ def _fake_chart_layer(key: str, bbox) -> list[dict]:
     if key == "depth":
         # Traficom's depths end at the Finnish sea border (the Estonian side is drawn from
         # the foreign stand-ins below).
-        from .vchart import FINNISH_WATERS_M, clip_ring
-        outer = [list(p) for p in clip_ring(FINNISH_WATERS_M, minx, miny, maxx, maxy)]
+        # South of Porkkala they stop a few km short of it, as Traficom's seem to (the tan
+        # band ben saw at zoom 10), and the dredged and unsurveyed areas are holes in them:
+        # in S-57 those aren't depth areas.
+        from .vchart import FINNISH_WATERS_M, clip_ring, lonlat_to_mercator
+        cut = lonlat_to_mercator(0, SIM_DATA_SOUTH[2])[1]
+        lon_mid = (minx + maxx) / 2 * 180 / 20037508.342789244
+        bottom = max(miny, cut) if SIM_DATA_SOUTH[0] <= lon_mid <= SIM_DATA_SOUTH[1] else miny
+        outer = [list(p) for p in clip_ring(FINNISH_WATERS_M, minx, bottom, maxx, maxy)] if bottom < maxy else []
         if len(outer) < 3:
             return []
         outer.append(outer[0])
+        holes = [area["geometry"]["coordinates"][0] for tag in ("dredged", "unsurveyed")
+                 for area in _fake_routeing_and_land(f"tss.{tag}")]
         feats.append({"geometry": {"type": "Polygon", "coordinates": [outer] + [
             _sim_ring(lon, lat, r, b[3]) for lon, lat, r in SIM_ISLANDS] + [_sim_line(SIM_MAINLAND + SIM_MAINLAND[:1]),
-                                                                              simscene.box_ring()]},
+                                                                              simscene.box_ring()] + holes},
             "properties": {"DRVAL1": 10, "DRVAL2": 50}})
         for d1, d2, inner, outer_s in bands:
             for lon, lat, r in SIM_ISLANDS:

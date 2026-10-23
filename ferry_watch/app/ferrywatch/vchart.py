@@ -42,6 +42,7 @@ import sys
 import time
 from array import array
 from collections import OrderedDict
+from functools import lru_cache
 from itertools import chain
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -101,7 +102,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 9  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 10  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -147,7 +148,7 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
         "twoway": ("rajoitettu:TwoWayRoutePart_A",),
         "dredged": ("rajoitettu:DredgedArea_A",),
         "unsurveyed": ("rajoitettu:UnsurveyedArea_A",),
-    }, "area", ("_src", "orient")),
+    }, "area", ("_src", "orient", "drval1")),
     # Lines; areas given here (VTS areas) are kept as their outlines.
     "tssline": (TRAFICOM_WFS, {
         "sep": ("rajoitettu:TrafficSeparationLine_L", "rajoitettu:TrafficSeaparationLine_L"),
@@ -208,6 +209,9 @@ PARTS: dict[str, tuple[str, ...]] = {
            "pilot", "xland"),
 }
 FOREIGN_PART = "fx"
+# A part's file is fetched again when its revision here is newer than the one it was written
+# with (tss 1: dredged areas' least depth, and dredged and unsurveyed areas in the overview).
+PART_REV = {"tss": 1}
 
 MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
 # Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
@@ -232,6 +236,10 @@ WRECK_TYPES = {16721: 1, 16722: 2, 16712: 3}
 CONTOURS = (3, 6, 10, 20, 50, 100, 200)
 OVERVIEW_CONTOURS = (20, 50, 100, 200)
 OVERVIEW_TSS = ("lane", "zone", "prec", "deep", "twoway")  # routeing drawn on overview charts
+# Dredged and unsurveyed areas aren't depth areas in S-57, so the depth areas have holes
+# there. They are painted as water (see _format), from the overview zooms on.
+WATER_TSS = ("dredged", "unsurveyed")
+WATER_TSS_LIMITS_Z = 10  # their limits (dashed outline, hatching) only from this zoom
 OVERVIEW_TSSLINE = ("sep", "bnd")
 OVERVIEW_FAIRWAYS = (1, 2)  # merchant fairways (VL1-VL2)
 
@@ -629,7 +637,7 @@ def _shown(key: str, props: tuple, max_z: int, classes: dict[int, int]) -> bool:
         return max_z > 13 or _multiple(props[0], 10)  # zoom 12 shows every 20 m, 13 every 10 m
     if max_z <= OVERVIEW_LEVEL[0]:
         if key == "tss":
-            return props[0] in OVERVIEW_TSS
+            return props[0] in OVERVIEW_TSS or props[0] in WATER_TSS
         if key == "tssline":
             return props[0] in OVERVIEW_TSSLINE
         if key == "fline":
@@ -881,6 +889,17 @@ FINNISH_WATERS_M = [lonlat_to_mercator(lon, lat) for lon, lat in FINNISH_WATERS]
 NEAR_M = 30000  # Finnish chart data reaches a little past FINNISH_WATERS
 
 
+def _in_poly(px: float, py: float, poly: list) -> bool:
+    inside = False
+    k = len(poly) - 1
+    for n, (xi, yi) in enumerate(poly):
+        xj, yj = poly[k]
+        if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+            inside = not inside
+        k = n
+    return inside
+
+
 def near_finland(bounds: tuple[float, float, float, float]) -> bool:
     """Whether a block could hold Finnish chart data (it touches FINNISH_WATERS, give or take)."""
     minx, miny, maxx, maxy = bounds[0] - NEAR_M, bounds[1] - NEAR_M, bounds[2] + NEAR_M, bounds[3] + NEAR_M
@@ -889,15 +908,7 @@ def near_finland(bounds: tuple[float, float, float, float]) -> bool:
         return True
     for i in range(5):
         for j in range(5):
-            px, py = minx + (maxx - minx) * i / 4, miny + (maxy - miny) * j / 4
-            inside = False
-            k = len(poly) - 1
-            for n, (xi, yi) in enumerate(poly):
-                xj, yj = poly[k]
-                if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
-                    inside = not inside
-                k = n
-            if inside:
+            if _in_poly(minx + (maxx - minx) * i / 4, miny + (maxy - miny) * j / 4, poly):
                 return True
     return False
 
@@ -907,6 +918,29 @@ def near_finland(bounds: tuple[float, float, float, float]) -> bool:
 KEEP_AREA = (22.7, 59.45, 28.2, 60.75)
 KEEP_PAUSE = 1.0  # s between downloads, to be gentle on Traficom and Väylävirasto
 KEEP_RECHECK = 6 * 3600  # s between passes that refresh blocks older than MAX_AGE
+
+
+# FINNISH_WATERS's sea border away from the mainland, from the Bothnian Bay round Åland and
+# along the Gulf of Finland to off Kotka (not the top of the Bothnian Bay, where Tornio is on
+# it, nor the last stretch to the land border at Virolahti), as (stretch, metres): a block
+# this close to a stretch counts as on it. Closer by Kvarken's and Åland's islands, so that
+# a big island is never far enough in to be outside the depth areas' holes.
+SEA_BORDER = ((FINNISH_WATERS_M[3:7], 2000), (FINNISH_WATERS_M[6:10], 10000),
+              (FINNISH_WATERS_M[9:13], 2000), (FINNISH_WATERS_M[12:21], 10000))
+
+
+@lru_cache(maxsize=4096)
+def near_sea_border(bx: int, by: int) -> bool:
+    """Whether a block lies on (or near) the sea border, where there's no mainland."""
+    x0, y0, x1, y1 = block_bounds(bx, by)
+    return any(clip_line(line, x0 - m, y0 - m, x1 + m, y1 + m) for line, m in SEA_BORDER)
+
+
+def _in_finnish_waters(bx: int, by: int, ux: float, uy: float) -> bool:
+    """Whether a point in block units lies inside FINNISH_WATERS."""
+    minx, _, maxx, maxy = block_bounds(bx, by)
+    scale = (maxx - minx) / UNITS
+    return _in_poly(minx + ux * scale, maxy - uy * scale, FINNISH_WATERS_M)
 
 
 def keep_blocks(area: tuple[float, float, float, float] = KEEP_AREA) -> list[tuple[int, int]]:
@@ -1162,6 +1196,9 @@ def coastal_filter(sites: Layer, depth: Layer | None) -> Layer:
 
 # --- cutting tiles --------------------------------------------------------------------
 
+UNSURVEYED = 5  # the depth band of an unsurveyed area: white, hatched by its tss row
+
+
 def _depth_band(drval1: Any, drval2: Any) -> int:
     """0: drying, 1: 0-3 m, 2: 3-6 m, 3: 6-10 m, 4: deeper (white)."""
     d1 = _num(drval1)
@@ -1219,6 +1256,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
     tol = 0.35 if z >= 12 else 0.5
     land_rects: list[tuple[float, float, float, float]] = []
+    # Blocks at the sea border: (their rect, the islands in it), painted as sea (see below).
+    sea_blocks: list[tuple[tuple[float, float, float, float], list]] = []
     seen_points: set = set()
     classes: dict[int, int] = {}  # fairway number -> class (1 main merchant fairway ... 6), from the routes
     for (bx, by), data in blocks.items() if isinstance(blocks, dict) else blocks:
@@ -1246,12 +1285,21 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             return [((px - ox) * k, (py - oy) * k) for px, py in pts]
 
         depth = data.get("depth")
+        islands = None
         if depth is not None and depth.n:
             # Land is painted only where this block's depths are, so a block that
             # couldn't be fetched never shows up as solid land. (1 unit of overlap
             # hides the seam between blocks.)
-            land_rects.append((max(lo, -ox * k - 1), max(lo, -oy * k - 1),
-                               min(hi, (UNITS - ox) * k + 1), min(hi, (UNITS - oy) * k + 1)))
+            rect = (max(lo, -ox * k - 1), max(lo, -oy * k - 1),
+                    min(hi, (UNITS - ox) * k + 1), min(hi, (UNITS - oy) * k + 1))
+            if near_sea_border(bx, by):
+                # Out at the sea border there's no mainland, only islands, which are holes
+                # in the depth areas. The rest of Finnish waters there is sea, also where
+                # Traficom's depths stop short of FINNISH_WATERS's rough border.
+                islands = []
+                sea_blocks.append((rect, islands))
+            else:
+                land_rects.append(rect)
 
         for key, layer in data.items():
             if key[0] == "_" or z < LAYER_MIN_Z.get(key, 99):
@@ -1284,11 +1332,17 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 p = props[pi[i]]
                 if layer.kind == "area":
                     rings = []
-                    for r in layer.rings(i):
+                    for j, r in enumerate(layer.rings(i)):
                         pts = _run_pts(layer, layer.vo[r], layer.vo[r + 1], bx0, by0, bx1, by1)
                         part = simplify(clip_ring(conv(pts), lo, lo, hi, hi), tol)
                         if len(part) >= 3:
                             rings.append(_flat(part))
+                            if j and key == "depth" and islands is not None \
+                                    and _in_finnish_waters(bx, by, layer.co[2 * layer.vo[r]],
+                                                           layer.co[2 * layer.vo[r] + 1]):
+                                island = clip_ring(part, *sea_blocks[-1][0])
+                                if len(island) >= 3:
+                                    islands.append(_flat(island))
                     if rings:
                         out.append([p, *rings])
                         if key == "rockarea":
@@ -1317,12 +1371,19 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     flat = _flat(simplify(part, tol))
                     if len(flat) >= 4:
                         out.append([p, flat])
-    if land_rects:
+    if land_rects or sea_blocks:
         # Land: the Finnish area, painted under the depth areas.
         minx, miny, maxx, maxy = _tile_mercator(z, x, y)
         k = EXTENT / (maxx - minx)
         ring = [((mx - minx) * k, (maxy - my) * k) for mx, my in FINNISH_WATERS_M]
         land = [_flat(part) for part in (clip_ring(ring, *rect) for rect in land_rects) if len(part) >= 3]
+        # At the sea border, the Finnish area is deep water with the islands left out (one row
+        # per block: the blocks' 1 unit of overlap would leave a gap in an even-odd fill).
+        for rect, islands in sea_blocks:
+            part = clip_ring(ring, *rect)
+            if len(part) >= 3:
+                rows.setdefault("sea", []).append([_flat(part), *islands])
+            land += islands
         if land:
             tile["land"] = land
     if rows.get("xland"):
@@ -1368,7 +1429,9 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     flat [x0, y0, x1, y1, ...]. Keys and rows, by layer:
 
     - land: [ring, ...] the Finnish area where chart data is (painted under depths)
-    - depth: [band, ...rings] band 0 drying, 1 0-3 m, 2 3-6 m, 3 6-10 m, 4 deeper; deep first
+    - depth: [band, ...rings] band 0 drying, 1 0-3 m, 2 3-6 m, 3 6-10 m, 4 deeper, 5 unsurveyed;
+      deep first. Dredged and unsurveyed areas are in here too (they also come as tss rows,
+      for their limits), and at the sea border the Finnish sea beyond Traficom's depths.
     - contour: [metres, line]; farea: [type, draught, class, ...rings]; fline: [draught, class, line]
     - lead: [bearing, line]; band: [line]; restrict: [types, value, ...rings]; shore: [line]
       (shore structures, pontoons, berths, dams and gates)
@@ -1397,9 +1460,15 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     def vl(jnro: Any) -> int | None:
         return classes.get(_int(jnro)) if jnro is not None else None
 
-    if "depth" in rows:
-        tile["depth"] = sorted(([_depth_band(*_pad(p, 2)[:2]), *rings] for p, *rings in rows["depth"]),
-                               key=lambda row: -row[0])  # deep first
+    water = [row for row in rows.get("tss", ()) if row[0][0] in WATER_TSS]
+    if "depth" in rows or water or "sea" in rows:
+        depth = [[_depth_band(*_pad(p, 2)[:2]), *rings] for p, *rings in rows.get("depth", ())]
+        # Dredged areas in the band of their least depth (deeper when not known), unsurveyed
+        # ones as UNSURVEYED; the open sea at the border as deeper water.
+        depth += [[UNSURVEYED if p[0] == "unsurveyed" else _depth_band(_pad(p, 3)[2], None), *rings]
+                  for p, *rings in water]
+        depth += [[4, *rings] for rings in rows.get("sea", ())]
+        tile["depth"] = sorted(depth, key=lambda row: -row[0])  # deep first
     if "contour" in rows:
         tile["contour"] = [[_num(p[0]), line] for p, line in rows["contour"]]
     if "farea" in rows:
@@ -1419,7 +1488,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     if "shore" in rows or "pier" in rows:
         tile["shore"] = [[line] for _, line in rows.get("shore", []) + rows.get("pier", [])]
     if "tss" in rows:
-        tile["tss"] = [[p[0], _num(_pad(p, 2)[1]), *rings] for p, *rings in rows["tss"]]
+        tile["tss"] = [[p[0], _num(_pad(p, 2)[1]), *rings] for p, *rings in rows["tss"]
+                       if p[0] not in WATER_TSS or z >= WATER_TSS_LIMITS_Z]
     if "tssline" in rows:
         tile["tssline"] = [[p[0], line] for p, line in rows["tssline"]]
     if "cable" in rows:
@@ -2194,7 +2264,7 @@ class VectorChart:
                 if part == "":
                     return None
                 continue
-            self._missing[path.name] = (path.stat().st_mtime, bool(meta.get("missing")),
+            self._missing[path.name] = (path.stat().st_mtime, _fetch_again(meta, path.name),
                                         tuple(meta.get("absent") or ()))
             if part == FOREIGN_PART:
                 from .foreign import merge_into
@@ -2243,8 +2313,9 @@ class VectorChart:
         return age is not None
 
     async def _has_missing(self, path: Path) -> bool:
-        """Whether some layer of a part failed when it was fetched, or a service has since
-        listed one it didn't have then (the part is then fetched again sooner)."""
+        """Whether some layer of a part failed when it was fetched, the part's PART_REV is
+        newer, or a service has since listed one it didn't have then (the part is then
+        fetched again sooner)."""
         try:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
@@ -2255,7 +2326,7 @@ class VectorChart:
                 meta = await asyncio.to_thread(read_meta, path)
             except (OSError, ValueError, EOFError):
                 return True
-            known = self._missing[path.name] = (mtime, bool(meta.get("missing")), tuple(meta.get("absent") or ()))
+            known = self._missing[path.name] = (mtime, _fetch_again(meta, path.name), tuple(meta.get("absent") or ()))
         return known[1] or any(service_of(n) in self._caps and self._resolve(n) for n in known[2])
 
     async def _convert(self, old: Path, path: Path) -> None:
@@ -2340,7 +2411,7 @@ class VectorChart:
         path = self._path(bx, by, part)
 
         def write() -> None:
-            write_block(path, {"v": 2, "missing": missing, "absent": absent}, make_levels(built),
+            write_block(path, {"v": 2, "missing": missing, "absent": absent, "rev": PART_REV.get(part, 0)}, make_levels(built),
                         make_overview(built))
 
         await asyncio.to_thread(write)
@@ -2750,6 +2821,14 @@ class _HTTPError(aiohttp.ClientError):
         super().__init__(f"HTTP {status}: {text[:200]}")
         self.status = status
         self.text = text
+
+
+def _fetch_again(meta: dict, name: str) -> bool:
+    """Whether a block part file is to be fetched again soon: a layer failed when it was
+    fetched, or the file is older than its part's PART_REV."""
+    bits = name.split(".")
+    part = bits[1] if len(bits) == 3 else ""
+    return bool(meta.get("missing")) or meta.get("rev", 0) < PART_REV.get(part, 0)
 
 
 def _age(path: Path) -> float | None:
