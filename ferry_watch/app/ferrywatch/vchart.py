@@ -1668,6 +1668,15 @@ def wfs_type_names(caps: str) -> set[str]:
     return names
 
 
+def _wfs_match(name: str, names: set[str]) -> str | None:
+    """A type name as a WFS lists it: the same, or with another prefix or none (matched by
+    the part after the colon, ignoring case)."""
+    if name in names:
+        return name
+    local = name.split(":")[-1].lower()
+    return next((n for n in sorted(names) if n.split(":")[-1].lower() == local), None)
+
+
 def _mml_match(candidate: str, ids: set[str]) -> str | None:
     """A Land Survey collection id for a guessed one: the same, or the same but for case,
     underscores and dashes."""
@@ -1922,15 +1931,15 @@ class VectorChart:
         have = self._caps.get(service)
         if have is None:
             return name
-        if service == MML_API:
-            return _mml_match(name, have)
-        return name if name in have else None
+        return _mml_match(name, have) if service == MML_API else _wfs_match(name, have)
 
     def _targets(self, key: str) -> tuple[list[tuple[str | None, str, str]], list[str]]:
         """A layer's (tag, type name, name to ask for) the services have, and the type names they don't."""
         targets, absent = [], []
         for tag, name in source_names(key):
-            got = self._resolve(name)
+            # Depths are always asked for: without them there's no chart, and a block made
+            # without them because of a misread list would stay blank for a month.
+            got = self._resolve(name) or (name if key == "depth" and name not in self._absent else None)
             if got is None:
                 absent.append(name)
             else:
@@ -1953,6 +1962,15 @@ class VectorChart:
                 self._set_caps(service, set(entry.get("names") or ()), entry.get("t", 0), save=False)
 
     def _set_caps(self, service: str, names: set[str], at: float | None = None, save: bool = True) -> None:
+        wanted = sorted({name for key in SOURCES for _, name in source_names(key) if service_of(name) == service})
+        match = _mml_match if service == MML_API else _wfs_match
+        if not any(match(n, names) for n in wanted):
+            # A list that has none of what the chart has always fetched is more likely misread
+            # than right: rather try every layer than draw none.
+            self._log_once(f"caps {service}", "Chart layers at %s: none of ours among %s listed; trying them all",
+                           urlsplit(service).netloc, len(names))
+            self._failed[("caps", service)] = time.time()
+            return
         self._caps[service] = names
         self._caps_at[service] = time.time() if at is None else at
         self._absent = {n for n in self._absent if service_of(n) != service}
@@ -1965,8 +1983,7 @@ class VectorChart:
                 os.replace(tmp, self._caps_path())
             except OSError as err:
                 _LOGGER.warning("Could not store the chart layer list: %s", err)
-        wanted = sorted({name for key in SOURCES for _, name in source_names(key) if service_of(name) == service})
-        found = [n for n in wanted if self._resolve(n)]
+        found =[n for n in wanted if self._resolve(n)]
         missing = [n for n in wanted if not self._resolve(n)]
         self._log_once(f"caps {service}", "Chart layers at %s: found %s; missing %s", urlsplit(service).netloc,
                        ", ".join(found) or "none", ", ".join(missing) or "none")
@@ -2316,7 +2333,7 @@ class VectorChart:
                 else:
                     await self._fetch_wfs(key, bbox, add, ask)
             except _HTTPError as err:
-                if not _unknown_type(err):
+                if not _unknown_type(err) or key == "depth":
                     raise
                 # The service hasn't got it (its capabilities couldn't be read, or are out
                 # of date): an empty layer, not a failure.
