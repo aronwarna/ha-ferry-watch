@@ -202,7 +202,9 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
             await asyncio.sleep(0.01)
             if chart.keep_status and not chart.keep_status["running"]:
                 break
-        assert chart.keep_status == {"total": 2, "done": 2, "running": False}
+        assert {k: chart.keep_status[k] for k in ("total", "done", "running", "failed")} == \
+            {"total": 2, "done": 2, "running": False, "failed": 0}
+        assert chart.keep_status["last_ok"]
         # No key: no Land Survey parts. Each source once a block; heritage sites once for the region.
         per_block = sum(len(vchart.source_names(key)) for part in chart._parts() for key in vchart.PARTS[part])
         assert {p for p in vchart.PARTS if p not in vchart.MML_PARTS} == set(chart._parts())
@@ -213,6 +215,48 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
         assert chart.keep_status is None
 
     asyncio.run(run())
+
+
+def test_keep_moves_past_a_failing_layer(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "KEEP_PAUSE", 0)
+
+    async def fetch(key, bbox):
+        if key.split(".")[0] in vchart.PARTS["tss"]:  # the whole part fails
+            raise aiohttp.ClientConnectionError("Connection reset by peer")
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        chart = VectorChart(tmp_path, None, fetch)
+        _, bx, by = tile_at(60.0, 24.4, 11)
+        task = asyncio.create_task(chart.keep([(bx, by), (bx + 1, by)]))
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if chart.keep_status and not chart.keep_status["running"]:
+                break
+        # Both areas were tried; the one part that failed waits for its retry instead of
+        # holding the progress at nought.
+        assert chart.keep_status["done"] == 2 and chart.keep_status["failed"] == 2
+        assert not chart.keep_status["running"]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_dropped_connection_is_asked_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "GET_RETRIES", (0, 0))
+    calls = []
+
+    async def once(self, url, params, what):
+        calls.append(url)
+        if len(calls) < 3:
+            raise aiohttp.ClientOSError(104, "Connection reset by peer")
+        return bytearray(b"{}")
+
+    monkeypatch.setattr(VectorChart, "_get_once", once)
+    chart = VectorChart(tmp_path, None)
+    assert asyncio.run(chart._get_bytes("https://example.org", None, "depth")) == bytearray(b"{}")
+    assert len(calls) == 3
 
 
 def test_keep_area_size():

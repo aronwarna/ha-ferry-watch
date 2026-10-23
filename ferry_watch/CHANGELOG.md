@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1
+
+- Chart download: a dropped connection ("Connection reset by peer") is now
+  asked again twice before an area counts as failed.
+- The download no longer stalls when one part of an area fails: it moves on
+  to the next area, tries the failed one again an hour later, and only pauses
+  when several areas fail in a row. Settings shows when the last area
+  finished and how many are waiting for another try.
+
 ## 0.14.0
 
 - **Ship card on phones** is now a sheet: drag it down to a small banner with

@@ -1712,7 +1712,9 @@
     $("chart-keep").checked = Boolean(keep);
     let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
     if (keep && keep.running) {
-      text = `Downloading the Gulf of Finland: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.`;
+      const last = keep.last_ok ? ` Last area finished at ${new Date(keep.last_ok * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+      const failed = keep.failed ? ` ${keep.failed} areas failed and will be tried again in an hour.` : "";
+      text = `Downloading the Gulf of Finland: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.${last}${failed}`;
     } else if (keep) {
       text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
     }

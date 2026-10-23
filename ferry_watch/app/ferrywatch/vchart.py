@@ -80,6 +80,7 @@ BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge
 POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
+GET_RETRIES = (3, 15)  # s to wait before asking again after a dropped connection
 CAPS_MAX_AGE = 86400  # s between reads of which layers each service has
 PAGE = 2000  # features per request; a page over MAX_RESPONSE is asked for again in halves
 MML_PAGE = 1000
@@ -1995,6 +1996,16 @@ class VectorChart:
                 return False
         return True
 
+    def _settled(self, key: tuple[int, int]) -> bool:
+        """Fresh, or whatever isn't failed recently and will be tried again later: what the
+        download progress counts, so one service being down doesn't hold it at nought."""
+        now = time.time()
+        for part in self._parts():
+            age = _age(self._path(*key, part))
+            if (age is None or age >= MAX_AGE) and now - self._failed.get((*key, part), 0) >= FAILED_RETRY:
+                return False
+        return True
+
     async def keep(self, blocks: list[tuple[int, int]] | None = None) -> None:
         """Download every block of KEEP_AREA to disk, one at a time, and keep them fresh.
 
@@ -2005,8 +2016,10 @@ class VectorChart:
         blocks = keep_blocks() if blocks is None else blocks
         try:
             while True:
-                done = sum(self._fresh(key) for key in blocks)
-                self.keep_status = {"total": len(blocks), "done": done, "running": done < len(blocks)}
+                done = sum(self._settled(key) for key in blocks)
+                self.keep_status = {"total": len(blocks), "done": done, "running": done < len(blocks),
+                                    "failed": 0, "last_ok": self.keep_status and self.keep_status.get("last_ok")}
+                failures = 0
                 for key in blocks:
                     await self._ensure_heritage(*key)
                     if self._fresh(key):
@@ -2015,9 +2028,15 @@ class VectorChart:
                     ok = True
                     for part in self._parts():
                         ok = await self._ensure_part(*key, part) and ok
-                    self.keep_status["done"] = sum(self._fresh(k) for k in blocks)
-                    # A failed download backs off, so a service that's down isn't hammered.
-                    await asyncio.sleep(KEEP_PAUSE if ok and self._fresh(key) else 60)
+                    ok = ok and self._fresh(key)
+                    self.keep_status["done"] = sum(self._settled(k) for k in blocks)
+                    self.keep_status["failed"] = sum(not self._fresh(k) and self._settled(k) for k in blocks)
+                    if ok:
+                        self.keep_status["last_ok"] = time.time()
+                    failures = 0 if ok else failures + 1
+                    # Several failures in a row back off, so a service that's down isn't hammered;
+                    # one failed area just moves on to the next.
+                    await asyncio.sleep(KEEP_PAUSE if failures < 3 else min(600, 60 * (failures - 2)))
                 self.keep_status["running"] = False
                 await asyncio.sleep(KEEP_RECHECK)
         finally:
@@ -2299,6 +2318,17 @@ class VectorChart:
         return absent
 
     async def _get_bytes(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
+        for wait in GET_RETRIES:
+            try:
+                return await self._get_once(url, params, what)
+            except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as err:
+                # A dropped connection (often a pooled one the server had already closed, or a
+                # busy server shedding load) is worth asking again after a pause.
+                _LOGGER.debug("Chart %s request dropped (%s), again in %s s", what, err, wait)
+                await asyncio.sleep(wait)
+        return await self._get_once(url, params, what)
+
+    async def _get_once(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
         async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
                                     timeout=aiohttp.ClientTimeout(total=120)) as resp:
             body = bytearray()  # grown in place: never the chunks and their join at once
