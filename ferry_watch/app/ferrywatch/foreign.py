@@ -1468,6 +1468,7 @@ class ForeignSource:
         self._last_overpass = 0.0
         self._overpass_lock = asyncio.Lock()
         self._building = asyncio.Semaphore(1)  # one block's grids in RAM at a time
+        self._overviewing = asyncio.Semaphore(1)  # and one overview tile's
         self.errors: dict[str, str] = {}
 
     def forget(self) -> None:
@@ -1664,10 +1665,12 @@ class ForeignSource:
         padded = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
         if not wanted(padded):
             return {}, True
-        sampler = await self.sampler(padded)
-        if sampler is None:
-            return {}, False
-        rows = await asyncio.to_thread(overview_rows, z, x, y, sampler)
+        async with self._overviewing:
+            sampler = await self.sampler(padded)
+            if sampler is None:
+                return {}, False
+            rows = await asyncio.to_thread(overview_rows, z, x, y, sampler)
+            del sampler
         return rows, True
 
 
