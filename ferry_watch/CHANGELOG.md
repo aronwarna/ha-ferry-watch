@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.15.0
+
+- **Drawn chart closer to the paper chart** (Sailmate):
+  - names in mixed case like the paper chart: towns upright serif, islands
+    and land upright, waters sloping; larger; long names hyphenated and
+    Finnish and Swedish names stacked;
+  - rock symbols as on the paper chart (under water, at the surface, above
+    water, rock clusters with one sign each);
+  - larger buildings and mast heights; leading-mark boards along their line;
+  - submarine cables (magenta wavy line) and pipelines;
+  - soundings spaced so they don't run together, and no longer cut in half at
+    tile edges;
+  - zoomed out, no more thin lines or channels across land at area edges.
+- The watch zones are drawn as outlines only, so they no longer tint the
+  chart around Porkkala.
+
 ## 0.14.1
 
 - Chart download: a dropped connection ("Connection reset by peer") is now
