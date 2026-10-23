@@ -342,7 +342,7 @@ def scene() -> dict[str, list[dict]]:
                             _km_point(8.8, 12.3, korkeus=59)]
     out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207)]
     out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207)]
-    out["lead"] = [_line(_km_line(LEAD[1:]), suunta=round(math.degrees(math.atan2(
+    out["lead"] = [_line(_km_line(LEAD), suunta=round(math.degrees(math.atan2(
         LEAD[1][0] - LEAD[2][0], LEAD[1][1] - LEAD[2][1])) % 360, 1))]
     out["cable.cable"] = [_line(_km_line(CABLE))]
     out["restrict"] = [_poly([_km_line([(6.95, 5.0), (7.85, 5.0), (7.85, 8.6), (6.95, 8.6), (6.95, 5.0)])],

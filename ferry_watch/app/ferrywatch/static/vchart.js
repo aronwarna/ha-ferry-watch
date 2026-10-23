@@ -381,8 +381,9 @@
     const big = 21 * s;
     const whole = String(Math.round(depth >= 20 ? depth : Math.floor(depth + 1e-6)));
     const decimal = depth < 20 && Math.round((depth - Math.floor(depth + 1e-6)) * 10) % 10 !== 0;
-    const w = 0.56 * big * whole.length;
-    return [x - w / 2, y - 0.4 * big, x + w / 2 + (decimal ? 0.5 * big : 0), y + (decimal ? 0.62 : 0.4) * big];
+    // A little room round each figure, so neighbouring soundings never run together.
+    const w = 0.58 * big * whole.length, pad = 0.14 * big;
+    return [x - w / 2 - pad, y - 0.45 * big, x + w / 2 + (decimal ? 0.5 * big : 0) + pad, y + (decimal ? 0.62 : 0.45) * big];
   }
 
   // 9 -> "(9,0)"; a shallow boat route's depth plainly, as the chart prints it: 2.4 -> "2,4".
@@ -549,10 +550,13 @@
   }
 
   // The black symbol of a buoy, beacon or light, as the paper chart draws them.
-  function drawMark(ctx, aid, s, lw, zoom) {
+  // `lead`: for a leading mark, the compass bearing of its leading line out to sea.
+  function drawMark(ctx, aid, s, lw, zoom, lead) {
     const [x, y, type, cat, lit] = aid;
     ctx.save();
     ctx.translate(x, y);
+    // A leading mark's board stands on the far side of it from the sea, along its line.
+    if (type === "l" && lead != null) ctx.rotate(((lead + 180) * Math.PI) / 180);
     ctx.fillStyle = C.black;
     ctx.strokeStyle = C.black;
     ctx.lineWidth = lw;
@@ -595,15 +599,14 @@
       ctx.fillRect(-3 * s, -24 * s, 6 * s, 24 * s);
       if (tops) topmark(ctx, cat, 0, -25.5 * s, s, lw);
     } else if (type === "l") {
-      // Leading mark: a notched black board on a post.
+      // Leading mark: an open square board on a post, as the paper chart draws them.
       base(ctx, s, lw);
-      ctx.beginPath(); ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -9 * s);
+      ctx.beginPath(); ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -17 * s);
       ctx.lineWidth = 1.7 * s; ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(-3 * s, -9 * s); ctx.lineTo(0, -12.5 * s); ctx.lineTo(3 * s, -9 * s);
-      ctx.lineTo(3 * s, -29 * s); ctx.lineTo(-3 * s, -29 * s);
-      ctx.closePath();
-      ctx.fill();
+      ctx.rect(-4.5 * s, -26 * s, 9 * s, 9 * s);
+      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.lineWidth = 1.6 * s; ctx.stroke();
     } else if (type === "k") {
       // Cairn: a small open triangle.
       ctx.beginPath(); ctx.moveTo(-5.5 * s, 0); ctx.lineTo(5.5 * s, 0); ctx.lineTo(0, -10.5 * s); ctx.closePath();
@@ -1139,17 +1142,17 @@
   // in an upright sans, waters in sloping sans; all in ordinary capitals and small letters.
   const STYLES = {
     town: { size: 40, family: SERIF, min: 15 },
-    sea: { size: 26, italic: true, min: 12 },
-    water: { size: 21, italic: true },
-    island: { size: 19.5 },
+    sea: { size: 27, italic: true, min: 12 },
+    water: { size: 22, italic: true },
+    island: { size: 21 },
     litIsland: { size: 18, weight: 700, spacing: 0.07, upper: true },
-    land: { size: 22 },
+    land: { size: 25 },
     settlement: { size: 18 },
     light: { size: 16 },
     lightName: { size: 17, weight: 700, spacing: 0.07, upper: true },
     racon: { size: 16, color: C.magenta },
     call: { size: 14, color: C.magenta },
-    mark: { size: 15 },
+    mark: { size: 18 },
     heritage: { size: 14, italic: true, color: C.magenta },
     fort: { size: 14, italic: true, color: C.fort },
     speed: { size: 13, color: C.magenta },
@@ -1419,9 +1422,28 @@
     const spotBox = (cand, spot) => [cand.x + spot.box[0], cand.y + spot.box[1], cand.x + spot.box[2], cand.y + spot.box[3]];
     const lays = cands.map((cand) => layoutLabel(ctx, cand, unit, sc));
     cands.forEach((cand, i) => label.claim(spotBox(cand, lays[i].spots[0]), false));
+    // Soundings, shallowest first as charts keep those, in the same order in every tile.
+    // Those across the tile's edge are placed now, before the figures set into contour
+    // and fairway lines (which differ from tile to tile): both tiles then keep (or both
+    // leave out) each one, and none is drawn cut in half.
+    const edgeSoundings = [], soundings = [];
+    if (zoom >= 12) {
+      const sorted = (data.sounding || []).slice().sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
+      for (const row of sorted) {
+        const b = soundingBox(row[0], row[1], row[2], s);
+        if ((b[0] < 0 && b[2] > 0) || (b[0] < e && b[2] > e) || (b[1] < 0 && b[3] > 0) || (b[1] < e && b[3] > e)) {
+          if (!label.free(b)) continue;
+          label.claim(b, false);
+          edgeSoundings.push([row[0], row[1], row[2], b]);
+        } else soundings.push(row);
+      }
+    }
     const inside = (x, y) => x >= 0 && y >= 0 && x < e && y < e;
     // Symbols keep soundings off them; those in the tile also keep the screen's labels off.
     const marks = [], symbols = [];
+    // Marks placed from a tile's own cut of an area (TSS arrows, rock-cluster signs): they
+    // differ between neighbouring tiles, so soundings across the edge ignore them.
+    const localMarks = new Set();
     const symbol = (box, x, y) => { marks.push(box); symbols.push(box); if (inside(x, y)) label.hard.push(box); };
 
     // 1. Land: the Finnish area, painted under the water.
@@ -1512,7 +1534,11 @@
     }
 
     // 5. Traffic separation schemes and other routeing measures.
-    if (data.tss) drawTss(ctx, data.tss, e, s, unit, marks); // soundings keep off the arrows
+    if (data.tss) {
+      const arrows = [];
+      drawTss(ctx, data.tss, e, s, unit, arrows);
+      for (const b of arrows) { marks.push(b); localMarks.add(b); } // soundings keep off the arrows
+    }
     if (data.tssline) drawTssLines(ctx, data.tssline, unit);
 
     // 6. The small-craft trunk route's green band.
@@ -1618,9 +1644,18 @@
           strokeRings(ctx, rings, C.black, unit, [0.01 * unit, 3 * unit]);
           ctx.lineCap = "butt";
         }
+        if (data.rockpt) continue; // the signs come with their own points
+        // A tile from before "rockpt": the sign in the middle of the tile's own cut.
         const c = ringCentroid(rings[0]) || [(x0 + x1) / 2, (y0 + y1) / 2];
         drawRock(ctx, c[0], c[1], rock, rs, true);
-        marks.push([c[0] - 0.7 * rr, c[1] - 0.7 * rr, c[0] + 0.7 * rr, c[1] + 0.7 * rr]);
+        const cb = [c[0] - 0.7 * rr, c[1] - 0.7 * rr, c[0] + 0.7 * rr, c[1] + 0.7 * rr];
+        marks.push(cb);
+        localMarks.add(cb);
+      }
+      for (const [x, y, kind] of data.rockpt || []) {
+        drawRock(ctx, x, y, kind || 1, rs, true);
+        marks.push([x - 0.7 * rr, y - 0.7 * rr, x + 0.7 * rr, y + 0.7 * rr]);
+        if (inside(x, y)) label.soft.push([x - rr, y - rr, x + rr, y + rr]);
       }
       for (const [x, y, kind] of data.wreck || []) {
         drawWreck(ctx, x, y, kind, s, C.black);
@@ -1733,8 +1768,15 @@
       ctx.lineWidth = 1.3 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
     }
     for (const aid of aids) {
-      drawMark(ctx, aid, s, lw, zoom);
-      symbol(markBox(aid, s), aid[0], aid[1]);
+      const lead = aid[2] === "l" ? leadBearing(aid, data.lead || []) : null;
+      drawMark(ctx, aid, s, lw, zoom, lead);
+      if (lead == null) symbol(markBox(aid, s), aid[0], aid[1]);
+      else {
+        // The board's box, wherever its line turns it.
+        const a = ((lead + 180) * Math.PI) / 180, bx = aid[0] + Math.sin(a) * 21 * s, by = aid[1] - Math.cos(a) * 21 * s;
+        symbol([Math.min(aid[0], bx) - 7 * s, Math.min(aid[1], by) - 7 * s, Math.max(aid[0], bx) + 7 * s, Math.max(aid[1], by) + 7 * s],
+          aid[0], aid[1]);
+      }
     }
 
     // 15. Landmarks, pilot boarding places and signs.
@@ -1766,8 +1808,13 @@
         }
         if (best && best.spot !== lays[i].spots[0]) label.claim(best.box, false);
       });
-      // Shallowest first, as charts keep those; in the same order in every tile.
-      const soundings = (data.sounding || []).slice().sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
+      // Those across the tile's edge were placed first (their room kept); the symbols,
+      // which both tiles have, may still rule one out.
+      for (const [x, y, depth, box] of edgeSoundings) {
+        if (marks.some((m) => !localMarks.has(m) && overlaps(box, m))) continue;
+        if (inside(x, y)) label.soft.push(box);
+        sounding(ctx, x, y, depth, s);
+      }
       for (const [x, y, depth] of soundings) {
         const box = soundingBox(x, y, depth, s);
         if (!label.free(box) || marks.some((m) => overlaps(box, m))) continue;

@@ -1282,6 +1282,15 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                             rings.append(_flat(part))
                     if rings:
                         out.append([p, *rings])
+                        if key == "rockarea":
+                            # The cluster's sign goes at the middle of its whole outline, the
+                            # same spot in every tile it reaches.
+                            r0 = layer.rings(i)[0]
+                            co = layer.co
+                            v0, v1 = layer.vo[r0], layer.vo[r0 + 1]
+                            cx = sum(co[2 * v] for v in range(v0, v1)) / (v1 - v0)
+                            cy = sum(co[2 * v + 1] for v in range(v0, v1)) / (v1 - v0)
+                            rows.setdefault("rockpt", []).append([round((cx - ox) * k), round((cy - oy) * k), p])
                     continue
                 if key == "contour":
                     d = _num(p[0])
@@ -1351,7 +1360,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     - contour: [metres, line]; farea: [type, draught, class, ...rings]; fline: [draught, class, line]
     - lead: [bearing, line]; band: [line]; restrict: [types, value, ...rings]; shore: [line]
       (shore structures, pontoons, berths, dams and gates)
-    - rockarea: [kind, ...rings]; sector: [x, y, from°, to°, colour]; light: [x, y, text]
+    - rockarea: [kind, ...rings]; rockpt: [x, y, kind] where each rock cluster's sign goes
+      (the middle of its whole outline, the same in every tile); sector: [x, y, from°, to°, colour]; light: [x, y, text]
     - aid: [x, y, type, category, lit, name, colours]; sounding: [x, y, depth]
     - rock / wreck: [x, y, kind]; heritage: see _heritage_rows; name: [x, y, text, kind]
     - tss: [kind, orient, ...rings] kind lane, zone, prec, deep, twoway, dredged or
@@ -1433,6 +1443,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["landmark"] = landmarks
     if "rockarea" in rows:
         tile["rockarea"] = [[ROCK_TYPES.get(_int(_pad(p, 1)[0]), 0), *rings] for p, *rings in rows["rockarea"]]
+    if "rockpt" in rows:
+        tile["rockpt"] = [[px, py, ROCK_TYPES.get(_int(_pad(p, 1)[0]), 0)] for px, py, p in rows["rockpt"]]
 
     colours: dict[tuple[int, int], set] = {}
     for px, py, (a, b, c) in rows.get("sector", ()):
