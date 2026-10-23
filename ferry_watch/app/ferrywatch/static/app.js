@@ -112,7 +112,7 @@
       const overview = info?.layers?.find((l) => /250k/i.test(l.title || l.layer || ""));
       return L.layerGroup([
         oceanBase(),
-        ...(overview ? [L.tileLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
+        ...(overview ? [FerryChart.rasterLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
           minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 9, zIndex: 2,
         })] : []),
         FerryChart.layer({ attribution: "Depths © Traficom · Fairways © Väylävirasto · not for navigation", zIndex: 3 }),
@@ -122,7 +122,7 @@
     }
     if (!info?.layers?.length) return L.layerGroup([streets(), seamarks()]);
     // Overview charts first, then the detailed chart series on top of them.
-    const charts = info.layers.map((layer, i) => L.tileLayer(`api/tiles/chart-${layer.id}/{z}/{x}/{y}.png`, {
+    const charts = info.layers.map((layer, i) => FerryChart.rasterLayer(`api/tiles/chart-${layer.id}/{z}/{x}/{y}.png`, {
       minZoom: 0,
       minNativeZoom: layer.min_zoom,
       maxNativeZoom: layer.max_zoom,

@@ -270,21 +270,32 @@
 
   // Text drawn rightwards from (x, y), with extra space between the letters as the
   // chart prints its capitals.
-  function spacedText(ctx, text, x, y, spacing) {
+  // With `halo`, a thin pale outline first keeps it readable over lines and figures.
+  function spacedText(ctx, text, x, y, spacing, halo) {
     ctx.textAlign = "left";
+    const put = (t, px) => {
+      if (halo) ctx.strokeText(t, px, y);
+      ctx.fillText(t, px, y);
+    };
+    if (halo) {
+      ctx.strokeStyle = HALO;
+      ctx.lineWidth = halo;
+      ctx.lineJoin = "round";
+    }
     if (!spacing) {
-      ctx.fillText(text, x, y);
+      put(text, x);
     } else if (HAS_SPACING) {
       ctx.letterSpacing = `${spacing}px`;
-      ctx.fillText(text, x, y);
+      put(text, x);
       ctx.letterSpacing = "0px";
     } else {
       for (const ch of text) {
-        ctx.fillText(ch, x, y);
+        put(ch, x);
         x += ctx.measureText(ch).width + spacing;
       }
     }
   }
+  const HALO = "rgba(255, 255, 255, 0.8)";
 
   // A label along a line, on its longest straight stretch, kept whole inside the tile.
   // Returns the stretch of line to leave out under it (null if it's beside the line), or
@@ -360,11 +371,17 @@
   const fmtDeg = (v) => `${v.toFixed(1).padStart(5, "0").replace(".", ",")}°`;
   const bearingText = (b) => `${fmtDeg(b)} - ${fmtDeg((b + 180) % 360)}`; // 273.7 -> "273,7° - 093,7°"
 
-  // A light's character as charts print it: ("Fl (2) 10 s", "WRG") -> "Fl(2)WRG.10s".
+  // A light's character as charts print it: ("Fl (2) 10 s", "WRG") -> "Fl(2)WRG.10s", and
+  // ("Iso WRG 4s", "WRG") -> "Iso.WRG.4s" when the character names its colours itself.
   function lightText(character, colours) {
     const m = character.match(/^(.*?)\s*(\d+(?:[.,]\d+)?)\s*s$/);
-    const rhythm = (m ? m[1] : character).replace(/\s+\(/g, "(").replace(/\s+/g, "");
-    const col = colours === "W" ? "" : colours; // a single white light has no letter, as on charts
+    const parts = (m ? m[1] : character).trim().split(/\s+/);
+    let own = parts.length > 1 && /^[WRGY]+$/.test(parts[parts.length - 1]) ? parts.pop() : null;
+    let rhythm = parts.join(" ").replace(/\s+\(/g, "(").replace(/\s+/g, "");
+    const glued = rhythm.match(/^(.*\))([WRGY]+)$/); // "Fl(2)WRG"
+    if (glued && !own) [, rhythm, own] = glued;
+    const given = own ?? colours;
+    const col = given === "W" ? "" : given; // a single white light has no letter, as on charts
     let text = rhythm;
     if (col) text += (/\)$/.test(text) ? "" : ".") + col;
     if (m) text += (/\)$/.test(text) && !col ? "" : ".") + `${m[2].replace(".", ",")}s`;
@@ -759,15 +776,22 @@
     ctx.restore();
   }
 
-  // Arrows at fixed points of the tile's own grid, where both ends fall inside the area,
-  // so they never cross a tile edge.
+  // Arrows at points of the tile's own grid where the whole arrow falls inside the area
+  // and inside the tile (so none is cut at a tile edge), spaced well apart.
   function areaArrows(ctx, rings, bearing, e, s, unit, both) {
     const len = Math.min(e / 2 - 16, Math.max(48 * unit, 80 * s));
     const a = (bearing * Math.PI) / 180, ux = Math.sin(a), uy = -Math.cos(a);
-    for (const gx of [e / 4, (3 * e) / 4]) {
-      for (const gy of [e / 4, (3 * e) / 4]) {
-        const ends = [[gx - ux * len * 0.55, gy - uy * len * 0.55], [gx + ux * len * 0.55, gy + uy * len * 0.55]];
-        if (ends.every(([x, y]) => insideRings(rings, x, y))) tssArrow(ctx, gx, gy, bearing, len, unit, both);
+    const half = 0.55 * len, wide = 0.3 * len;
+    const kept = [];
+    for (let i = 0; i < 16; i++) {
+      for (let j = 0; j < 16; j++) {
+        const gx = ((i + 0.5) * e) / 16, gy = ((j + 0.5) * e) / 16;
+        const pts = [[gx, gy], [gx - ux * half, gy - uy * half], [gx + ux * half, gy + uy * half],
+          [gx - uy * wide, gy + ux * wide], [gx + uy * wide, gy - ux * wide]];
+        if (!pts.every(([x, y]) => x > 2 && y > 2 && x < e - 2 && y < e - 2 && insideRings(rings, x, y))) continue;
+        if (kept.some(([x, y]) => Math.hypot(x - gx, y - gy) < 1.9 * len)) continue;
+        kept.push([gx, gy]);
+        tssArrow(ctx, gx, gy, bearing, len, unit, both);
       }
     }
   }
@@ -1000,8 +1024,8 @@
     heritage: { size: 14, italic: true, color: C.magenta },
     fort: { size: 14, italic: true, color: C.fort },
     speed: { size: 13, color: C.magenta },
-    tss: { size: 17, color: C.magenta, min: 11 },
-    precSign: { size: 15, weight: 700, color: C.magenta, min: 10 },
+    tss: { size: 21, color: C.magenta, min: 12 },
+    precSign: { size: 22, weight: 700, color: C.magenta, min: 13 },
   };
   // Placement order: towns, sea areas, lights, islands, heritage, other land.
   const PRIO = { town: 0, sea: 1, light: 2, island: 3, heritage: 4, land: 5 };
@@ -1063,7 +1087,7 @@
       ctx.font = line.font;
       ctx.fillStyle = line.color;
       const x = align === "right" ? x0 + lay.w - line.w : align === "center" ? x0 + (lay.w - line.w) / 2 : x0;
-      spacedText(ctx, line.text, x, y + 0.82 * line.size, line.spacing);
+      spacedText(ctx, line.text, x, y + 0.82 * line.size, line.spacing, Math.max(2, 0.17 * line.size));
       y += line.size;
     }
   }
@@ -1237,13 +1261,13 @@
     // Labels claim their first spots first, so soundings and labels along lines keep clear.
     const label = claims();
     const cands = labelCandidates(data, zoom, aidAt);
-    for (const cand of cands) {
-      const lay = layoutLabel(ctx, cand, unit, sc);
-      const spot = lay.spots[0];
-      label.claim([cand.x + spot.box[0], cand.y + spot.box[1], cand.x + spot.box[2], cand.y + spot.box[3]], false);
-    }
+    const spotBox = (cand, spot) => [cand.x + spot.box[0], cand.y + spot.box[1], cand.x + spot.box[2], cand.y + spot.box[3]];
+    const lays = cands.map((cand) => layoutLabel(ctx, cand, unit, sc));
+    cands.forEach((cand, i) => label.claim(spotBox(cand, lays[i].spots[0]), false));
     const inside = (x, y) => x >= 0 && y >= 0 && x < e && y < e;
-    const symbol = (box, x, y) => { if (inside(x, y)) label.hard.push(box); };
+    // Symbols keep soundings off them; those in the tile also keep the screen's labels off.
+    const marks = [], symbols = [];
+    const symbol = (box, x, y) => { marks.push(box); symbols.push(box); if (inside(x, y)) label.hard.push(box); };
 
     // 1. Land: the Finnish area, painted under the water.
     if (data.land) {
@@ -1410,6 +1434,7 @@
     if (!overview) {
       for (const [x, y, kind] of data.rock || []) {
         drawRock(ctx, x, y, kind, s, false);
+        marks.push([x - 4 * s, y - 4 * s, x + 4 * s, y + 4 * s]);
         if (inside(x, y)) label.soft.push([x - 5 * s, y - 7 * s, x + 5 * s, y + 7 * s]);
       }
       for (const row of data.rockarea || []) {
@@ -1431,6 +1456,7 @@
         }
         const c = ringCentroid(rings[0]) || [(x0 + x1) / 2, (y0 + y1) / 2];
         drawRock(ctx, c[0], c[1], rock, s, true);
+        marks.push([c[0] - 4 * s, c[1] - 4 * s, c[0] + 4 * s, c[1] + 4 * s]);
       }
       for (const [x, y, kind] of data.wreck || []) {
         drawWreck(ctx, x, y, kind, s, C.black);
@@ -1479,10 +1505,14 @@
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.lineCap = "butt";
-      // Labels keep clear of the arcs and strips where they can.
+      // Soundings keep off the arcs and strips; labels too where they can.
       for (const { x, y, a1, a2, strip } of arcs) {
-        if (!inside(x, y)) continue;
-        const near = (px, py) => label.soft.push([px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s]);
+        const own = inside(x, y);
+        const near = (px, py) => {
+          const box = [px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s];
+          marks.push(box);
+          if (own) label.soft.push(box);
+        };
         const mid = (a1 + a2) / 2;
         if (strip) for (let d = 8 * s; d <= 3.2 * r; d += 8 * s) near(x + Math.cos(mid) * d, y + Math.sin(mid) * d);
         else for (let a = a1; a <= a2; a += (8 * s) / r) near(x + Math.cos(a) * r, y + Math.sin(a) * r);
@@ -1514,8 +1544,9 @@
       ctx.textBaseline = "middle";
       for (const { x, y, a1, a2, letter, strip } of arcs) {
         if (strip || a2 - a1 < 0.05) continue;
-        const a = (a1 + a2) / 2;
-        ctx.fillText(letter, x + Math.cos(a) * (r + 10 * s), y + Math.sin(a) * (r + 10 * s));
+        const a = (a1 + a2) / 2, lx = x + Math.cos(a) * (r + 10 * s), ly = y + Math.sin(a) * (r + 10 * s);
+        ctx.fillText(letter, lx, ly);
+        marks.push([lx - 5 * s, ly - 7 * s, lx + 5 * s, ly + 7 * s]);
       }
     }
 
@@ -1526,40 +1557,48 @@
     for (const aid of aids) {
       if (!aid[4] || arcsAt.has(`${aid[0]},${aid[1]}`)) continue;
       const lead = "lds".includes(aid[2]) ? leadBearing(aid, data.lead || []) : null;
-      for (const b of drawFlares(ctx, aid, s, lw, lead)) if (inside(aid[0], aid[1])) label.soft.push(flareBox(aid[0], aid[1], s, b));
+      for (const b of drawFlares(ctx, aid, s, lw, lead)) {
+        const box = flareBox(aid[0], aid[1], s, b);
+        marks.push(box);
+        if (inside(aid[0], aid[1])) label.soft.push(box);
+      }
     }
     for (const aid of aids) {
       if (aid[2] !== "t") continue;
       ctx.beginPath(); ctx.arc(aid[0], aid[1], 20 * s, 0, 7);
       ctx.lineWidth = 1.3 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
     }
-    const marks = [];
     for (const aid of aids) {
       drawMark(ctx, aid, s, lw, zoom);
-      const box = markBox(aid, s);
-      marks.push(box);
-      symbol(box, aid[0], aid[1]);
+      symbol(markBox(aid, s), aid[0], aid[1]);
     }
 
     // 15. Landmarks, pilot boarding places and signs.
     for (const [x, y, kind] of data.landmark || []) {
-      const box = drawLandmark(ctx, x, y, kind, s, lw);
-      marks.push(box);
-      symbol(box, x, y);
+      symbol(drawLandmark(ctx, x, y, kind, s, lw), x, y);
     }
     for (const [x, y] of data.pilot || []) {
-      const box = drawPilot(ctx, x, y, s, lw);
-      marks.push(box);
-      symbol(box, x, y);
+      symbol(drawPilot(ctx, x, y, s, lw), x, y);
     }
     for (const [x, y, type, value] of data.sign || []) {
-      const box = drawSign(ctx, x, y, type, value, s, lw);
-      marks.push(box);
-      symbol(box, x, y);
+      symbol(drawSign(ctx, x, y, type, value, s, lw), x, y);
     }
 
     // 16. Soundings where no label or symbol is; then the labels along lines.
     if (zoom >= 13) {
+      // The overlay puts a label in its first spot clear of symbols with the least clutter
+      // round it: keep soundings off that spot too, as far as the tile can tell.
+      cands.forEach((cand, i) => {
+        let best = null, fewest = Infinity;
+        for (const spot of lays[i].spots) {
+          const box = spotBox(cand, spot);
+          if (symbols.some((b) => overlaps(box, b)) || label.hard.some((b) => overlaps(box, b))) continue;
+          const n = cand.prio <= PRIO.sea ? 0 : marks.reduce((sum, b) => sum + overlaps(box, b), 0);
+          if (n < fewest) { best = { spot, box }; fewest = n; }
+          if (n === 0) break;
+        }
+        if (best && best.spot !== lays[i].spots[0]) label.claim(best.box, false);
+      });
       // Shallowest first, as charts keep those; in the same order in every tile.
       const soundings = (data.sounding || []).slice().sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
       for (const [x, y, depth] of soundings) {
@@ -1658,15 +1697,30 @@
       if (!this._map || this._timer) return;
       this._timer = setTimeout(() => {
         this._timer = null;
-        if (this._map._animatingZoom) return; // zoomend redraws
+        if (!this._map || this._map._animatingZoom) return; // zoomend redraws
         cancelAnimationFrame(this._frame);
-        this._frame = requestAnimationFrame(() => this._draw());
+        this._frame = requestAnimationFrame(() => (this._stale ? this._reset() : this._draw()));
       }, 90);
+    },
+
+    // Whether any tile of the zoom shown has arrived.
+    _ready() {
+      const chart = this._chart, tz = chart._tileZoom;
+      if (tz == null) return true; // out of the chart's zooms: clear
+      for (const key in chart._tiles) {
+        const tile = chart._tiles[key];
+        if (tile.coords.z === tz && tile.el._fw) return true;
+      }
+      return false;
     },
 
     _reset() {
       const map = this._map;
       if (!map || !this._canvas) return;
+      // Just zoomed and no tile of the new zoom here yet: keep the old labels (scaled with
+      // the map) until some arrive, rather than blanking them.
+      this._stale = !this._ready();
+      if (this._stale) return;
       const p = this.options.padding;
       const size = map.getSize();
       const min = map.containerPointToLayerPoint(size.multiplyBy(-p)).round();
@@ -1881,6 +1935,85 @@
     },
   });
 
+  // --- Traficom's raster charts -----------------------------------------------------------
+
+  // Traficom's chart service fills the parts of some tiles outside its charts with solid
+  // black (seen zoomed out, round the overview charts' edges), which showed as big black
+  // shapes over the sea. Its tiles are drawn through a canvas that makes such areas
+  // see-through: black pixels inside a solid 7 x 7 black block, and the dark pixels next to
+  // those. Chart ink (lettering, lines, small symbols) is never that solid, so it stays.
+  function clearNoData(ctx, w, h) {
+    const image = ctx.getImageData(0, 0, w, h), d = image.data, n = w * h;
+    const black = new Uint8Array(n);
+    let count = 0;
+    for (let i = 0, p = 0; i < n; i++, p += 4) {
+      if (d[p + 3] > 200 && d[p] < 24 && d[p + 1] < 24 && d[p + 2] < 24) { black[i] = 1; count++; }
+    }
+    const R = 3, full = (2 * R + 1) ** 2;
+    if (count < full) return;
+    const W = w + 1;
+    const table = (m) => { // summed-area table
+      const t = new Int32Array(W * (h + 1));
+      for (let y = 0; y < h; y++) {
+        let row = 0;
+        for (let x = 0; x < w; x++) { row += m[y * w + x]; t[(y + 1) * W + x + 1] = t[y * W + x + 1] + row; }
+      }
+      return t;
+    };
+    const box = (t, x0, y0, x1, y1) => t[y1 * W + x1] - t[y0 * W + x1] - t[y1 * W + x0] + t[y0 * W + x0];
+    const sat = table(black);
+    const core = new Uint8Array(n);
+    let cores = 0;
+    for (let y = R; y < h - R; y++) {
+      for (let x = R; x < w - R; x++) {
+        if (black[y * w + x] && box(sat, x - R, y - R, x + R + 1, y + R + 1) === full) { core[y * w + x] = 1; cores++; }
+      }
+    }
+    if (!cores) return;
+    const near = table(core);
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i++) {
+        const p = 4 * i;
+        if (d[p] + d[p + 1] + d[p + 2] > 180) continue;
+        if (box(near, Math.max(0, x - R), Math.max(0, y - R), Math.min(w, x + R + 1), Math.min(h, y + R + 1))) d[p + 3] = 0;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  const RasterLayer = L.GridLayer.extend({
+    initialize(url, opts) {
+      this._url = url;
+      L.GridLayer.prototype.initialize.call(this, opts);
+      this.on("tileunload", (e) => {
+        const img = e.tile._img;
+        if (img) { img.onload = img.onerror = null; img.src = ""; }
+      });
+    },
+
+    createTile(coords, done) {
+      const canvas = document.createElement("canvas");
+      const img = new Image();
+      canvas._img = img;
+      img.onload = () => {
+        canvas._img = null;
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        try {
+          clearNoData(ctx, canvas.width, canvas.height);
+        } catch (err) {
+          // A canvas the browser won't let us read: show the tile as it is.
+        }
+        done(null, canvas);
+      };
+      img.onerror = () => { canvas._img = null; done(new Error("no tile"), canvas); };
+      img.src = L.Util.template(this._url, { x: coords.x, y: coords.y, z: coords.z });
+      return canvas;
+    },
+  });
+
   function datingText(dating) {
     return String(dating).split(",").map((d) => d.trim()).filter(Boolean)
       .map((d) => DATINGS[d.toLowerCase()] || d).join(", ");
@@ -1938,6 +2071,8 @@
 
   window.FerryChart = {
     layer: (opts) => new ChartLayer({ minZoom: serverMinZoom, ...opts }),
+    // A tile layer for Traficom's raster charts (as L.tileLayer), without their black no-data.
+    rasterLayer: (url, opts) => new RasterLayer(url, opts),
     aidAt,
     colors: C,
     onWaiting: (fn) => { waitingChanged = fn; },
