@@ -1000,3 +1000,16 @@ def test_sea_border_gap_is_sea_and_islands_land():
     # Away from the border, land is the whole Finnish area under the depths, as before.
     assert not vchart.near_sea_border(*tile_at(60.1, 24.4, vchart.BLOCK_Z)[1:])
     assert not vchart.near_sea_border(*tile_at(65.8, 24.2, vchart.BLOCK_Z)[1:])  # Tornio
+
+
+def test_sample_has_tiles_and_block_levels(tmp_path):
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    sample = asyncio.run(chart.sample(24.4, 60.005, zooms=(12, 10)))
+    z12 = "/".join(map(str, tile_at(60.005, 24.4, 12)))
+    assert set(sample["tiles"]) == {z12, "/".join(map(str, tile_at(60.005, 24.4, 10)))}
+    assert sample["tiles"][z12]["tile"]["depth"]
+    levels = sample["block"]["levels"]
+    assert set(levels) == {"overview", "0", "1", "2"}
+    assert levels["0"]["layers"]["depth"]["rows"] == len(levels["0"]["depth"]) > 0
+    assert levels["2"]["depth"] is None  # the full detail only as counts
+    json.dumps(sample)  # saved as a file

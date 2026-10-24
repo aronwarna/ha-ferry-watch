@@ -188,6 +188,27 @@
       .openOn(map);
   });
 
+  // Settings › Troubleshooting: a long press on the drawn chart saves what the chart has
+  // there (tiles at zoom 8 to 12 and the block's depth areas) for sending in.
+  let sampleOnPress = store.get("fw-chart-sample") === "1";
+  map.on("contextmenu", async (e) => {
+    if (!sampleOnPress || activeLayer !== layers.chart || chartStyle !== "drawn") return;
+    const popup = L.popup({ className: "aid-popup", offset: [0, -6] })
+      .setLatLng(e.latlng)
+      .setContent("Saving the chart here (zoom 8 to 12)…")
+      .openOn(map);
+    try {
+      const res = await api("api/vchart/sample", { method: "POST", body: { lat: e.latlng.lat, lon: e.latlng.lng } });
+      popup.setContent(res.ok
+        ? `<strong>Chart saved</strong><br>${esc(res.file)} (${res.mb} MB)<br>`
+          + `<span class="muted">In Media › ferry_watch › chart-samples</span><br>`
+          + `<a href="api/vchart/sample/${encodeURIComponent(res.file)}" download="${esc(res.file)}">Download</a>`
+        : `Couldn't save it: ${esc(res.error)}`);
+    } catch (err) {
+      popup.setContent(`Couldn't save it: ${esc(String(err.message || err))}`);
+    }
+  });
+
   function setLayer(name) {
     if (!layers[name]) name = "map";
     if (activeLayer) map.removeLayer(activeLayer);
@@ -1715,6 +1736,7 @@
     const keep = vc?.keep;
     $("chart-keep").checked = Boolean(keep);
     $("chart-foreign").checked = vc?.foreign !== false;
+    $("chart-sample").checked = sampleOnPress;
     let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
     if (keep && keep.running) {
       const last = keep.last_ok ? ` Last area finished at ${new Date(keep.last_ok * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
@@ -1764,6 +1786,11 @@
     } finally {
       e.target.disabled = false;
     }
+  });
+
+  $("chart-sample").addEventListener("change", (e) => {
+    sampleOnPress = e.target.checked;
+    store.set("fw-chart-sample", sampleOnPress ? "1" : "0");
   });
 
   // While the chart downloads, keep its progress current while the menu is open.

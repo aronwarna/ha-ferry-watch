@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 import weakref
 from pathlib import Path
@@ -17,13 +18,15 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, stats
+from . import __version__, config, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
 from .vchart import MIN_Z
 
+SAMPLES_KEPT = 10  # chart samples kept in the media folder (newest)
+SAMPLE_NAME = re.compile(r"chart-[0-9.-]+N-[0-9.-]+E-[0-9-]+\.json")
 TILE_WAIT = 0.3  # s a drawn-chart tile request may wait for its data before answering "pending"
 
 if TYPE_CHECKING:
@@ -100,6 +103,8 @@ class Web:
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
+        r.add_post("/api/vchart/sample", self.vchart_sample)
+        r.add_get("/api/vchart/sample/{name}", self.vchart_sample_file)
         r.add_post("/api/aircraft", self.set_aircraft)
         r.add_get("/api/aircraft/flights", self.air_flights)
         r.add_get("/api/aircraft/flights/{flight_id}", self.air_flight)
@@ -422,6 +427,42 @@ class Web:
             raise web.HTTPBadRequest(text="lat, lon and r are needed")
         ships = await self.fw.traffic.around(lat, lon, radius)
         return web.json_response({"ships": ships, "error": self.fw.traffic.error})
+
+    async def vchart_sample(self, request: web.Request) -> web.Response:
+        """Saves what the drawn chart has at a spot to the media folder (see VectorChart.sample),
+        for sending when something there is drawn wrong."""
+        body = await request.json()
+        try:
+            lat, lon = float(body["lat"]), float(body["lon"])
+        except (KeyError, TypeError, ValueError):
+            raise web.HTTPBadRequest(text="lat and lon are needed") from None
+        if not (-85 <= lat <= 85 and -180 <= lon <= 180):
+            raise web.HTTPBadRequest(text="lat and lon are needed")
+        sample = await self.fw.vchart.sample(lon, lat)
+        name = f"chart-{lat:.3f}N-{lon:.3f}E-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        path = config.MEDIA_DIR / "chart-samples" / name
+        data = json.dumps(sample, separators=(",", ":"), ensure_ascii=False).encode()
+
+        def write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            for old in sorted(path.parent.glob("chart-*.json"), key=lambda p: p.stat().st_mtime)[:-SAMPLES_KEPT]:
+                old.unlink(missing_ok=True)
+
+        try:
+            await asyncio.to_thread(write)
+        except OSError as err:
+            return web.json_response({"ok": False, "error": str(err)})
+        return web.json_response({"ok": True, "file": name, "mb": round(len(data) / 1e6, 1),
+                                  "tiles": list(sample["tiles"])})
+
+    async def vchart_sample_file(self, request: web.Request) -> web.StreamResponse:
+        name = request.match_info["name"]
+        path = config.MEDIA_DIR / "chart-samples" / name
+        if not SAMPLE_NAME.fullmatch(name) or not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": "application/json", "Cache-Control": "no-store",
+                                               "Content-Disposition": f'attachment; filename="{name}"'})
 
     async def set_vchart_keep(self, request: web.Request) -> web.Response:
         body = await request.json()

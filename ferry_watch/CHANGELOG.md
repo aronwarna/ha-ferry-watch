@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.4
+
+- Settings › Troubleshooting: "Save chart tile on long press". With it on, a
+  long press on the drawn chart saves what the chart has there (the tiles at
+  zoom 8 to 12 and the depth areas under the spot) as a file in Home
+  Assistant's Media folder, under ferry_watch › chart-samples, with a download
+  link. It's for sending in when the chart is drawn wrong somewhere, such as
+  shallows and islands missing when zoomed out. The last 10 files are kept.
+
 ## 0.16.3
 
 - Drawn chart: no more tan "land" out in the open sea. Out by the sea border

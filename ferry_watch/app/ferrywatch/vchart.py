@@ -1729,6 +1729,30 @@ def _thin_soundings(rows: list, cell: int = 64) -> list:
     return list(best.values())
 
 
+DEBUG_ZOOMS = (12, 11, 10, 9, 8)  # the tiles VectorChart.sample saves (closest first: its blocks then go into the overviews)
+DEBUG_WAIT = 60  # s it waits for each
+
+
+def _layer_stats(layer: Layer) -> dict[str, Any]:
+    """Counts of a layer's rows, rings and vertices, and of its rows by properties (the first
+    20), for a sample."""
+    by: dict[str, int] = {}
+    for i in range(layer.n):
+        k = json.dumps(layer.props[layer.pi[i]], ensure_ascii=False)
+        by[k] = by.get(k, 0) + 1
+    return {"kind": layer.kind, "rows": layer.n, "rings": len(layer.rs) - 1 if layer.kind == "area" else None,
+            "vertices": len(layer.co) // 2, "by_props": dict(sorted(by.items(), key=lambda kv: -kv[1])[:20])}
+
+
+def _layer_rows(layer: Layer | None) -> list | None:
+    """An area layer as [props, bbox, ring, ...] rows (flat block units), for a sample."""
+    if layer is None or layer.kind != "area":
+        return None
+    co = layer.co
+    return [[list(layer.props[layer.pi[i]]), list(layer.bbox(i)),
+             *[list(co[2 * layer.vo[r]:2 * layer.vo[r + 1]]) for r in layer.rings(i)]] for i in range(layer.n)]
+
+
 def _tile_mercator(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     size = 2 * HALF / 2**z
     minx = -HALF + x * size
@@ -2205,6 +2229,44 @@ class VectorChart:
         async with self._cutting:  # one tile cut at a time keeps the web server responsive
             tile = await asyncio.to_thread(make_tile, z, x, y, blocks)
         return tile, regions_ok and all(b is not None and b["_complete"] for b in loaded)
+
+    async def sample(self, lon: float, lat: float, zooms: Iterable[int] = DEBUG_ZOOMS) -> dict[str, Any]:
+        """What the chart has at a spot, for working out what goes wrong there (the panel's
+        "Save chart tile on long press"): the tiles over it at several zooms as the panel
+        gets them, and the depth areas of the block under it at each stored level."""
+        mx, my = lonlat_to_mercator(lon, lat)
+        out: dict[str, Any] = {"lon": lon, "lat": lat, "rev": self._rev(), "made": time.time(), "tiles": {}}
+        for z in zooms:
+            n = 2 ** z
+            x = min(n - 1, max(0, int((mx + HALF) / (2 * HALF) * n)))
+            y = min(n - 1, max(0, int((HALF - my) / (2 * HALF) * n)))
+            result = await self.tile(z, x, y, wait=DEBUG_WAIT)
+            out["tiles"][f"{z}/{x}/{y}"] = {"pending": True} if result is None else \
+                {"complete": result[1], "tile": result[0]}
+        n = 2 ** BLOCK_Z
+        bx, by = int((mx + HALF) / (2 * HALF) * n), int((HALF - my) / (2 * HALF) * n)
+        path = self._path(bx, by)
+
+        def read() -> dict[str, Any]:
+            block: dict[str, Any] = {"block": [bx, by], "near_sea_border": near_sea_border(bx, by)}
+            try:
+                block["meta"] = read_meta(path)
+                block["age_h"] = round((time.time() - path.stat().st_mtime) / 3600, 1)
+                levels = {"overview": read_overview(path)}
+                for i in range(len(LEVELS)):
+                    levels[str(i)] = read_block(path, i)[1]
+            except (OSError, ValueError, EOFError) as err:
+                block["error"] = str(err)
+                return block
+            block["levels"] = {name: {"layers": {k: _layer_stats(L) for k, L in layers.items()},
+                                      # The detailed level is big; the stats say enough there.
+                                      "depth": _layer_rows(layers.get("depth")) if name != str(len(LEVELS) - 1) else None}
+                               for name, layers in levels.items()}
+            return block
+
+        async with self._reading:
+            out["block"] = await asyncio.to_thread(read)
+        return out
 
     async def block(self, bx: int, by: int, level: int = len(LEVELS) - 1) -> dict | None:
         self._wanted[(bx, by)] = time.monotonic()
