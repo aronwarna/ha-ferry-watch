@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.16.5
+
+- Drawn chart: depth contours no longer stop suddenly. Where the official
+  data leaves a contour out (often the 20 m line, where depth areas from
+  different chart scales meet), it's now drawn from the edge between the
+  depth areas. The chart already on the NAS is fixed in place after the
+  update, without downloading it again.
+- Drawn chart: island names show sooner. A lake or marsh on an island (like
+  Träsket on Stora Träskö) no longer takes the island's label; its name only
+  shows from zoom 15.
+- Zoomed-out chart checked against long-press samples: shallows and islands
+  are all there at zoom 8 to 12. The white squares while panning are tiles
+  still loading.
+
 ## 0.16.4
 
 - Settings › Troubleshooting: "Save chart tile on long press". With it on, a

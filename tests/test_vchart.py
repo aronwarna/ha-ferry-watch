@@ -1,6 +1,8 @@
 import asyncio
 import json
 import math
+import os
+import time
 
 import aiohttp
 
@@ -1013,3 +1015,138 @@ def test_sample_has_tiles_and_block_levels(tmp_path):
     assert levels["0"]["layers"]["depth"]["rows"] == len(levels["0"]["depth"]) > 0
     assert levels["2"]["depth"] is None  # the full detail only as counts
     json.dumps(sample)  # saved as a file
+
+
+def _ring(cx, cy, r, n=48, wobble=0.15, phase=0.0):
+    return [(cx + r * (1 + wobble * math.sin(5 * a + phase)) * math.cos(a),
+             cy + r * (1 + wobble * math.sin(5 * a + phase)) * math.sin(a))
+            for a in (2 * math.pi * i / n for i in range(n))]
+
+
+def test_zoomed_out_tiles_keep_shallows_and_islands():
+    """A real-shaped archipelago: one deep area over the whole block with hundreds of holes,
+    25 of them holding 6-10, 3-6 and 0-3 m rings round an island and the rest islets. Every
+    zoom from 8 to 12 keeps the shallows and the islands (the overview cuts zooms 8-9,
+    LEVELS[0] zooms 10-11)."""
+    bx, by = 1162, 595  # south of Porkkala, in Finnish waters
+    rows, holes, spots = [], [], []
+    m = vchart.UNITS * vchart.TILE_BUFFER // vchart.EXTENT
+    for i in range(5):
+        for j in range(5):
+            cx, cy = 6554 + i * 13107, 6554 + j * 13107
+            r = 1500 + 1000 * ((i * 7 + j * 3) % 5) / 4
+            edges = [_ring(cx, cy, r + d, phase=i + j) for d in (0, 1200, 2400, 3600)]
+            for (d1, d2), outer, inner in (((0, 3), 1, 0), ((3, 6), 2, 1), ((6, 10), 3, 2)):
+                rows.append([[d1, d2], None, [edges[outer], edges[inner]]])
+            holes.append(edges[3])
+            f = 1 + 0.15 * math.sin(i + j)  # the rings' wobble at angle 0
+            spots.append([(cx, cy, None), *((cx + f * (r + d), cy, band) for d, band in ((600, 1), (1800, 2), (3000, 3)))])
+    for i in range(32):  # islets between them
+        for j in range(32):
+            cx, cy = 1024 + i * 2048, 1024 + j * 2048
+            if all(math.dist((cx, cy), (6554 + a * 13107, 6554 + b * 13107)) > 6400 for a in range(5) for b in range(5)):
+                holes.append(_ring(cx, cy, 200, n=12))
+    assert len(holes) > 100
+    box = [(-m, -m), (vchart.UNITS + m, -m), (vchart.UNITS + m, vchart.UNITS + m), (-m, vchart.UNITS + m)]
+    rows.append([[10, 20], None, [box, *holes]])
+    full = vchart.layers_from_rows({"depth": rows})
+    levels, overview = vchart.make_levels(full), vchart.make_overview(full)
+    for z in (8, 9, 10, 11, 12):
+        data = overview if z < vchart.BLOCK_MIN_Z else levels[vchart.level_for(z)]
+        if z >= vchart.BLOCK_Z:
+            n = 2 ** (z - vchart.BLOCK_Z)
+            tx, ty, ox, oy, k = bx * n, by * n, 0, 0, vchart.EXTENT * n / vchart.UNITS
+        else:
+            n = 2 ** (vchart.BLOCK_Z - z)
+            tx, ty = bx // n, by // n
+            ox, oy, k = (bx - tx * n) * vchart.UNITS, (by - ty * n) * vchart.UNITS, vchart.EXTENT / (vchart.UNITS * n)
+        tile = vchart.make_tile(z, tx, ty, {(bx, by): data})
+        assert tile["land"]
+        land = right = total = 0
+        wrong = []
+        for island in spots:
+            for x, y, band in island:
+                px, py = (x + ox) * k, (y + oy) * k
+                if not (0 <= px < vchart.EXTENT and 0 <= py < vchart.EXTENT):
+                    continue
+                if z == 8 and band is not None:
+                    continue  # 60-75 m bands, under a pixel at zoom 8: only the islands there
+                covered = _covered(tile["depth"], px, py)
+                total += 1
+                wrong.append((band, [row[0] for row in covered]))
+                if band is None:
+                    land += not covered and bool(_covered([[r] for r in tile["land"]], px, py))
+                    right += not covered
+                else:
+                    right += [row[0] for row in covered][-1:] == [band]
+        from collections import Counter
+        bad = Counter((b, tuple(c)) for b, c in wrong if (c[-1:] != [b] if b is not None else bool(c)))
+        assert total and right / total >= 0.9, (z, right, total, bad)
+        assert land >= 0.9 * total / (1 if z == 8 else 4), (z, land, total)
+
+
+def test_contour_gaps_are_filled_from_depth_areas():
+    # A 15-20 m area beside a 20-50 m one along a slanted edge; Traficom's 20 m contour
+    # covers only the lower half of it. A second 20-50 m area beside the first has no
+    # shallower water next to it: no line goes between them.
+    a = [(10000, 10000), (30000, 10000), (40000, 50000), (10000, 50000)]
+    b = [(30000, 10000), (50000, 10000), (55000, 50000), (40000, 50000)]
+    c = [(50000, 10000), (60000, 10000), (60000, 50000), (55000, 50000)]
+    full = vchart.layers_from_rows({
+        "depth": [[["15", "20"], None, [a]], [["20", "50"], None, [b]], [["20", "50"], None, [c]]],
+        "contour": [[["20"], None, [(35000, 30000), (40000, 50000)]], [["10"], None, [(10000, 30000), (20000, 30000)]]],
+    })
+    out = vchart.fill_contour_gaps(full["depth"], full["contour"])
+    added = [out.pts(out.vo[i], out.vo[i + 1]) for i in range(full["contour"].n, out.n)]
+    assert all(out.props[out.pi[i]] == ("20",) for i in range(full["contour"].n, out.n))
+    assert len(added) == 1
+    xs = [p[0] for p in added[0]]
+    # From the corner at 30000 along the shared edge to near where the real line starts.
+    assert min(xs) == 30000 and 33500 < max(xs) <= 35100
+    assert all(abs((x - 30000) * 4 - (y - 10000)) < 6 for x, y in added[0][1:-1])  # on the edge a/b
+
+
+def test_refill_adds_contours_to_old_files(tmp_path):
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+
+    async def run():
+        z, x, y = tile_at(60.005, 24.4, 12)
+        await chart.tile(z, x, y)
+        path = chart._path(*vchart.blocks_for(z, x, y)[0])
+        meta = vchart.read_meta(path)
+        assert meta["fill"] == vchart.CONTOUR_FILL
+        # As written before the gaps were filled:
+        head, full = vchart.read_block(path, len(vchart.LEVELS) - 1)
+        vchart.write_block(path, {k: v for k, v in head.items() if k != "fill"}, vchart.make_levels(full),
+                           vchart.make_overview(full))
+        os.utime(path, (1000.0, time.time() - 100))
+        mtime = path.stat().st_mtime
+        chart._filled.clear()
+        chart._forget()
+        assert await chart._unfilled(path)
+        await chart._ensure_part(*vchart.blocks_for(z, x, y)[0], "")
+        assert vchart.read_meta(path)["fill"] == vchart.CONTOUR_FILL
+        assert path.stat().st_mtime == mtime + 1  # keeps its age
+        assert not await chart._unfilled(path)
+
+    asyncio.run(run())
+
+
+def test_lake_names_on_islands_wait_for_close_zooms():
+    # An island (a hole in the depth area) with a lake on it: the lake's name doesn't take the
+    # island's place until zoomed right in.
+    island = [(20000, 20000), (40000, 20000), (40000, 40000), (20000, 40000)]
+    box = [(0, 0), (65536, 0), (65536, 65536), (0, 65536)]
+    rows = {"depth": [[["10", "20"], None, [box, island]]],
+            "name": [[["Träsket", "swe", 36200], 30000.0, 28000.0],
+                     [["Träskön eller Storlandet", "swe", None], 30000.0, 32000.0],
+                     [["Kyrkfjärden", "swe", 36490], 25000.0, 18000.0]]}
+    layers = vchart.layers_from_rows(rows)
+
+    def names(z):
+        n = 2 ** (z - vchart.BLOCK_Z)  # the tile with the lake in it
+        tile = vchart.make_tile(z, n * 1162 + 30000 * n // 65536, n * 595 + 28000 * n // 65536, {(1162, 595): layers})
+        return sorted(r[2] for r in tile.get("name", []))
+
+    assert names(13) == ["Kyrkfjärden", "Träskön eller Storlandet"]
+    assert "Träsket" in names(15)
