@@ -20,11 +20,14 @@ from .config import USER_AGENT
 
 _LOGGER = logging.getLogger(__name__)
 
-WIKI_API = "https://en.wikipedia.org/w/api.php"
+WIKI_API = "https://{lang}.wikipedia.org/w/api.php"
 THUMB_WIDTH = 640
-RETRY_AFTER = 6 * 3600
+RETRY_AFTER = 7 * 24 * 3600
 MAX_UPLOAD = 8 * 1024 * 1024
-SHIP_WORDS = ("ship", "ferry", "vessel", "cruise", "liner", "boat")
+# English, Finnish and Swedish words that show an article is about a ship.
+SHIP_WORDS = ("ship", "ferry", "vessel", "cruise", "liner", "boat", "icebreaker",
+              "alus", "lautta", "laiva", "murtaja", "fartyg", "färja", "båt")
+SHIP_PREFIXES = ("MS ", "M/S ", "MV ", "L/A ", "M/V ")
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
@@ -67,23 +70,33 @@ class PhotoCache:
             "credit_url": info.get("page_url"),
         }
 
-    async def ensure(self, ship: dict[str, Any]) -> None:
+    @staticmethod
+    def candidates(ship: dict[str, Any]) -> list[tuple[str, str]]:
+        """(wiki language, article title) pairs to try, best first."""
+        if ship.get("wiki"):
+            return [("en", ship["wiki"])]
+        name = ship["name"]
+        return [("en", f"MS {name}"), ("en", f"MV {name}"), ("en", name),
+                ("fi", f"M/S {name}"), ("fi", f"L/A {name}"), ("sv", f"M/S {name}")]
+
+    async def ensure(self, ship: dict[str, Any]) -> bool:
+        """Fetch a photo if the ship has none yet; returns whether one was fetched."""
         mmsi = ship["mmsi"]
         lock = self._locks.setdefault(mmsi, asyncio.Lock())
         async with lock:
             info = self.info(mmsi)
             if self.path(mmsi) or time.time() - info.get("failed_ts", 0) < RETRY_AFTER:
-                return
-            titles = [ship["wiki"]] if ship.get("wiki") else [f"MS {ship['name']}", ship["name"]]
-            for title in titles:
+                return False
+            for lang, title in self.candidates(ship):
                 try:
-                    if await self._fetch_from_wikipedia(mmsi, title):
-                        return
+                    if await self._fetch_from_wikipedia(mmsi, lang, title):
+                        return True
                 except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                     _LOGGER.debug("Photo lookup for %s failed: %s", title, err)
             self._write_info(mmsi, {"failed_ts": int(time.time())})
+            return False
 
-    async def _fetch_from_wikipedia(self, mmsi: int, title: str) -> bool:
+    async def _fetch_from_wikipedia(self, mmsi: int, lang: str, title: str) -> bool:
         params = {
             "action": "query", "format": "json", "formatversion": "2", "redirects": "1",
             "prop": "pageimages|description", "piprop": "thumbnail", "pithumbsize": str(THUMB_WIDTH),
@@ -91,7 +104,7 @@ class PhotoCache:
         }
         headers = {"User-Agent": USER_AGENT}
         timeout = aiohttp.ClientTimeout(total=30)
-        async with self.session.get(WIKI_API, params=params, headers=headers, timeout=timeout) as resp:
+        async with self.session.get(WIKI_API.format(lang=lang), params=params, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
             data = await resp.json()
         pages = data.get("query", {}).get("pages", [])
@@ -99,7 +112,8 @@ class PhotoCache:
             return False
         page = pages[0]
         description = (page.get("description") or "").lower()
-        if not any(word in description for word in SHIP_WORDS):
+        ship_title = page.get("title", "").startswith(SHIP_PREFIXES)
+        if not any(word in description for word in SHIP_WORDS) and not (ship_title and not description):
             return False  # some other article with the same name
         url = page["thumbnail"]["source"]
         async with self.session.get(url, headers=headers, timeout=timeout) as resp:
@@ -108,7 +122,7 @@ class PhotoCache:
             body = await resp.read()
         self._save(mmsi, body, ext, {
             "remote_url": url,
-            "page_url": f"https://en.wikipedia.org/wiki/{page['title'].replace(' ', '_')}",
+            "page_url": f"https://{lang}.wikipedia.org/wiki/{page['title'].replace(' ', '_')}",
             "uploaded": False,
         })
         _LOGGER.info("Fetched photo for %s from %s", mmsi, page["title"])

@@ -145,3 +145,101 @@ def test_feed_warnings_only_by_day():
     night = dt.datetime(2026, 10, 18, 3, 0).timestamp()
     assert notify.feed_warning_hours(day)
     assert not notify.feed_warning_hours(night)
+
+
+def test_two_inner_lines_alert_once_per_trip_with_direction(tmp_path, monkeypatch):
+    """Wiring as in the app: only the main tracker (my ships) feeds the detector."""
+    from ferrywatch.passages import Detector
+    fw, n = make_fw(tmp_path, monkeypatch)
+    store = fw.store
+    store.add_zone("Inner west end", "inner", "line", [[60.05, 24.30], [59.95, 24.30]])
+    store.add_zone("Inner east end", "inner", "line", [[60.05, 24.50], [59.95, 24.50]])
+    store.add_ship(230000999, "Some tanker", "#000000")
+    store.set_alerts(230000999, False)
+    tracker = Tracker(store)
+    tracker.load()
+    fleet = Tracker(store, members=lambda: {276000101})
+    fleet.load()
+    passages = []
+    detector = Detector(store, passages.append)
+    tracker.subscribe(detector.on_event)
+
+    async def run():
+        now = int(time.time())  # after make_fw's earlier reports
+        for i in range(20):  # westbound through both lines, a report a minute
+            lon = 24.60 - i * 0.02
+            for mmsi in (MMSI, 230000999):
+                tracker.on_location(mmsi, {"time": now + i * 60, "lat": 60.0, "lon": lon, "sog": 17.0,
+                                           "cog": 270.0, "heading": 270})
+            fleet.on_location(276000101, {"time": now + i * 60, "lat": 60.0, "lon": lon, "sog": 25.0,
+                                          "cog": 270.0, "heading": 270})
+        for p in passages:
+            await n.handle(p)
+
+    asyncio.run(run())
+    by_ship = {}
+    for p in passages:
+        by_ship.setdefault(p["mmsi"], []).append(p)
+    assert set(by_ship) == {MMSI, 230000999}  # the fleet ship never counts
+    assert len(by_ship[MMSI]) == 1 and by_ship[MMSI][0]["direction"] == "west"  # second line: same trip
+    assert len(fw.ha.calls) == 1 and fw.ha.calls[0][1]["message"].startswith("Towards Stockholm")
+    notes = {r["mmsi"]: r["note"] for r in store.passages()}
+    assert notes[230000999] == "alerts off for this ship"
+
+
+class StubWeather:
+    def __init__(self, conditions):
+        self.cond = conditions
+        self.refreshes = 0
+
+    def start_refresh(self, max_age):
+        self.refreshes += 1
+
+    async def latest(self, max_age, wait=None):
+        return self.cond
+
+    def conditions(self):
+        return self.cond
+
+
+def test_alert_has_sea_conditions_and_passage_keeps_wind(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    now = time.time()
+    fw.weather = StubWeather({"wind": {"ms": 9.0, "gust": 13.0, "dir": 225.0, "ts": now - 300},
+                              "visibility": {"km": 20.0, "weather": None, "ts": now - 300}})
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    first, second = fw.ha.calls[-1][1]["message"].split("\n")
+    assert first.startswith("Towards Stockholm, 17 kn.")
+    assert second.startswith("Wind SW 9 m/s (gusts 13), visibility 20 km, sun") and second.endswith(".")
+    assert fw.weather.refreshes == 1  # started while the phone's location was looked up
+    row = fw.store.passages()[0]
+    assert (row["wind_ms"], row["gust_ms"], row["wind_dir"]) == (9.0, 13.0, 225.0)
+
+
+def test_stale_wind_is_left_out(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    fw.weather = StubWeather({"wind": {"ms": 9.0, "gust": None, "dir": 225.0, "ts": time.time() - 3 * 3600}})
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    second = fw.ha.calls[-1][1]["message"].split("\n")[1]
+    assert second.startswith("Sun")  # only the sun time
+    assert fw.store.passages()[0]["wind_ms"] is None
+
+
+class StubIce:
+    async def current(self, ts):
+        return {"state": "ice", "thick_cm": 31.0, "conc": 90.0}
+
+
+def test_passage_keeps_water_visibility_and_ice(tmp_path, monkeypatch):
+    fw, n = make_fw(tmp_path, monkeypatch)
+    now = time.time()
+    fw.weather = StubWeather({"wind": {"ms": 4.0, "gust": 6.0, "dir": 200.0, "ts": now - 300},
+                              "visibility": {"km": 8.5, "weather": None, "ts": now - 300},
+                              "water": {"c": 1.4, "ts": now - 2 * 3600}})
+    fw.ice = StubIce()
+    asyncio.run(n.handle(passage(fw.store, route="outer")))  # outer passages too, with no panel open
+    row = fw.store.passages()[0]
+    assert (row["wind_ms"], row["water_c"], row["vis_km"]) == (4.0, 1.4, 8.5)
+    assert (row["ice"], row["ice_cm"], row["ice_conc"]) == ("ice", 31.0, 90.0)

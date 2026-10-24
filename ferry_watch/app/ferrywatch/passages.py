@@ -6,6 +6,14 @@ reports. Areas: a passage is counted after AREA_MIN_POINTS consecutive
 positions inside the area. Either way the ship must be moving at least
 MIN_SPEED knots, and each ship gets at most one passage per route per
 COOLDOWN.
+
+Sailings that take the outer route cross no inner line, so without outer-route lines
+they would leave no trace and the stats couldn't compare the routes (by wind, say). A
+ship crossing the Porkkala meridian with no inner passage in the last COOLDOWN is
+therefore recorded as an outer passage (zone 0), unless outer-route lines exist. The
+meridian lies between the two ends of the inner route, so on the inner route the line
+has already been crossed; should an inner passage still follow (one line only), it
+replaces the outer one.
 """
 
 from __future__ import annotations
@@ -23,6 +31,9 @@ MAX_GAP = 20 * 60  # ignore moves between positions further apart than this
 COOLDOWN = 2 * 3600
 AREA_MIN_POINTS = 2
 ROUTES = ("inner", "outer")
+PORKKALA_MERIDIAN = 24.40
+MERIDIAN_LATS = (59.55, 60.15)  # from the outer route to the coast
+AUTO_OUTER = {"id": 0, "role": "outer"}
 
 DIRECTION_LABELS = {"east": "towards Helsinki", "west": "towards Stockholm"}
 
@@ -36,6 +47,15 @@ def direction(prev: Position, pos: Position) -> str:
     return "east" if cog is not None and 0 < cog < 180 else "west"
 
 
+def crosses_meridian(prev: Position, pos: Position) -> bool:
+    """The move crosses (or ends on) the Porkkala meridian between the outer route and the coast."""
+    m = PORKKALA_MERIDIAN
+    if not ((prev.lon - m) * (pos.lon - m) < 0 or (pos.lon == m and prev.lon != m)):
+        return False
+    lat = prev.lat + (pos.lat - prev.lat) * (m - prev.lon) / (pos.lon - prev.lon)
+    return MERIDIAN_LATS[0] <= lat <= MERIDIAN_LATS[1]
+
+
 class Detector:
     def __init__(self, store: Store, on_passage: PassageHandler | None = None):
         self.store = store
@@ -47,6 +67,8 @@ class Detector:
 
     def reload_zones(self) -> None:
         self.zones = [z for z in self.store.zones() if z["role"] in ROUTES]
+        roles = {z["role"] for z in self.zones}
+        self.auto_outer = "inner" in roles and "outer" not in roles
         self.area_run.clear()
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
@@ -77,6 +99,11 @@ class Detector:
                         found.append(self._record(zone, run[0], run[1]))
                 else:
                     self.area_run.pop(key, None)
+        if (self.auto_outer and prev and moving and pos.ts - prev.ts <= MAX_GAP and not any(found)
+                and crosses_meridian(prev, pos)):
+            inner = self.store.last_passage(pos.mmsi, "inner")
+            if not inner or pos.ts - inner["ts"] >= COOLDOWN:
+                found.append(self._record(AUTO_OUTER, prev, pos))
         return [p for p in found if p]
 
     def _record(self, zone: dict[str, Any], prev: Position, pos: Position) -> dict[str, Any] | None:
@@ -93,6 +120,8 @@ class Detector:
             "lon": pos.lon,
             "sog": pos.sog,
         }
+        if passage["route"] == "inner":
+            self.store.delete_auto_outer(pos.mmsi, pos.ts - COOLDOWN)
         passage["id"] = self.store.add_passage(passage)
         _LOGGER.info("%s: %s route passage %s", pos.mmsi, passage["route"], passage["direction"])
         if self.on_passage:

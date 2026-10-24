@@ -1,0 +1,398 @@
+/* Ship card as a sheet, track playback, aircraft history and passage weather. */
+
+.fill { fill: currentColor; stroke: none; }
+.icon-button svg .fill, .player-btn svg .fill { fill: currentColor; stroke: none; }
+
+/* --- ship card: full or peek ------------------------------------------------------ */
+
+.card.sliding { transition: height 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.28s ease; }
+.card.closing { opacity: 0; }
+.card-head .icon-button.plain { width: 36px; height: 36px; }
+.card-head { margin-right: -6px; }
+.card-actions { flex-wrap: wrap; row-gap: 0; column-gap: 16px; margin-top: 6px; }
+.card-actions button, .card-actions .link-button { min-height: 36px; display: inline-flex; align-items: center; }
+.play-link::before {
+  content: "";
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-left: 8px solid currentColor;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.card-peek { display: none; align-items: center; gap: 8px; min-height: 72px; padding: 12px 8px 12px 12px; cursor: pointer; }
+.card.peek .card-peek { display: flex; }
+.card.peek .card-photo, .card.peek .card-body { display: none; }
+.peek-photo {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 2.5px solid var(--accent);
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.peek-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.peek-photo.empty svg { display: block; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); }
+.peek-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.peek-text strong, .peek-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek-text strong { font-size: 15px; }
+.peek-text span { font-size: 12px; color: var(--muted); }
+.card-peek .icon-button.peek-btn { width: 38px; height: 38px; flex: 0 0 auto; border-radius: 50%; }
+.card-peek #peek-play { background: var(--accent); color: #fff; box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent); }
+#peek-play svg, .replay-play svg { width: 18px; height: 18px; }
+
+.sheet-grab { display: none; }
+/* While the player is in the card it has its own play button. */
+.card:has(#card-player:not([hidden])) #peek-play { display: none; }
+.card-peek, .sheet-grab, .card-head { -webkit-user-select: none; user-select: none; }
+.player-slot { padding: 0 10px 10px 12px; }
+.card:not(.peek) .player-slot { padding-top: 12px; border-bottom: 1px solid var(--border); }
+
+@media (max-width: 560px) {
+  .card { touch-action: none; }
+  .sheet-grab {
+    display: block;
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 20px;
+    cursor: grab;
+  }
+  .sheet-grab i {
+    display: block;
+    width: 38px;
+    height: 4px;
+    margin: 7px auto 0;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+  .card.peek .sheet-grab i, .card:has(.card-photo.empty) .sheet-grab i, .card:has(.player-slot:not([hidden])) .sheet-grab i {
+    background: color-mix(in srgb, var(--text) 28%, transparent);
+    box-shadow: none;
+  }
+  .card-peek { padding-top: 14px; }
+  .card:not(.peek) .player-slot { padding-top: 18px; }
+  #peek-expand { display: none; }
+}
+
+/* --- player ------------------------------------------------------------------------- */
+
+.player { display: flex; align-items: center; gap: 8px; }
+.player-btn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.player-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.player-toggle, .ah-play {
+  width: 42px;
+  height: 42px;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.player-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.player-main { flex: 1; min-width: 0; }
+.player-time { display: flex; align-items: baseline; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.player-clock { font-size: 15px; }
+.player-info { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.player-end { margin-left: auto; color: var(--muted); }
+.player-speed {
+  flex: 0 0 auto;
+  min-width: 54px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.player-range, .ah-track input {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 26px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.player-range::-webkit-slider-runnable-track, .ah-track input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) var(--p, 0%), color-mix(in srgb, var(--text) 16%, transparent) var(--p, 0%));
+}
+.player-range::-moz-range-track, .ah-track input::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) var(--p, 0%), color-mix(in srgb, var(--text) 16%, transparent) var(--p, 0%));
+}
+.player-range::-webkit-slider-thumb, .ah-track input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  border: 2.5px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.player-range::-moz-range-thumb, .ah-track input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2.5px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+}
+.playback-ship svg { display: block; transition: transform 0.15s linear; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45)); }
+
+/* --- passage replay with its player ------------------------------------------------- */
+
+.replay { flex-direction: column; align-items: stretch; gap: 6px; }
+.replay-row { display: flex; align-items: flex-start; gap: 8px; }
+.replay .player-slot { padding: 4px 0 0; border-top: 1px solid var(--border); }
+.replay .player-slot .player { padding-top: 6px; }
+.replay-row .icon-button.plain { width: 36px; height: 36px; flex: 0 0 auto; }
+.replay-row .replay-play { border-radius: 50%; background: var(--accent); color: #fff; }
+.replay:has(#replay-player:not([hidden])) #replay-play { display: none; }
+
+/* --- rescue aircraft ----------------------------------------------------------------- */
+
+.subbar-left > .air-row { pointer-events: none; }
+.air-row { display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.air-row > * { pointer-events: auto; }
+.air-row:not(:has(> :not([hidden]))) { display: none; }
+.air-row .air-badge { min-width: 0; }
+.icon-button.air-history-button { width: 36px; height: 36px; flex: 0 0 auto; color: #dc2626; }
+.air-history-button .faint { stroke: var(--muted); opacity: 0.6; }
+body.ah-open .air-history-button { background: #dc2626; color: #fff; border-color: #dc2626; }
+body.ah-open .air-history-button .faint { stroke: #fff; }
+
+.ac-track { margin-top: 4px; font-size: 12px; }
+.ac-foot .ac-hist { font-size: 11px; padding: 8px 4px; margin: -8px -4px; color: var(--accent); }
+
+.alt-legend { margin: 4px 0 2px; }
+.alt-legend i { display: block; height: 6px; border-radius: 3px; }
+.alt-legend > span { display: flex; justify-content: space-between; margin-top: 1px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.ah-open-button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 46px;
+  margin-top: 8px;
+  padding: 7px 34px 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, #dc2626 6%, transparent);
+  text-align: left;
+  cursor: pointer;
+}
+.ah-open-button::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-top: 2px solid var(--muted);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+/* --- aircraft history view ------------------------------------------------------------ */
+
+.ah-canvas { position: absolute; pointer-events: none; transition: opacity 0.18s; }
+/* Ships and marks step back while the flights glow. */
+body.ah-open .leaflet-marker-pane { opacity: 0.3; }
+body.ah-open .leaflet-tooltip-pane { opacity: 0; }
+body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
+
+.ah {
+  position: fixed;
+  z-index: 1002;
+  top: calc(var(--top) + var(--topbar-h) + 8px);
+  right: 10px;
+  width: 360px;
+  max-height: calc(100vh - var(--top) - var(--topbar-h) - 24px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ah-head { display: flex; align-items: center; gap: 8px; padding: 10px 6px 4px 14px; }
+.ah-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ah-title strong { font-size: 16px; }
+.ah-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ah-mode { padding: 2px; background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 11px; }
+.ah-mode button { min-height: 32px; padding: 4px 11px; font-size: 13px; font-weight: 600; }
+.ah-head .icon-button.plain { width: 38px; height: 38px; flex: 0 0 auto; }
+
+.ah-chips { display: flex; gap: 6px; padding: 6px 14px 8px; }
+.ah-chips button {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ah-chips button[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
+
+.ah-player { display: flex; align-items: center; gap: 10px; padding: 4px 12px 8px; border-bottom: 1px solid var(--border); }
+.ah-time { flex: 1; min-width: 0; }
+.ah-clock { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ah-clock strong { color: var(--text); font-size: 14px; }
+.ah-track { position: relative; height: 34px; display: flex; align-items: flex-end; }
+.ah-spark { position: absolute; left: 9px; right: 9px; bottom: 15px; width: calc(100% - 18px); height: 14px; pointer-events: none; }
+.ah-spark rect { fill: var(--accent); opacity: 0.35; }
+
+.ah-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 10px 0;
+  padding: 10px 4px 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ah-pick .grow { flex: 1; min-width: 0; }
+.ah-pick .grow > span { display: block; }
+.ah-pick strong { font-size: 14px; display: block; }
+.ah-pick .icon-button.plain { width: 36px; height: 36px; flex: 0 0 auto; margin-top: -6px; }
+.ah-swatch { width: 4px; align-self: stretch; border-radius: 2px; background: var(--c); box-shadow: 0 0 8px var(--c); }
+
+.ah-legend { list-style: none; margin: 0; padding: 4px 6px 8px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.ah-ac button {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+}
+.ah-ac.solo button { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ah-ac.dim button { opacity: 0.42; }
+.ah-thumb {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--c) 22%, #0b1220);
+  box-shadow: 0 0 0 2px var(--c), 0 0 12px color-mix(in srgb, var(--c) 60%, transparent);
+}
+.ah-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ah-icon svg { width: 24px; height: 24px; display: block; fill: var(--c); stroke: var(--c); stroke-width: 2; stroke-linecap: round; }
+.ah-name { min-width: 0; display: flex; flex-direction: column; }
+.ah-name strong, .ah-name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ah-name span { font-size: 12px; color: var(--muted); }
+.ah-count { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
+.ah-count strong { font-size: 15px; }
+.ah-count span { font-size: 11px; color: var(--muted); }
+.ah-note { margin: 8px 14px 12px; }
+
+@media (max-width: 560px) {
+  .ah {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: 50vh;
+  }
+  .ah-legend { max-height: 30vh; }
+}
+
+/* --- passage weather ---------------------------------------------------------------- */
+
+.ships-list li .grow .wx-row, .wx-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.ships-list li .grow .wx-row > span, .wx-row > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.wx-wind svg { width: 13px; height: 13px; fill: currentColor; }
+.wx-water svg { width: 12px; height: 12px; fill: #0ea5e9; }
+.ships-list li .grow .wx-ice, .wx-ice { padding: 0 6px; border-radius: 6px; font-size: 11px; font-weight: 600; line-height: 18px; }
+.wx-ice.ice { background: #e0f2fe; color: #0369a1; }
+.wx-ice.open { border: 1px solid var(--border); color: var(--muted); }
+
+.stats-day { margin-top: 6px; }
+.day-passages { margin-top: 0; }
+.day-passages li { min-height: 44px; }
+.day-top strong { margin-right: 4px; font-variant-numeric: tabular-nums; }
+
+.stats-weather { margin-top: 6px; }
+.wx-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wx-head h3 { margin-bottom: 2px; }
+.wx-key { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.wx-key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-left: 6px; }
+.stats-weather > p { margin: 0 0 8px; }
+.wx-grid { display: grid; gap: 14px; }
+.wx-grid h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.wx-bands { display: flex; flex-direction: column; gap: 3px; }
+.wx-ice-bands { margin-top: 12px; }
+.wx-band { display: grid; grid-template-columns: 74px 1fr 82px; align-items: center; gap: 8px; min-height: 26px; font-size: 13px; }
+.wx-label { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wx-bar { display: flex; height: 12px; overflow: hidden; border-radius: 6px; background: color-mix(in srgb, var(--text) 7%, transparent); }
+.wx-bar i { display: block; height: 100%; }
+.wx-val { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wx-val strong { font-size: 13px; }
+.wx-dirs { display: grid; grid-template-columns: 150px 1fr; align-items: center; column-gap: 12px; }
+.wx-dirs h4 { grid-column: 1 / -1; }
+.wx-rose { display: block; width: 150px; height: 150px; }
+.wx-rose .ring { fill: none; stroke: var(--border); }
+.wx-rose text { font-size: 10px; fill: var(--muted); text-anchor: middle; font-weight: 600; }
+.wx-rose .sector { cursor: pointer; transition: opacity 0.2s; }
+.wx-rose .sector path { stroke: var(--bg); stroke-width: 1; }
+.wx-rose .sector.dim { opacity: 0.3; }
+.wx-caption { margin: 0; }
+
+@media (prefers-color-scheme: dark) {
+  .wx-ice.ice { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; }
+  .ah-chips button[aria-pressed="true"] { background: var(--text); color: #111318; }
+}
+#version { overflow-wrap: anywhere; }
