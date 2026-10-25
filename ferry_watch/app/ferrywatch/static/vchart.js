@@ -2097,9 +2097,9 @@
     }
   }
 
-  // Canvases are drawn at most at twice the CSS pixels: a phone's 3x screen gets 2x tiles,
-  // under half the pixels to draw and keep (the eye barely tells them apart on a chart).
-  const MAX_DPR = 2;
+  // Canvases are drawn at the screen's own pixel ratio, up to 3x: ben tried 2x tiles on his
+  // S22's 3x screen (0.19.0, half the pixels) and preferred the sharper look.
+  const MAX_DPR = 3;
   const pixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DPR);
 
   const PANE = "fwChartLabels";

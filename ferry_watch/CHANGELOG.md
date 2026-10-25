@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.1
+
+- Drawn chart: tiles are sharp again, drawn at your screen's full pixel density as
+  before 0.19.0. The other speed and memory changes of 0.19.0 stay. In the
+  panning test that's 55 frames a second with 8 stutters (0.18.1: 54 and 18;
+  0.19.0: 60 and none), and the phone's browser holds about 70 MB of chart
+  pictures again instead of 37 MB. The NAS side is unchanged.
+
 ## 0.19.0
 
 Performance and memory (card T11). Measured in the simulator with the Swedish and
