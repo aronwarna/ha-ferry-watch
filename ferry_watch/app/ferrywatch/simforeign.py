@@ -4,12 +4,19 @@ OpenStreetMap elements (the dicts foreign.OsmStream makes). See foreign.py."""
 
 from __future__ import annotations
 
+import asyncio
 import math
+import os
 import random
 import re
 import struct
 import zlib
 from typing import Any
+
+# Seconds each stand-in request takes, to measure how fast the chart fills in (the real
+# services take a few seconds); none unless the environment sets them.
+OVERPASS_S = float(os.environ.get("FW_FAKE_OVERPASS_S") or 0)
+DTM_S = float(os.environ.get("FW_FAKE_DTM_S") or 0)
 
 
 def estonia_lat(lon: float) -> float:
@@ -31,6 +38,22 @@ def _islands() -> list[tuple[float, float, float]]:
         lat = rnd.uniform(59.15, 60.3)
         lon = rnd.uniform(sweden_lon(lat) + 0.04, 19.3)
         out.append((round(lon, 4), round(lat, 4), round(rnd.choice((0.08, 0.15, 0.25, 0.4, 0.7, 1.1)), 2)))
+    # A dense archipelago around Furusund, as the Stockholm skerries are: thousands of
+    # islands and skerries, most of them smaller than the depth model's cells.
+    # (Apart from each other: OpenStreetMap's coastlines never cross.)
+    near: dict[tuple[int, int], list] = {}
+    big = list(out)
+    for _ in range(2500):
+        lon, lat = rnd.uniform(18.80, 19.25), rnd.uniform(59.45, 59.85)
+        r = rnd.choice((0.02, 0.03, 0.05, 0.05, 0.08, 0.1, 0.15, 0.25, 0.4))
+        cell = (int(lon / 0.02), int(lat / 0.01))
+        others = [o for dx in (-1, 0, 1) for dy in (-1, 0, 1) for o in near.get((cell[0] + dx, cell[1] + dy), ())]
+        if any(math.hypot((lon - olon) * 55.6, (lat - olat) * 111.2) < 1.3 * (r + orad)
+               for olon, olat, orad in others + big):
+            continue
+        isl = (round(lon, 5), round(lat, 5), r)
+        near.setdefault(cell, []).append(isl)
+        out.append(isl)
     return out
 
 
@@ -43,21 +66,37 @@ for _isl in ISLANDS:
             _BINS.setdefault((_bx, _by), []).append(_isl)
 
 
-def sea_km(lon: float, lat: float) -> float:
-    """Distance to the nearest made-up shore in km, negative on land."""
+def sea_km(lon: float, lat: float, smallest: float = 0.0) -> float:
+    """Distance to the nearest made-up shore in km, negative on land (islands under
+    ``smallest`` km across left out)."""
     c = math.cos(math.radians(lat))
     d = min(REACH_KM, (lat - estonia_lat(lon)) * 111.2 if 21.5 <= lon <= 28.5 else 99,
             (lon - sweden_lon(lat)) * 111.2 * c if 58.6 <= lat <= 61.5 else 99)
     for ilon, ilat, r in _BINS.get((int(lon / 0.05), int(lat / 0.05)), ()):
-        d = min(d, math.hypot((lon - ilon) * 111.2 * c, (lat - ilat) * 111.2) - r)
+        if r >= smallest:
+            d = min(d, math.hypot((lon - ilon) * 111.2 * c, (lat - ilat) * 111.2) - r)
     return d
 
 
-def depth_at(lon: float, lat: float) -> float:
-    d = sea_km(lon, lat)
+def _noise(i: int, j: int) -> float:
+    """-1..1, fixed per depth model cell."""
+    h = (i * 73856093 ^ j * 19349663) & 0xFFFFFF
+    return h / 0x7FFFFF - 1.0
+
+
+def depth_at(lon: float, lat: float, i: int | None = None, j: int | None = None) -> float:
+    """Depth in m (negative on land). With the model's cell ``i, j``, as EMODnet's model
+    has it: skerries smaller than its cells are shallows, not land, and shallow water is
+    noisy from cell to cell."""
+    d = sea_km(lon, lat, 0.2 if i is not None else 0.0)
     if d <= 0:
         return -3.0
-    return min(160.0, 1.0 + 9 * d ** 0.9 + 3 * math.sin(lon * 40) * math.sin(lat * 60))
+    depth = min(160.0, 1.0 + 9 * d ** 0.9 + 3 * math.sin(lon * 40) * math.sin(lat * 60))
+    if i is not None:
+        near = sea_km(lon, lat) if 18.8 <= lon <= 19.25 and 59.45 <= lat <= 59.85 else d
+        depth = min(depth, 1.0 + 9 * max(near, 0.0) ** 0.9) + 0.35 * min(depth, 12) * _noise(i, j)
+        depth = max(depth, 0.3)
+    return depth
 
 
 def lzw_encode(data: bytes) -> bytes:
@@ -150,6 +189,22 @@ def geotiff(w: int, h: int, lon0: float, lat0: float, dlon: float, dlat: float, 
 
 async def fake_dtm(lon0: float, lat0: float, lon1: float, lat1: float) -> bytes:
     """EMODnet's GetCoverage for a box: 1/16 arc minute cells, elevation (negative under water)."""
+    if DTM_S:
+        await asyncio.sleep(DTM_S)
+    cache = os.environ.get("FW_FAKE_CACHE")  # made-up models kept between simulator runs
+    if not cache:
+        return await asyncio.to_thread(_dtm, lon0, lat0, lon1, lat1)
+    path = os.path.join(cache, f"dtm_{lon0:.5f}_{lat0:.5f}_{lon1:.5f}_{lat1:.5f}.tif")
+    if not os.path.exists(path):
+        data = await asyncio.to_thread(_dtm, lon0, lat0, lon1, lat1)
+        os.makedirs(cache, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _dtm(lon0: float, lat0: float, lon1: float, lat1: float) -> bytes:
     step = 1 / 960
     x0, y1 = math.floor(lon0 / step), math.ceil(lat1 / step)
     w = max(1, math.ceil(lon1 / step) - x0)
@@ -159,7 +214,7 @@ async def fake_dtm(lon0: float, lat0: float, lon1: float, lat1: float) -> bytes:
         lat = (y1 - j - 0.5) * step
         for i in range(w):
             lon = (x0 + i + 0.5) * step
-            d = depth_at(lon, lat)
+            d = depth_at(lon, lat, x0 + i, y1 - j)
             values.append(-99999.0 if d < -2 and (i + j) % 3 == 0 else -d)  # some land has no data
     return geotiff(w, h, x0 * step, y1 * step, step, step, values)
 
@@ -255,13 +310,19 @@ NAMES = [(24.75, 59.437, "Tallinn", "city"), (24.53, 59.575, "Naissaar", "island
 
 
 async def fake_osm(query: str) -> list[dict]:
-    """Overpass, for the two queries foreign.py makes."""
+    """Overpass, for the query foreign.py makes (foreign.overpass_query)."""
+    if OVERPASS_S:
+        await asyncio.sleep(OVERPASS_S)
     boxes = [tuple(float(v) for v in m) for m in re.findall(r"\(([\d.]+),([\d.]+),([\d.]+),([\d.]+)\)", query)]
     if not boxes:
         return []
+    coast = []
+    if "coastline" in query:  # the coast box first, then the sea marks' and the routeing's
+        coast = await asyncio.to_thread(_coast, *boxes[0])
+        boxes = boxes[1:]
+        if not boxes:
+            return coast
     s, w, n, e = boxes[0]
-    if "coastline" in query:
-        return _coast(s, w, n, e)
 
     def inside(lon: float, lat: float) -> bool:
         return s <= lat <= n and w <= lon <= e
@@ -276,4 +337,4 @@ async def fake_osm(query: str) -> list[dict]:
         if inside(lon, lat):
             key = "natural" if kind == "bay" else "place"
             out.append({"type": "node", "lat": lat, "lon": lon, "tags": {key: kind, "name": name}})
-    return out
+    return coast + out

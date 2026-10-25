@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.18.0
+
+- Drawn chart, Swedish and Estonian side: the shallows are now the same
+  blues as on the Finnish chart, without the grey speckle. The depth model
+  is smoothed first, specks smaller than the model can really show are left
+  out, and the depth bands are painted one over the other so no thin gaps
+  open between them (each gap used to get a black coastline edge, which
+  made the grey look). Tiny islets only show once zoomed in far enough to
+  see them as islands rather than dots.
+- The foreign side fills in faster: OpenStreetMap is asked once for every
+  2 x 2 chart blocks instead of twice per block, the downloads run while
+  other blocks are being built, building a block takes about a third of
+  the time it did, and the blocks nearest the middle of the screen are
+  built first.
+- While a chart tile is still loading, the map underneath now shows
+  through instead of a white square.
+- Chart blocks outside Finland are built again the next time you look at
+  them (once), to get the new look.
+
 ## 0.17.1
 
 - Drawn chart: leading lines are now dashed through their marks and on out

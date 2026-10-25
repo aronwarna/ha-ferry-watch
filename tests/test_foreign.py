@@ -125,32 +125,19 @@ def test_tiles_outside_finland(tmp_path):
 
     t12, ok, t8, ok8, seam = asyncio.run(run())
     assert ok  # (the overview lacks Finnish blocks not fetched yet)
-    assert t12["land"] and {row[0] for row in t12["depth"]} >= {1, 4}
+    assert t12["land"] and {row[0] for row in t12["xdepth"]} >= {1, 4}
+    assert [row[0] for row in t12["xdepth"]] == sorted(row[0] for row in t12["xdepth"])  # shallow first
     assert any(a[5] == "Naissaar" and a[2] == "m" for a in t12["aid"])
     assert any(text.startswith("Fl(2) W 12s") for _, _, text in t12["light"])
     assert t12["contour"]
     # The overview has foreign depths and land as well as the Finnish ones.
-    assert t8["land"] and t8["depth"] and t8["contour"]
-    assert [row[0] for row in t8["depth"]] == sorted((row[0] for row in t8["depth"]), reverse=True)
+    assert t8["land"] and t8["xdepth"] and t8["contour"]
+    assert [row[0] for row in t8["xdepth"]] == sorted(row[0] for row in t8["xdepth"])
     # Where the two meet both sides have water: deep on both.
-    assert {row[0] for row in seam["depth"]} == {4}
+    assert {row[0] for row in seam.get("depth", ())} <= {4} and max(row[0] for row in seam["xdepth"]) == 4
     # Nothing foreign inside Finnish waters: no foreign sea mark north of the border.
     for x, y, *_ in seam.get("aid", ()):
         assert y > 200
-
-
-def test_band_rings_drop_shared_box_edges():
-    box = (0, 0, 10, 10)
-    outer = [[(0, 0), (10, 0), (10, 10), (0, 10)]]  # the whole box is deeper than 3 m...
-    holes = [[(0, 0), (10, 0), (10, 4), (0, 4)]]  # ...and its top part deeper than 6 m
-    rings = F.band_rings(outer, holes, box)
-    assert len(rings) == 1 and abs(F._area(rings[0]) - 60) < 1e-9
-    # No edge of the result runs along the box where the hole was (y from 0 to 4 on the sides).
-    for ring in rings:
-        for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
-            assert not (ax == bx and ax in (0, 10) and max(ay, by) <= 4)
-    island = [[(4, 4), (6, 4), (6, 6), (4, 6)]]
-    assert len(F.band_rings(outer, island, box)) == 2  # a hole away from the edge stays a hole
 
 
 def test_foreign_side_can_be_turned_off(tmp_path):
@@ -184,3 +171,178 @@ def test_geotiff_without_georeference_uses_the_area_asked_for():
         F.parse_geotiff(data)
     g = F.parse_geotiff(data, (24.0, 59.0, 24.4, 59.2))
     assert g is not None
+
+
+def test_emodnet_geotiff_with_model_transformation():
+    """As ben's sample from EMODnet (off Tallinn): big-endian float32 in one tile, 480 x 288,
+    no PixelScale or Tiepoint but a ModelTransformation, a GeoKeyDirectory and no NoData."""
+    import struct
+    w, h, cell, lon0, lat0 = 480, 288, 1 / 960, 24.4, 59.7
+    vals = []
+    for j in range(h):
+        lat = lat0 - (j + 0.5) * cell
+        for i in range(w):
+            lon = lon0 + (i + 0.5) * cell
+            # Naissaar as a hill of 20 m, the sea 30 m deep round it.
+            island = math.hypot((lon - 24.53) * 0.5, lat - 59.575) < 0.02
+            vals.append(20.0 if island else -30.0)
+    pix = struct.pack(">%df" % len(vals), *vals)
+    matrix = struct.pack(">16d", cell, 0, 0, lon0, 0, -cell, 0, lat0, 0, 0, 0, 0, 0, 0, 0, 1)
+    geokeys = struct.pack(">16H", 1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326)
+    rational = struct.pack(">II", 1, 1)
+    # tag, type, count, inline value or bytes stored after the IFD
+    entries = [(256, 3, 1, w), (257, 3, 1, h), (258, 3, 1, 32), (259, 3, 1, 1), (262, 3, 1, 1), (277, 3, 1, 1),
+               (282, 5, 1, rational), (283, 5, 1, rational), (296, 3, 1, 1), (322, 3, 1, w), (323, 3, 1, h),
+               (324, 4, 1, None), (325, 4, 1, len(pix)), (339, 3, 1, 3), (34264, 12, 16, matrix),
+               (34735, 3, 16, geokeys)]
+    ifd_size = 2 + 12 * len(entries) + 4
+    extra = b"".join(v for *_, v in entries if isinstance(v, bytes))
+    data_off = 8 + ifd_size + len(extra)
+    ifd, at = struct.pack(">H", len(entries)), 8 + ifd_size
+    for tag, typ, n, v in entries:
+        if isinstance(v, bytes):
+            ifd += struct.pack(">HHII", tag, typ, n, at)
+            at += len(v)
+        elif typ == 3:
+            ifd += struct.pack(">HHIHH", tag, typ, n, v, 0)
+        else:
+            ifd += struct.pack(">HHII", tag, typ, n, data_off if v is None else v)
+    data = b"MM\x00*" + struct.pack(">I", 8) + ifd + struct.pack(">I", 0) + extra + pix
+    g = F.parse_geotiff(data)
+    assert (g.w, g.h) == (w, h)
+    assert abs(g.lon0 - lon0) < 1e-9 and abs(g.lat0 - lat0) < 1e-9
+    assert abs(g.dlon - 0.0010417) < 1e-6 and abs(g.dlat - 0.0010417) < 1e-6
+    assert g.depth(24.53, 59.575) == -20.0  # Naissaar: land
+    assert g.depth(24.75, 59.65) == 30.0  # open water
+
+
+def test_smoothing_takes_out_noise_but_keeps_land():
+    from array import array
+    n = 20
+    depth = array("d", [8.0 + (4 if (i * 7 + j * 3) % 5 == 0 else -2) for j in range(n) for i in range(n)])
+    for k in range(n):
+        depth[k] = -1.0  # a strip of land along the top
+    depth[5 * n + 5] = math.nan
+    before = max(depth[2 * n:]) - min(d for d in depth[2 * n:] if d == d)
+    F.smooth(n, depth, 2)
+    assert all(depth[k] == -1.0 for k in range(n))  # land stays land
+    assert math.isnan(depth[5 * n + 5])
+    mid = [depth[j * n + i] for j in range(6, 14) for i in range(6, 14)]
+    assert max(mid) - min(mid) < before / 3
+    assert depth[n + 5] < depth[10 * n + 5]  # next to the land the mean errs shallow
+
+
+def test_foreign_depths_nested_without_specks():
+    """Noisy model depths round the 3, 6 and 10 m levels: the block's depth areas are nested
+    levels with no ring smaller than MIN_RING cells, and the tile paints them shallow first."""
+    class Noisy:
+        def depth_m(self, mx, my, lon, lat):
+            i, j = int(lon * 960), int(lat * 960)
+            noise = ((i * 73856093 ^ j * 19349663) & 0xFFFF) / 0x7FFF - 1
+            return 6.0 + 5 * noise + 300 * max(0.0, lat - 59.52)
+
+    z, bx, by = tile_at(59.52, 24.6, 11)
+    b = F.BlockBuilder(bx, by, Noisy())
+    built = b.finish(True)
+    assert "depth" not in built
+    xdepth = built["xdepth"]
+    levels = [p[0] for p in xdepth.props]
+    assert levels == [0, 3, 6, 10]
+    cell2 = b.cell ** 2
+    for i in range(xdepth.n):
+        if xdepth.props[xdepth.pi[i]][0] == 0:
+            continue
+        for r in xdepth.rings(i):
+            ring = xdepth.pts(xdepth.vo[r], xdepth.vo[r + 1])
+            x0, y0, x1, y1 = V._bbox(ring)
+            on_edge = x0 <= b.box[0] or y0 <= b.box[1] or x1 >= b.box[2] or y1 >= b.box[3]
+            assert on_edge or F._area(ring) >= F.MIN_RING * cell2 * 0.5  # (simplified a little)
+    tile = V.make_tile(12, 2 * bx, 2 * by, {(bx, by): V.make_levels(built)[-1]})
+    assert [row[0] for row in tile["xdepth"]] == [1, 2, 3, 4]
+
+
+def test_tiny_foreign_rings_left_out_zoomed_out():
+    big = [(1000, 1000), (60000, 1000), (60000, 60000), (1000, 60000)]
+    islet = [(30000, 30000), (30060, 30000), (30060, 30060), (30000, 30060)]  # about 9 m across
+    b = V.LayerBuilder("area")
+    b.area((0,), [big, islet])
+    layers = {"xdepth": b.layer}
+    t10 = V.make_tile(10, 0, 0, {(0, 0): layers, (1, 0): None, (0, 1): None, (1, 1): None})
+    t15 = V.make_tile(15, 7, 7, {(0, 0): layers})
+    assert len(t10["xdepth"][0]) == 2  # the band and the big ring only
+    assert len(t15["xdepth"][0]) == 3  # up close the islet is there
+
+
+def test_osm_file_keeps_elements_and_filters_coast(tmp_path):
+    path = tmp_path / "osm.bin.gz"
+    f = F.OsmFile(path)
+    f.add({"type": "way", "tags": {}, "geometry": [(18.0, 59.0), (18.1, 59.05)]})
+    f.add({"type": "way", "tags": {}, "geometry": [(19.5, 60.0), (19.6, 60.1)]})
+    mark = {"type": "node", "lat": 59.02, "lon": 18.05, "tags": {"seamark:type": "rock"}}
+    f.add(mark)
+    f.close()
+    got = list(F.OsmFile.read(path, (17.9, 58.9, 18.2, 59.1)))
+    assert len(got) == 2 and got[1] == mark
+    assert got[0]["geometry"][1] == (18.1, 59.05)
+
+
+def test_one_overpass_request_per_group_of_blocks(tmp_path):
+    chart = V.VectorChart(tmp_path, None, fake_chart_layer)
+    _, bx, by = tile_at(59.58, 24.62, 11)
+    bx, by = bx - bx % 2, by - by % 2
+
+    async def run():
+        for key in ((bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)):
+            chart._wanted[key] = __import__("time").monotonic()
+        await asyncio.gather(*(chart.foreign.fetch_part(x, y) for x, y in
+                               ((bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1))))
+        first = chart.foreign.overpass_requests
+        chart._wanted[(bx + 2, by)] = __import__("time").monotonic()
+        await chart.foreign.fetch_part(bx + 2, by)
+        return first, chart.foreign.overpass_requests
+
+    first, after = asyncio.run(run())
+    assert first == 1 and after == 2
+
+
+def test_blocks_nearest_the_view_are_built_first():
+    import time as _time
+
+    async def run():
+        now = _time.monotonic()
+        wanted = {(10, 10): now, (11, 10): now, (50, 50): math.inf}
+        slot = F.NearestFirst(wanted)
+        order = []
+
+        async def build(key):
+            await slot.acquire(key)
+            order.append(key)
+            await asyncio.sleep(0)
+            slot.release()
+
+        await slot.acquire((0, 0))  # busy: the rest queue
+        tasks = [asyncio.create_task(build(k)) for k in ((50, 50), (30, 30), (11, 10), (10, 12))]
+        await asyncio.sleep(0)
+        slot.release()
+        await asyncio.gather(*tasks)
+        return order
+
+    # Nearest the middle of the blocks just asked for first, the background block last.
+    assert asyncio.run(run()) == [(11, 10), (10, 12), (30, 30), (50, 50)]
+
+
+def test_grid_rows_sample_as_single_points():
+    import random
+    from array import array
+    w, h = 30, 20
+    vals = array("h", [random.Random(k).randint(-300, 900) for k in range(w * h)])
+    for k in (5, 47, 48, 333):
+        vals[k] = F.Grid.NODATA
+    g = F.Grid(w, h, 24.0, 60.0, 0.01, 0.005, vals)
+    lons = [23.99 + 0.0037 * i for i in range(90)]
+    cols = g.columns(lons)
+    for lat in (60.002, 59.97, 59.951, 59.9, 59.85):
+        row = g.row(cols, lat)
+        for lon, got in zip(lons, row):
+            want = g.depth(lon, lat)
+            assert (math.isnan(got) and want is None) or abs(got - want) < 1e-9

@@ -1646,13 +1646,16 @@
 
 
     // 2. Water on its own canvas, then a crisp coastline: the water grown by a pixel,
-    // painted black, with the water on top.
-    if (data.depth?.length) {
+    // painted black, with the water on top. Outside Finland the depths come nested (the
+    // water deeper than 0, 3, 6 and 10 m, shallow first), each painted over the one before,
+    // so no gap can open between two bands; the Finnish depth areas go over them.
+    if (data.depth?.length || data.xdepth?.length) {
       const size = canvas.width;
       const water = scratch(0, size);
       const w = water.getContext("2d");
       w.setTransform(k, 0, 0, k, 0, 0);
-      for (const [band, ...rings] of data.depth) fillRings(w, rings, C.depth[band] ?? C.depth[4]);
+      for (const [band, ...rings] of data.xdepth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4]);
+      for (const [band, ...rings] of data.depth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4]);
       const edge = scratch(1, size);
       const g = edge.getContext("2d");
       const d = Math.max(1, Math.round(0.9 * dpr));
@@ -2292,13 +2295,8 @@
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((data) => {
             if (data.pending) {
-              if (!waiting && !shown && coords.z > OVERVIEW_Z) {
-                // Open water meanwhile, so the map underneath doesn't show its "no data" text.
-                const ctx = canvas.getContext("2d");
-                ctx.fillStyle = C.depth[4];
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                show(null);
-              }
+              // Left clear meanwhile: the map underneath shows until the chart is drawn.
+              if (!waiting && !shown && coords.z > OVERVIEW_Z) show(null);
               setWaiting(true);
               canvas._retry = setTimeout(load, RETRY_MS);
               return;

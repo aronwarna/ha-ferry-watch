@@ -102,7 +102,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 15  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 16  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -204,14 +204,16 @@ PARTS: dict[str, tuple[str, ...]] = {
     "land": ("height", "road", "rail"),
     "mark": ("building", "buildarea", "landmark", "markh"),
     # Outside Finnish waters (see foreign.py): the same layers from open European data, merged
-    # into the Finnish ones when read rather than replacing them; "xland" is the land under them.
-    "fx": ("depth", "contour", "aid", "sector", "light", "rock", "wreck", "name", "tss", "tssline", "lead",
+    # into the Finnish ones when read rather than replacing them; "xland" is the land under
+    # them and "xdepth" their depths, as nested areas (the water deeper than 0, 3, 6, 10 m).
+    "fx": ("xdepth", "contour", "aid", "sector", "light", "rock", "wreck", "name", "tss", "tssline", "lead",
            "pilot", "xland"),
 }
 FOREIGN_PART = "fx"
 # A part's file is fetched again when its revision here is newer than the one it was written
-# with (tss 1: dredged areas' least depth, and dredged and unsurveyed areas in the overview).
-PART_REV = {"tss": 1}
+# with (tss 1: dredged areas' least depth, and dredged and unsurveyed areas in the overview;
+# fx 1: smoothed, nested depths).
+PART_REV = {"tss": 1, "fx": 1}
 
 MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
 # Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
@@ -301,7 +303,8 @@ LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "f
                "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
-               "xland": MIN_Z}
+               "xland": MIN_Z, "xdepth": MIN_Z}
+XDEPTH_MIN_RING = 2.0  # tile units: foreign depth rings smaller than this aren't drawn (islets and specks)
 
 
 def source_names(key: str) -> list[tuple[str | None, str]]:
@@ -1426,6 +1429,11 @@ def _depth_band(drval1: Any, drval2: Any) -> int:
     return 4
 
 
+def xdepth_band(level: Any) -> int:
+    """The depth band (as _depth_band) of the foreign water deeper than a level."""
+    return {0: 1, 3: 2, 6: 3}.get(_int(level), 4)
+
+
 def level_for(z: int) -> int:
     """Which stored level of detail a zoom level's tiles are cut from."""
     return next(i for i, (max_z, _, _) in enumerate(LEVELS) if z <= max_z)
@@ -1556,6 +1564,10 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     for j, r in enumerate(layer.rings(i)):
                         pts = _run_pts(layer, layer.vo[r], layer.vo[r + 1], bx0, by0, bx1, by1)
                         part = simplify(clip_ring(conv(pts), lo, lo, hi, hi), tol)
+                        if key == "xdepth" and len(part) >= 3:
+                            rx0, ry0, rx1, ry1 = _bbox(part)
+                            if rx1 - rx0 < XDEPTH_MIN_RING and ry1 - ry0 < XDEPTH_MIN_RING:
+                                continue  # a speck at this zoom: its black edge would make it a dot
                         if len(part) >= 3:
                             rings.append(_flat(part))
                             if j and key == "depth" and islands is not None \
@@ -1662,6 +1674,9 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     - depth: [band, ...rings] band 0 drying, 1 0-3 m, 2 3-6 m, 3 6-10 m, 4 deeper, 5 unsurveyed;
       deep first. Dredged and unsurveyed areas are in here too (they also come as tss rows,
       for their limits), and at the sea border the Finnish sea beyond Traficom's depths.
+    - xdepth: [band, ...rings] outside Finland, nested: the water deeper than 0 m (band 1),
+      3 m (2), 6 m (3) and 10 m (4), shallow first, each painted over the one before and
+      all of them before (under) the Finnish depth rows
     - contour: [metres, line]; farea: [type, draught, class, ...rings]; fline: [draught, class, line]
     - lead: [bearing, line, solid?] with solid a list of lines: the leading line is dashed, and
       solid along those stretches, where it's the fairway (no solid: all solid); band: [line]; restrict: [types, value, ...rings]; shore: [line]
@@ -1702,6 +1717,9 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                   for p, *rings in water]
         depth += [[4, *rings] for rings in rows.get("sea", ())]
         tile["depth"] = sorted(depth, key=lambda row: -row[0])  # deep first
+    if "xdepth" in rows:
+        tile["xdepth"] = sorted(([xdepth_band(p[0]), *rings] for p, *rings in rows["xdepth"]),
+                                key=lambda row: row[0])  # shallow first
     if "contour" in rows:
         tile["contour"] = [[_num(p[0]), line] for p, line in rows["contour"]]
     if "farea" in rows:
@@ -1901,11 +1919,11 @@ INLAND_WATER_Z = 15  # lakes and ponds (water names on land) are named from this
 def _water_cells(tile: dict) -> set | None:
     """32-unit cells within about 50 px of the shoreline or a depth line, or None when the
     tile has no chart data to tell by."""
-    if "depth" not in tile and "land" not in tile:
+    if "depth" not in tile and "xdepth" not in tile and "land" not in tile:
         return None
     lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
     marked = set()
-    for _, *rings in tile.get("depth", ()):
+    for _, *rings in [*tile.get("depth", ()), *tile.get("xdepth", ())]:
         for ring in rings:
             n = len(ring)
             for i in range(0, n, 2):
@@ -1920,7 +1938,7 @@ def _water_cells(tile: dict) -> set | None:
 
 def _in_water(tile: dict, px: int, py: int) -> bool:
     """Whether a tile point is in one of its depth areas (each even-odd)."""
-    for _, *rings in tile.get("depth", ()):
+    for _, *rings in [*tile.get("depth", ()), *tile.get("xdepth", ())]:
         inside = False
         for ring in rings:
             n = len(ring)
@@ -1944,7 +1962,7 @@ def _names(rows: list, tile: dict, z: int) -> list:
         kind = _name_kind(code, text)
         if z < _name_min_z(code, kind, text):
             continue
-        if kind == "w" and z < INLAND_WATER_Z and text not in BIG_WATERS and "depth" in tile \
+        if kind == "w" and z < INLAND_WATER_Z and text not in BIG_WATERS and ("depth" in tile or "xdepth" in tile) \
                 and -TILE_BUFFER < px < EXTENT + TILE_BUFFER and -TILE_BUFFER < py < EXTENT + TILE_BUFFER \
                 and not _in_water(tile, px, py):
             continue  # a lake or pond on an island: only up close, not over the island's own name
@@ -3143,6 +3161,15 @@ class VectorChart:
                         p.unlink()
                 except FileNotFoundError:
                     pass
+        # Foreign OpenStreetMap answers are only kept while their blocks are being built.
+        from .foreign import OSM_MAX_AGE
+        root = self.dir / "foreign"
+        for p in root.glob("osm*") if root.exists() else ():
+            try:
+                if time.time() - p.stat().st_mtime > 2 * OSM_MAX_AGE:
+                    p.unlink()
+            except FileNotFoundError:
+                pass
 
 
 class _TooBig(ValueError):

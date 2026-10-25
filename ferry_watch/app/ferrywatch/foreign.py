@@ -4,8 +4,11 @@ Traficom's data stops at the Finnish sea border, so the rest of the chart is dra
 open data into the same layers and the same tile format, so it gets the same inks:
 
 - depths from the EMODnet Bathymetry digital terrain model (a grid of about 115 m,
-  CC BY 4.0, no key), turned into the same depth bands (0-3, 3-6, 6-10 m and deeper) and
-  contours (3, 6, 10, 20, 50, 100, 200 m) as the Finnish chart,
+  CC BY 4.0, no key), smoothed and turned into the same depth bands (0-3, 3-6, 6-10 m and
+  deeper) and contours (3, 6, 10, 20, 50, 100, 200 m) as the Finnish chart. The bands are
+  stored nested, as the water deeper than 0, 3, 6 and 10 m ("xdepth"), and the panel paints
+  them in that order, so two bands can never leave a gap between them for the coastline's
+  black edge to show in,
 - the coastline from OpenStreetMap (ODbL, through the Overpass API), burnt into the depth
   grid so islands and skerries are where the map has them, and
 - sea marks, lights with their characters and sectors, rocks, wrecks, traffic separation
@@ -19,8 +22,12 @@ border runs down the middle of the gulfs, where both sides are deeper than 10 m)
 RAM: the depth model is fetched once per zoom-9 map tile (about 40 km across, under 1 MB)
 and kept on disk as 16-bit decimetres. A block samples it onto a grid of GRID x GRID
 nodes (under 1 MB of arrays), OpenStreetMap's answer is parsed as a stream (XML, element
-by element) and drawn into that grid as it arrives, so a big archipelago answer is never
-held in memory, and what is kept is the usual compact block layers.
+by element) and written to disk in a compact form as it arrives, so a big archipelago
+answer is never held in memory, and what is kept is the usual compact block layers.
+
+Speed: OpenStreetMap is asked once for 2 x 2 blocks (coast, sea marks and names in one
+request), and the depth model and that answer are fetched while other blocks are being
+built, which happens one block at a time, the one nearest where the map is looked at first.
 """
 
 from __future__ import annotations
@@ -38,6 +45,8 @@ import time
 import zlib
 from array import array
 from collections import deque
+from itertools import accumulate
+from operator import add, sub
 from pathlib import Path
 from typing import Any, Callable
 from xml.etree.ElementTree import XMLPullParser
@@ -70,8 +79,14 @@ SHALLOWEST = 0.5  # m: water the map has but the depth model calls land is this 
 LAND, COAST = -2.0, -0.5  # grid values of land and of the coastline itself
 NEAR = 1.5  # nodes from the coastline within which the distance to it sets the grid value
 MASKED = -50.0  # inside Finnish waters: nothing drawn from here
-BANDS = ((0, 3), (3, 6), (6, 10), (10, 1000))  # depth areas as (drval1, drval2)
-OVERPASS_PAUSE = 2.0  # s between Overpass requests, as its usage policy asks
+DEPTH_LEVELS = (0, 3, 6, 10)  # nested depth areas: the water deeper than each (bands 1-4)
+SMOOTH_R = 2  # nodes each side over which the depth model is averaged (5 x 5, about 170 m)
+MIN_RING = 4.0  # grid cells: depth areas and contour loops smaller than this are the model's noise
+OSM_GROUP = 2  # blocks across one Overpass request (2 x 2: a zoom-10 map tile)
+OSM_MAX_AGE = 7 * 86400  # an answer serves its blocks this long
+OVERPASS_SLOTS = 2  # Overpass requests at once (the public server gives an address two slots)
+OVERPASS_PAUSE = 1.0  # s between the starts of Overpass requests, to be gentle on it
+OVERPASS_BUSY_WAIT = 15  # s to wait before asking again when it answers "too many requests"
 OVERPASS_TIMEOUT = 120
 OVERPASS_MAX = 48 * 1024 * 1024  # bytes streamed from one answer at most (never held whole)
 LANE_HALF_M = 1500  # ground metres each side of a lane's centre line drawn as the lane
@@ -328,6 +343,44 @@ class Grid:
             return -val / 10
         return -sum(val * wt for val, wt in good) / 10
 
+    def columns(self, lons: list[float]) -> list[tuple[int, int, float, float] | None]:
+        """What row() needs of each of a row of longitudes (worked out once per block)."""
+        out: list[tuple[int, int, float, float] | None] = []
+        w = self.w
+        for lon in lons:
+            fx = (lon - self.lon0) / self.dlon - 0.5
+            if fx < -0.5 or fx > w - 0.5:
+                out.append(None)
+                continue
+            ix = min(max(int(math.floor(fx)), 0), w - 2) if w > 1 else 0
+            out.append((ix, min(ix + 1, w - 1), min(max(fx - ix, 0.0), 1.0), lon))
+        return out
+
+    def row(self, cols: list, lat: float) -> list[float]:
+        """depth() at each of columns() at one latitude, NaN for None: the same values, a
+        good deal faster than a call per point."""
+        nan = math.nan
+        fy = (self.lat0 - lat) / self.dlat - 0.5
+        if fy < -0.5 or fy > self.h - 0.5:
+            return [nan] * len(cols)
+        iy = min(max(int(math.floor(fy)), 0), self.h - 2) if self.h > 1 else 0
+        ty = min(max(fy - iy, 0.0), 1.0)
+        r0, r1 = iy * self.w, min(iy + 1, self.h - 1) * self.w
+        v, nd = self.values, self.NODATA
+        out = []
+        for c in cols:
+            if c is None:
+                out.append(nan)
+                continue
+            ix, ix1, tx, lon = c
+            a, b, e, f = v[r0 + ix], v[r0 + ix1], v[r1 + ix], v[r1 + ix1]
+            if a == nd or b == nd or e == nd or f == nd:
+                d = self.depth(lon, lat)
+                out.append(nan if d is None else d)
+            else:
+                out.append(-((a + (b - a) * tx) * (1 - ty) + (e + (f - e) * tx) * ty) / 10)
+        return out
+
 
 def parse_geotiff(data: bytes, bbox: tuple[float, float, float, float] | None = None) -> Grid:
     """A single-band GeoTIFF in degrees (as EMODnet's WCS sends) as a Grid. Strips or tiles,
@@ -489,6 +542,20 @@ class Sampler:
         return g.depth(lon, lat) if g is not None else None
 
 
+def _wet(sampler: Sampler, bounds: tuple[float, float, float, float], pad: float, n: int = 24) -> bool:
+    """Whether the depth model has water anywhere in a block (with a margin): only then is
+    OpenStreetMap asked about it."""
+    for j in range(n + 1):
+        my = bounds[1] - pad + (bounds[3] - bounds[1] + 2 * pad) * j / n
+        lat = V.mercator_to_lonlat(0, my)[1]
+        for i in range(n + 1):
+            mx = bounds[0] - pad + (bounds[2] - bounds[0] + 2 * pad) * i / n
+            d = sampler.depth_m(mx, my, V.mercator_to_lonlat(mx, 0)[0], lat)
+            if d is not None and d > 0:
+                return True
+    return False
+
+
 # --- marching squares -------------------------------------------------------------------
 
 def _case_table() -> list[list[list[tuple[str, str]]]]:
@@ -621,84 +688,9 @@ def _simplify_ring(ring: list, tol: float) -> list:
     return V.simplify(ring + ring[:1], tol)[:-1] if len(ring) >= 3 else ring
 
 
-def band_rings(outer: list[list], holes: list[list], box: tuple[float, float, float, float]) -> list[list]:
-    """A depth band, the region above one level less the region above the next (``holes``,
-    which lie inside ``outer``), as rings for an even-odd fill without the stretches of the
-    clip box both run along: the panel outlines areas in their own colour, so a hole's edge
-    along the box would draw a line of the shallower band over the deeper one there."""
-    if not holes:
-        return outer
-    x0, y0, x1, y1 = box
-    segs: list[tuple] = []
-    twins: dict[tuple, int] = {}  # a hole edge that runs back along an outer edge cancels it
-    runs: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: [], 3: []}
-
-    def add(p, q) -> None:
-        if p == q:
-            return
-        if p[0] == q[0] and p[0] in (x0, x1):
-            runs[0 if p[0] == x0 else 1].append((p[1], q[1]))
-        elif p[1] == q[1] and p[1] in (y0, y1):
-            runs[2 if p[1] == y0 else 3].append((p[0], q[0]))
-        elif twins.get((q, p)):
-            twins[(q, p)] -= 1
-        else:
-            twins[(p, q)] = twins.get((p, q), 0) + 1
-
-    for ring in outer:
-        for p, q in zip(ring, ring[1:] + ring[:1]):
-            add(p, q)
-    for ring in holes:
-        for p, q in zip(ring, ring[1:] + ring[:1]):
-            add(q, p)
-    segs = [seg for seg, count in twins.items() for _ in range(count)]
-    for side, items in runs.items():
-        if not items:
-            continue
-        cuts = sorted({t for run in items for t in run})
-        net = [0] * len(cuts)
-        index = {t: k for k, t in enumerate(cuts)}
-        for a, b in items:
-            sign = 1 if b > a else -1
-            for k in range(index[min(a, b)], index[max(a, b)]):
-                net[k] += sign
-        k = 0
-        while k < len(cuts) - 1:
-            if net[k] == 0:
-                k += 1
-                continue
-            m = k
-            while m + 1 < len(cuts) - 1 and net[m + 1] == net[k]:
-                m += 1
-            a, b = cuts[k], cuts[m + 1]
-            if net[k] < 0:
-                a, b = b, a
-            fixed = (x0, x1, y0, y1)[side]
-            segs.append(((fixed, a), (fixed, b)) if side < 2 else ((a, fixed), (b, fixed)))
-            k = m + 1
-    starts: dict[tuple, list[tuple]] = {}
-    for p, q in segs:
-        starts.setdefault(p, []).append(q)
-    rings = []
-    while starts:
-        start = next(iter(starts))
-        ring = [start]
-        cur = start
-        while True:
-            ends = starts.get(cur)
-            if not ends:
-                ring = []
-                break
-            nxt = ends.pop()
-            if not ends:
-                del starts[cur]
-            if nxt == start:
-                break
-            ring.append(nxt)
-            cur = nxt
-        if len(ring) >= 3:
-            rings.append(ring)
-    return rings
+def small_ring(ring: list) -> bool:
+    """Whether a ring (in grid nodes) encloses less than MIN_RING cells."""
+    return _area(ring) < MIN_RING
 
 
 # --- the coastline in the grid ----------------------------------------------------------
@@ -766,6 +758,37 @@ class CoastGrid:
                         seed[jy * n + jx] |= mark
 
 
+def smooth(n: int, depth: array, r: int = SMOOTH_R) -> None:
+    """Each water node's depth as the mean over the (2r + 1)² nodes round it, in place, with
+    land counting as 0 m and unknown nodes left out. The depth model's cell-to-cell noise
+    otherwise makes specks of every band and contour; next to the shore the mean errs
+    shallow, never deep."""
+    if r <= 0 or not n:
+        return
+    lo = [max(0, i - r) for i in range(n)]
+    hi = [min(n, i + r + 1) for i in range(n)]
+    rows_v, rows_c = [], []
+    for j in range(n):
+        row = depth[j * n:(j + 1) * n]
+        pv = [0.0, *accumulate(d if d > 0 else 0.0 for d in row)]  # NaN > 0 is False: 0, not counted
+        pc = [0, *accumulate(d == d for d in row)]
+        rows_v.append(array("d", [pv[h] - pv[l] for l, h in zip(lo, hi)]))  # (unboxed: less RAM)
+        rows_c.append(array("i", [pc[h] - pc[l] for l, h in zip(lo, hi)]))
+    sv, sc = [0.0] * n, [0] * n
+    for k in range(min(r, n - 1) + 1):
+        sv, sc = list(map(add, sv, rows_v[k])), list(map(add, sc, rows_c[k]))
+    for j in range(n):
+        base = j * n
+        for i in range(n):
+            d = depth[base + i]
+            if d > 0 and sc[i]:
+                depth[base + i] = sv[i] / sc[i]
+        if j + r + 1 < n:
+            sv, sc = list(map(add, sv, rows_v[j + r + 1])), list(map(add, sc, rows_c[j + r + 1]))
+        if j - r >= 0:
+            sv, sc = list(map(sub, sv, rows_v[j - r])), list(map(sub, sc, rows_c[j - r]))
+
+
 def classify(n: int, depth: array, coast: CoastGrid | None) -> array:
     """Grid values for marching: depth in water (at least SHALLOWEST), LAND, COAST. Without a
     coastline the depth model alone says what is water. ``depth`` has NaN where it's unknown."""
@@ -819,20 +842,19 @@ def classify(n: int, depth: array, coast: CoastGrid | None) -> array:
 
 # --- OpenStreetMap ---------------------------------------------------------------------
 
-def overpass_coast_query(s: float, w: float, n: float, e: float) -> str:
-    return f'[out:xml][timeout:{OVERPASS_TIMEOUT - 20}];way["natural"="coastline"]({s:.5f},{w:.5f},{n:.5f},{e:.5f});out skel geom qt;'
-
-
 ROUTEING = ("separation_zone|separation_line|separation_boundary|separation_lane|separation_roundabout|"
             "precautionary_area|inshore_traffic_zone|deep_water_route|deep_water_route_part|two-way_route|"
             "two-way_route_part|recommended_track|navigation_line|fairway")
 
 
-def overpass_marks_query(points: tuple, lines: tuple) -> str:
-    """Sea marks, rocks and wrecks, and names in ``points`` (s, w, n, e); routeing in ``lines``."""
+def overpass_query(coast: tuple, points: tuple, lines: tuple) -> str:
+    """One request for a group of blocks: the coastline in ``coast`` (s, w, n, e), sea marks,
+    rocks and wrecks, and names in ``points``, and routeing in ``lines``."""
+    cb = "({:.5f},{:.5f},{:.5f},{:.5f})".format(*coast)
     pb = "({:.5f},{:.5f},{:.5f},{:.5f})".format(*points)
     lb = "({:.5f},{:.5f},{:.5f},{:.5f})".format(*lines)
     return (f'[out:xml][timeout:{OVERPASS_TIMEOUT - 20}];'
+            f'way["natural"="coastline"]{cb};out skel geom qt;'
             f'node["seamark:type"]{pb};out qt;'
             f'(way["seamark:type"~"^({ROUTEING})$"]{lb};relation["seamark:type"~"^({ROUTEING})$"]{lb};);'
             f'out geom qt;'
@@ -899,6 +921,78 @@ class OsmStream:
                 elif tag == "remark":
                     self.remark = (el.text or "").strip()
                 el.clear()
+
+
+class OsmFile:
+    """An Overpass answer kept on disk for the blocks of its group, written element by element
+    as it arrives: coastline ways as int32 degrees x 1e7 with their extent (so a block reads
+    only those near it), everything else as JSON."""
+
+    MAGIC = b"FWOSM1\n"
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.tmp = path.with_suffix(".tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = gzip.open(self.tmp, "wb", compresslevel=4)
+        self.f.write(self.MAGIC)
+        self.count = 0
+
+    def add(self, el: dict) -> None:
+        self.count += 1
+        if el["type"] == "way" and not el.get("tags"):
+            g = el.get("geometry") or []
+            if len(g) < 2:
+                return
+            co = array("i", (round(v * 1e7) for p in g for v in p))
+            xs, ys = co[0::2], co[1::2]
+            if sys.byteorder != "little":
+                co.byteswap()
+            self.f.write(b"C" + struct.pack("<I4i", len(g), min(xs), min(ys), max(xs), max(ys)) + co.tobytes())
+            return
+        js = json.dumps(el, separators=(",", ":")).encode()
+        self.f.write(b"J" + struct.pack("<I", len(js)) + js)
+
+    def close(self) -> None:
+        self.f.close()
+        os.replace(self.tmp, self.path)
+
+    def abort(self) -> None:
+        self.f.close()
+        try:
+            self.tmp.unlink()
+        except OSError:
+            pass
+
+    @classmethod
+    def read(cls, path: Path, box: tuple[float, float, float, float]) -> Any:
+        """The elements of a file: coastline ways only where they reach ``box`` (w, s, e, n)."""
+        bw, bs, be, bn = (round(v * 1e7) for v in box)
+        with gzip.open(path, "rb") as f:
+            if f.read(len(cls.MAGIC)) != cls.MAGIC:
+                raise ValueError(f"{path.name} is not an OpenStreetMap file")
+            while True:
+                kind = f.read(1)
+                if not kind:
+                    return
+                if kind == b"C":
+                    n, x0, y0, x1, y1 = struct.unpack("<I4i", f.read(20))
+                    raw = f.read(8 * n)
+                    if len(raw) != 8 * n:
+                        raise ValueError(f"{path.name} is cut short")
+                    if x1 < bw or x0 > be or y1 < bs or y0 > bn:
+                        continue
+                    co = array("i")
+                    co.frombytes(raw)
+                    if sys.byteorder != "little":
+                        co.byteswap()
+                    yield {"type": "way", "tags": {},
+                           "geometry": [(co[k] / 1e7, co[k + 1] / 1e7) for k in range(0, len(co), 2)]}
+                elif kind == b"J":
+                    (n,) = struct.unpack("<I", f.read(4))
+                    yield json.loads(f.read(n))
+                else:
+                    raise ValueError(f"{path.name} is damaged")
 
 
 def join_ways(ways: list[list]) -> list[list]:
@@ -1066,24 +1160,34 @@ class BlockBuilder:
         ys = [maxy - self.node_xy(0, j)[1] / self.scale for j in range(n)]
         lons = [V.mercator_to_lonlat(x, 0)[0] for x in xs]
         lats = [V.mercator_to_lonlat(0, y)[1] for y in ys]
-        nan = math.nan
         depth = self.depth
+        if not isinstance(sampler, Sampler):  # some other source of depths (tests): point by point
+            for j in range(n):
+                for i in range(n):
+                    d = sampler.depth_m(xs[i], ys[j], lons[i], lats[j])
+                    depth.append(math.nan if d is None else d)
+            return
+        size = sampler.size
+        gxs = [int((x + V.HALF) // size) for x in xs]
+        runs = []  # (zoom-9 tile column, first node, end): a block is in at most two
+        i0 = 0
+        for i in range(1, n + 1):
+            if i == n or gxs[i] != gxs[i0]:
+                runs.append((gxs[i0], i0, i))
+                i0 = i
+        cols: dict[tuple[int, int], list] = {}
         for j in range(n):
-            for i in range(n):
-                d = sampler.depth_m(xs[i], ys[j], lons[i], lats[j])
-                depth.append(nan if d is None else d)
-
-    def has_shore(self) -> bool:
-        """Whether the depth model has both water and land here (worth asking for the coastline)."""
-        wet = dry = False
-        for d in self.depth:
-            if d > 0:
-                wet = True
-            else:
-                dry = True
-            if wet and dry:
-                return True
-        return False
+            gy = int((V.HALF - ys[j]) // size)
+            out = [math.nan] * n
+            for gx, a, b in runs:
+                g = sampler.grids.get((gx, gy))
+                if g is None:
+                    continue
+                c = cols.get((gx, gy))
+                if c is None:
+                    c = cols[(gx, gy)] = g.columns(lons[a:b])
+                out[a:b] = g.row(c, lats[j])
+            depth.extend(out)
 
     def has_water(self) -> bool:
         return any(d > 0 for d in self.depth)
@@ -1136,6 +1240,12 @@ class BlockBuilder:
                 p = self._point_ok("name", *pos)
                 if p:
                     self._b("name").point((tags["name"], "osm", NAME_CODES[place]), *p)
+
+    def add_file(self, path: Path) -> None:
+        """The elements of an OsmFile (its group's answer) that reach this block."""
+        s, w, n, e = self.lonlat_box(GRID_MARGIN)  # the coastline only this far out
+        for el in OsmFile.read(path, (w, s, e, n)):
+            self.add(el)
 
     def _coast(self, geometry: list) -> None:
         if len(geometry) < 2:
@@ -1277,12 +1387,19 @@ class BlockBuilder:
                         deep[j * n + i] = 1
         return exact, deep
 
-    def _level_rings(self, region: list, level: float) -> list[list]:
+    def _level_rings(self, region: list, level: float, tol: float) -> list[list]:
+        """The water deeper than a level, as rings for an even-odd fill. Below the shoreline
+        level, rings under MIN_RING cells are left out: specks of the model's noise (islets
+        from OpenStreetMap's coastline are all kept)."""
         rings = []
         for ring in march(region, level, True):
+            if level > 0 and small_ring(ring):
+                continue
             part = V.clip_ring(self._to_units(ring), *self.box)
             if len(part) >= 3:
-                rings.append(part)
+                part = _simplify_ring(part, tol)
+                if len(part) >= 3:
+                    rings.append(part)
         return rings
 
     def _to_units(self, pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -1301,16 +1418,11 @@ class BlockBuilder:
                     row[i] = MASKED
             region.append(row)
         tol = self.cell * 0.2
-        depth = self._b("depth")
-        # Two levels' rings at a time (a band is the area above one less that above the next):
-        # their vertices are the biggest use of RAM here.
-        below = self._level_rings(region, BANDS[0][0])
-        for d1, d2 in BANDS:
-            above = self._level_rings(region, d2) if d2 < BANDS[-1][1] else []
-            if below:
-                rings = [_simplify_ring(r, tol) for r in band_rings(below, above, self.box)]
-                depth.area((d1, d2), [r for r in rings if len(r) >= 3])
-            below = above
+        xdepth = self._b("xdepth")
+        for level in DEPTH_LEVELS:
+            rings = self._level_rings(region, level, tol)
+            if rings:
+                xdepth.area((level,), rings)
         del region
         grid = [vals[j * n:(j + 1) * n] for j in range(n)]
 
@@ -1324,6 +1436,8 @@ class BlockBuilder:
             if level >= top:
                 break
             for line in march(grid, level, False, skip):
+                if line[0] == line[-1] and small_ring(line[:-1]):
+                    continue  # a speck
                 for part in V.clip_line(self._to_units(line), *self.box):
                     part = V.simplify(part, tol)
                     if len(part) >= 2:
@@ -1341,6 +1455,7 @@ class BlockBuilder:
         if with_depths:
             self.land_layer()
             if self.has_water():
+                smooth(self.n, self.depth)
                 self.depth_layers()
         self.depth = array("d")
         self.coast = None
@@ -1354,7 +1469,7 @@ OVERVIEW_KEYS = ("aid", "light", "sector", "name", "tss", "tssline", "pilot")
 
 def overview_rows(z: int, x: int, y: int, sampler: Sampler) -> dict[str, list]:
     """Depth areas, contours and land of an overview tile (zooms 8-9) straight from the depth
-    model, in the tile format (vchart._format)."""
+    model, in the tile format (vchart._format; depths as nested "xdepth" rows)."""
     minx, miny, maxx, maxy = V._tile_mercator(z, x, y)
     k = V.EXTENT / (maxx - minx)
     lo, hi = -V.TILE_BUFFER, V.EXTENT + V.TILE_BUFFER
@@ -1380,29 +1495,31 @@ def overview_rows(z: int, x: int, y: int, sampler: Sampler) -> dict[str, list]:
             row.append(LAND if d is None or d <= 0 else max(d, SHALLOWEST))
         rows.append(row)
         exact.append(ex)
+    flat = array("d", (math.nan if v == MASKED else v for r in rows for v in r))
+    smooth(n, flat, 1)
+    for j in range(n):
+        rows[j] = array("d", (MASKED if rows[j][i] == MASKED else flat[j * n + i] for i in range(n)))
+    del flat
 
     def units(pts):
         return [(lo + i * step, lo + j * step) for i, j in pts]
 
     out: dict[str, list] = {}
-    rings_at = {}
-    for level in sorted({b[0] for b in BANDS}):
+    xdepth = []
+    for level in DEPTH_LEVELS:
         rings = []
         for ring in march(rows, level, True):
+            if small_ring(ring):
+                continue  # zoomed out this far, specks of land too
             part = V.clip_ring(units(ring), lo, lo, hi, hi)
             if len(part) >= 3:
-                rings.append(part)
-        rings_at[level] = rings
-    depth = []
-    for d1, d2 in BANDS:
-        if rings_at[d1]:
-            rings = [V._flat(_simplify_ring(r, 0.5))
-                     for r in band_rings(rings_at[d1], rings_at.get(d2, []), (lo, lo, hi, hi))]
-            rings = [r for r in rings if len(r) >= 6]
-            if rings:
-                depth.append([V._depth_band(d1, d2), *rings])
-    if depth:
-        out["depth"] = depth
+                flat = V._flat(_simplify_ring(part, 0.5))
+                if len(flat) >= 6:
+                    rings.append(flat)
+        if rings:
+            xdepth.append([V.xdepth_band(level), *rings])
+    if xdepth:
+        out["xdepth"] = xdepth
     grid = rows
     for r in grid:
         for i, v in enumerate(r):
@@ -1415,6 +1532,8 @@ def overview_rows(z: int, x: int, y: int, sampler: Sampler) -> dict[str, list]:
     contours = []
     for level in V.OVERVIEW_CONTOURS:
         for line in march(grid, level, False, skip):
+            if line[0] == line[-1] and small_ring(line[:-1]):
+                continue
             for part in V.clip_line(units(line), lo, lo, hi, hi):
                 flat = V._flat(V.simplify(part, 0.5))
                 if len(flat) >= 4:
@@ -1461,6 +1580,54 @@ def merge_into(layers: dict, got: dict) -> None:
 
 # --- fetching ---------------------------------------------------------------------------
 
+class NearestFirst:
+    """A few slots (one block built at a time: its grids are what takes the RAM), and of those waiting,
+    the one nearest the middle of the blocks the map asked for in the last few seconds goes
+    first: a screenful fills in from where it's being looked at, and blocks only kept fresh
+    in the background (VectorChart.keep, which marks them wanted forever) go last."""
+
+    RECENT = 3.0  # s
+
+    def __init__(self, wanted: dict[tuple[int, int], float], slots: int = 1):
+        self.wanted = wanted  # VectorChart._wanted: block -> when last asked for (monotonic)
+        self.free = slots
+        self.waiting: dict[asyncio.Future, tuple[int, int]] = {}
+
+    async def acquire(self, key: tuple[int, int]) -> None:
+        if self.free:
+            self.free -= 1
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self.waiting[fut] = key
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if self.waiting.pop(fut, None) is None and fut.done() and not fut.cancelled():
+                self.release()  # it had just been handed the slot
+            raise
+
+    def release(self) -> None:
+        while self.waiting:
+            fut = min(self.waiting, key=self._rank(time.monotonic()))
+            del self.waiting[fut]
+            if not fut.done():
+                fut.set_result(None)  # handed over: still taken
+                return
+        self.free += 1
+
+    def _rank(self, now: float) -> Callable[[asyncio.Future], tuple]:
+        recent = [k for k, t in self.wanted.items() if t != math.inf and now - t < self.RECENT]
+        cx = sum(k[0] for k in recent) / len(recent) if recent else 0.0
+        cy = sum(k[1] for k in recent) / len(recent) if recent else 0.0
+
+        def rank(fut: asyncio.Future) -> tuple:
+            bx, by = self.waiting[fut]
+            background = self.wanted.get((bx, by), 0.0) == math.inf
+            return background, (bx - cx) ** 2 + (by - cy) ** 2 if recent else 0.0
+
+        return rank
+
+
 class ForeignSource:
     """Fetches and caches what the foreign chart is drawn from, for a VectorChart."""
 
@@ -1473,12 +1640,13 @@ class ForeignSource:
         self.available = (fake is None and chart.session is not None) or self.fake_dtm is not None
         self.enabled = self.available
         self._grids: dict[tuple[int, int], Grid | None] = {}  # a few, in RAM while blocks are built
-        self._fetching: dict[tuple[int, int], asyncio.Task] = {}
+        self._fetching: dict[tuple, asyncio.Task] = {}
         self._failed: dict[Any, float] = {}
         self._last_overpass = 0.0
-        self._overpass_lock = asyncio.Lock()
-        self._building = asyncio.Semaphore(1)  # one block's grids in RAM at a time
-        self._overviewing = asyncio.Semaphore(1)  # and one overview tile's
+        self._asking = NearestFirst(chart._wanted, OVERPASS_SLOTS)  # nearest first
+        self._building = NearestFirst(chart._wanted)
+        self._overviewing = asyncio.Semaphore(1)  # and one overview tile's grids at a time
+        self.overpass_requests = 0
         self.errors: dict[str, str] = {}
 
     def forget(self) -> None:
@@ -1492,6 +1660,15 @@ class ForeignSource:
     def _log(self, what: str, msg: str, *args: Any) -> None:
         self.chart._log_once(f"foreign {what}", msg, *args)
 
+    def _task(self, key: tuple, make: Callable[[], Any]) -> asyncio.Future:
+        """One fetch per thing at a time: later askers wait for the same one."""
+        task = self._fetching.get(key)
+        if task is None:
+            task = asyncio.create_task(make())
+            self._fetching[key] = task
+            task.add_done_callback(lambda _t, k=key: self._fetching.pop(k, None))
+        return asyncio.shield(task)
+
     # --- depth model ---
 
     def _grid_path(self, x: int, y: int) -> Path:
@@ -1500,12 +1677,7 @@ class ForeignSource:
     async def grid(self, x: int, y: int) -> Grid | None:
         if (x, y) in self._grids:
             return self._grids[(x, y)]
-        task = self._fetching.get((x, y))
-        if task is None:
-            task = asyncio.create_task(self._load_grid(x, y))
-            self._fetching[(x, y)] = task
-            task.add_done_callback(lambda _t, k=(x, y): self._fetching.pop(k, None))
-        g = await asyncio.shield(task)
+        g = await self._task(("dtm", x, y), lambda: self._load_grid(x, y))
         if g is not None:
             self._grids[(x, y)] = g
             while len(self._grids) > 6:
@@ -1568,21 +1740,89 @@ class ForeignSource:
 
     # --- OpenStreetMap ---
 
-    async def _overpass(self, query: str, sink: Callable[[dict], None], what: str) -> None:
-        """Stream an Overpass answer into ``sink`` element by element (in a worker thread)."""
+    def _osm_path(self, gx: int, gy: int) -> Path:
+        return self.dir / f"osm{OSM_GROUP}_{gx}_{gy}.bin.gz"
+
+    async def osm(self, bx: int, by: int) -> Path | None:
+        """OpenStreetMap's coast, sea marks and names for the group of OSM_GROUP x OSM_GROUP
+        blocks a block is in, fetched once for all of them, or None if it couldn't be had."""
+        gx, gy = bx // OSM_GROUP, by // OSM_GROUP
+        path = self._osm_path(gx, gy)
+        age = V._age(path)
+        if age is not None and age < OSM_MAX_AGE:
+            return path
+        if time.time() - self._failed.get(("osm", gx, gy), 0) < FAILED_RETRY:
+            return path if age is not None else None  # an old answer beats none
+        return await self._task(("osm", gx, gy), lambda: self._fetch_osm(gx, gy, path, age))
+
+    async def _fetch_osm(self, gx: int, gy: int, path: Path, age: float | None) -> Path | None:
+        b0 = V.block_bounds(gx * OSM_GROUP, gy * OSM_GROUP + OSM_GROUP - 1)
+        b1 = V.block_bounds(gx * OSM_GROUP + OSM_GROUP - 1, gy * OSM_GROUP)
+        bounds = (b0[0], b0[1], b1[2], b1[3])
+        unit = (b0[2] - b0[0]) / V.UNITS  # web-mercator metres in a block unit
+
+        def box(margin_units: float) -> tuple[float, float, float, float]:
+            pad = margin_units * unit
+            w, s = V.mercator_to_lonlat(bounds[0] - pad, bounds[1] - pad)
+            e, n = V.mercator_to_lonlat(bounds[2] + pad, bounds[3] + pad)
+            return s, w, n, e
+
+        query = overpass_query(box(GRID_MARGIN), box(V.BLOCK_POINT_MARGIN), box(V.UNITS * V.TILE_BUFFER / V.EXTENT))
+        started = time.monotonic()
+        out = OsmFile(path)
+        try:
+            await self._overpass(query, out.add, "coast and sea marks", (gx * OSM_GROUP, gy * OSM_GROUP))
+            await asyncio.to_thread(out.close)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
+            await asyncio.to_thread(out.abort)
+            msg = str(err) or type(err).__name__
+            self._failed[("osm", gx, gy)] = time.time()
+            self.errors["openstreetmap"] = msg[:300]
+            self._log("osm", "OpenStreetMap coast and sea marks for blocks %s,%s (and the next %s) failed: %s",
+                      gx * OSM_GROUP, gy * OSM_GROUP, OSM_GROUP ** 2 - 1, msg[:300])
+            return path if age is not None else None
+        except BaseException:
+            await asyncio.to_thread(out.abort)
+            raise
+        self.errors.pop("openstreetmap", None)
+        _LOGGER.info("OpenStreetMap for blocks %s,%s to %s,%s: %s elements in %.1f s", gx * OSM_GROUP, gy * OSM_GROUP,
+                     gx * OSM_GROUP + OSM_GROUP - 1, gy * OSM_GROUP + OSM_GROUP - 1, out.count,
+                     time.monotonic() - started)
+        return path
+
+    async def _overpass(self, query: str, sink: Callable[[dict], None], what: str, near: tuple[int, int]) -> None:
+        """Stream an Overpass answer into ``sink`` element by element (in a worker thread).
+        OVERPASS_SLOTS requests at a time, those for the blocks ``near`` the view first."""
+        await self._asking.acquire(near)
+        try:
+            await self._ask(query, sink, what)
+        finally:
+            self._asking.release()
+
+    async def _pause(self) -> None:
+        """OVERPASS_PAUSE after the last request started (or longer, after a busy answer)."""
+        while (wait := OVERPASS_PAUSE - (time.monotonic() - self._last_overpass)) > 0:
+            await asyncio.sleep(wait)
+        self._last_overpass = time.monotonic()
+
+    async def _ask(self, query: str, sink: Callable[[dict], None], what: str) -> None:
+        self.overpass_requests += 1
         if self.fake_osm is not None:
-            for el in await self.fake_osm(query):
-                sink(el)
+            await self._pause()
+            els = await self.fake_osm(query)
+            await asyncio.to_thread(lambda: [sink(el) for el in els])
             return
-        async with self._overpass_lock:
-            wait = OVERPASS_PAUSE - (time.monotonic() - self._last_overpass)
-            if wait > 0:
-                await asyncio.sleep(wait)
+        for attempt in (0, 1):
+            await self._pause()
             try:
                 stream = OsmStream(sink)
                 size = 0
                 async with self.chart.session.post(OVERPASS, data={"data": query}, headers={"User-Agent": USER_AGENT},
                                                    timeout=aiohttp.ClientTimeout(total=OVERPASS_TIMEOUT)) as resp:
+                    if resp.status in (429, 504) and not attempt:
+                        # Busy (its slots for this address are taken): once more, a little later.
+                        self._last_overpass = time.monotonic() + OVERPASS_BUSY_WAIT - OVERPASS_PAUSE
+                        continue
                     if resp.status != 200:
                         text = (await resp.content.read(600)).decode("utf-8", "replace")
                         raise V._HTTPError(resp.status, re.sub(r"<[^>]+>", " ", text).strip())
@@ -1594,12 +1834,11 @@ class ForeignSource:
                 await asyncio.to_thread(stream.close)
                 if stream.remark and "error" in stream.remark.lower():
                     raise ValueError(stream.remark[:200])  # Overpass ran out of time or memory
+                return
             except Exception as err:  # noqa: BLE001 - the XML parser raises its own kind
                 if isinstance(err, (aiohttp.ClientError, asyncio.TimeoutError, ValueError)):
                     raise
                 raise ValueError(f"{type(err).__name__}: {err}") from err
-            finally:
-                self._last_overpass = time.monotonic()
 
     # --- a block part ---
 
@@ -1616,10 +1855,7 @@ class ForeignSource:
             built: dict[str, V.Layer] = {}
             with_depths = False
         else:
-            async with self._building:
-                if chart._stale((bx, by)):
-                    raise V._Skipped  # the map moved on while this block waited its turn
-                built, missing = await self._build(bx, by, bounds)
+            built, missing = await self._build(bx, by, bounds)
             if built is None:
                 return False
             with_depths = True
@@ -1627,7 +1863,8 @@ class ForeignSource:
         def write() -> None:
             levels = V.make_levels(built)
             overview = {k: L for k, L in V.make_overview(built).items() if k in OVERVIEW_KEYS}
-            V.write_block(path, {"v": 2, "missing": missing, "absent": []}, levels, overview)
+            V.write_block(path, {"v": 2, "missing": missing, "absent": [], "rev": V.PART_REV.get(PART, 0)},
+                          levels, overview)
 
         await asyncio.to_thread(write)
         chart._missing[path.name] = (path.stat().st_mtime, bool(missing), ())
@@ -1637,31 +1874,44 @@ class ForeignSource:
         return True
 
     async def _build(self, bx: int, by: int, bounds: tuple) -> tuple[dict | None, list[str]]:
+        """The depth model and OpenStreetMap are fetched (or read from disk) first, outside
+        the build slot, so other blocks build meanwhile."""
         missing: list[str] = []
         pad = GRID_MARGIN / (V.UNITS / (bounds[2] - bounds[0]))
         sampler = await self.sampler((bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad))
         if sampler is None:
             return None, missing
-        b = await asyncio.to_thread(BlockBuilder, bx, by, sampler)
-        del sampler
+        if self.chart._stale((bx, by)):
+            raise V._Skipped  # the map moved on while this block waited for its data
+        osm = None
+        if await asyncio.to_thread(_wet, sampler, bounds, pad):
+            osm = await self.osm(bx, by)
+            if osm is None:
+                missing.append("osm")
+        await self._building.acquire((bx, by))
         try:
-            if b.has_shore():
-                s, w, n, e = b.lonlat_box(GRID_MARGIN)
-                await self._overpass(overpass_coast_query(s, w, n, e), b.add, "coastline")
-            pts = b.lonlat_box(V.BLOCK_POINT_MARGIN)
-            lines = b.lonlat_box(V.UNITS * V.TILE_BUFFER / V.EXTENT)
-            await self._overpass(overpass_marks_query(pts, lines), b.add, "sea marks")
-            self.errors.pop("openstreetmap", None)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
-            msg = str(err) or type(err).__name__
-            self.errors["openstreetmap"] = msg[:300]
-            self._log("osm", "OpenStreetMap coast and sea marks for block %s,%s failed: %s", bx, by, msg[:300])
-            missing.append("osm")
-            b.coast = None  # a coastline half read is worse than the depth model's own
-            b.builders = {}
-        built = await asyncio.to_thread(b.finish, True)
-        del b
-        return built, missing
+            if self.chart._stale((bx, by)):
+                raise V._Skipped  # the map moved on while this block waited its turn
+            return await asyncio.to_thread(self._make, bx, by, sampler, osm, missing)
+        finally:
+            self._building.release()
+
+    def _make(self, bx: int, by: int, sampler: Sampler, osm: Path | None, missing: list[str]
+              ) -> tuple[dict[str, V.Layer], list[str]]:
+        b = BlockBuilder(bx, by, sampler)
+        if osm is not None:
+            try:
+                b.add_file(osm)
+            except (OSError, ValueError, EOFError, struct.error, zlib.error) as err:
+                _LOGGER.warning("OpenStreetMap file %s unreadable, fetched again: %s", osm.name, err)
+                try:
+                    osm.unlink()
+                except OSError:
+                    pass
+                missing.append("osm")
+                b.coast = None  # a coastline half read is worse than the depth model's own
+                b.builders = {}
+        return b.finish(True), missing
 
     # --- overview tiles ---
 
@@ -1693,8 +1943,8 @@ def _write_bytes(path: Path, data: bytes) -> None:
 
 def add_overview(tile: dict, rows: dict[str, list]) -> None:
     """Foreign overview rows into a cut overview tile."""
-    for key in ("depth", "contour", "land"):
+    for key in ("xdepth", "contour", "land"):
         if rows.get(key):
             tile[key] = (tile.get(key) or []) + rows[key]
-    if rows.get("depth"):
-        tile["depth"].sort(key=lambda row: -row[0])
+    if rows.get("xdepth"):
+        tile["xdepth"].sort(key=lambda row: row[0])
