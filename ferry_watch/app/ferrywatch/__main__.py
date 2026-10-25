@@ -27,7 +27,7 @@ from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
 from .ice import IceWatch
 from .notify import Notifier, sun_place
-from . import seaice
+from . import radar, seaice
 from .overlays import Overlays
 from .passages import Detector
 from .photos import PhotoCache
@@ -44,6 +44,7 @@ from .web import Web
 _LOGGER = logging.getLogger("ferrywatch")
 
 HOUSEKEEPING_INTERVAL = 6 * 3600
+OVERLAY_PRUNE_EVERY = 1800  # s; radar frames are removed once 6 hours old
 HA_SENSOR_INTERVAL = 30 * 60
 PANEL_TICK = 60  # s between sea-condition checks and phone reads while a panel is open
 FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
@@ -122,6 +123,7 @@ class FerryWatch:
         else:
             self.overlays = Overlays(DATA_DIR / "overlays", self.session)
             seaice.register(self.overlays)
+            radar.register(self.overlays)
         fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
@@ -193,6 +195,7 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self._overlay_pruning()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
@@ -410,6 +413,13 @@ class FerryWatch:
             await self._fleet_photos()
             await self.web.broadcast_ships()
             await asyncio.sleep(HOUSEKEEPING_INTERVAL)
+
+    async def _overlay_pruning(self) -> None:
+        """Radar frames leave the disk within half an hour of turning 6 hours old, whether
+        or not anyone is looking (housekeeping alone runs only every few hours)."""
+        while True:
+            await asyncio.sleep(OVERLAY_PRUNE_EVERY)
+            await asyncio.to_thread(self.overlays.prune)
 
     # --- used by the web API --------------------------------------------
 

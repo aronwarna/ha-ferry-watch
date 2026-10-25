@@ -1,7 +1,7 @@
 """Test overlays for the simulator, so the overlay switches, opacity and time bar work offline.
 
-"Test rain" is a tiles overlay: the last hour in 5-minute frames, each tile a small PNG
-(written here with zlib and struct) of rain cells drifting east across the Gulf of Finland.
+The rain radar runs with its real settings, its frames small PNGs (written here with zlib
+and struct) of rain cells drifting east across the Gulf of Finland.
 It goes through the real tile cache, with a session that draws the tiles instead of
 fetching them. "Test wind" is a points overlay: a 12 x 10 grid with 48 hourly forecast
 times of wind speed, gust and direction.
@@ -14,7 +14,7 @@ import struct
 import zlib
 from typing import Any
 
-from . import seaice
+from . import radar, seaice
 from .overlays import Overlay, Overlays, every
 
 TILE_PX = 64  # drawn small; the panel stretches it over its 256-pixel tile
@@ -113,7 +113,7 @@ class _Response:
 
 
 class FakeTileSession:
-    """Answers the test overlay's sim:// tile addresses with drawn tiles."""
+    """Answers the simulated overlays' sim:// tile addresses with drawn tiles."""
 
     def get(self, url: str, **kw) -> _Response:
         _, _, kind, ts, z, x, y = url.split("/")
@@ -138,13 +138,6 @@ async def fake_wind_run(session: Any, now: float) -> dict[str, Any]:
 
 def register(overlays: Overlays) -> None:
     overlays.register(Overlay(
-        id="test-rain", title="Rain (test)", kind="tiles", url="sim://test-rain/{ts}/{z}/{x}/{y}",
-        times=every(300, 12, lag=300), max_age=6 * 3600, refresh=300, frame_ms=500, opacity=0.75,
-        color="#2563eb", min_zoom=5, max_zoom=10, bounds=(58.5, 19.0, 61.5, 31.0),
-        attribution="Test rain (simulated)",
-        note="Simulated rain cells, the last hour in 5-minute frames, to try the time bar.",
-    ))
-    overlays.register(Overlay(
         id="test-wind", title="Wind forecast (test)", kind="points", points=fake_wind_run,
         max_age=3 * 3600, frame_ms=700, opacity=0.9, color="#0f766e",
         attribution="Test wind (simulated)",
@@ -153,3 +146,6 @@ def register(overlays: Overlays) -> None:
     # The real ice chart's settings, drawn here and shown all year so it can be tried.
     seaice.register(overlays, url="sim://sea-ice/{ts}/{z}/{x}/{y}", times=every(86400, 14, lag=86400),
                     season=None, attribution=seaice.ATTRIBUTION + " (simulated)")
+    # The real radar's settings, with drawn rain cells for its frames.
+    radar.register(overlays, url="sim://rain-radar/{ts}/{z}/{x}/{y}", times=every(300, 12, lag=300),
+                   attribution=radar.ATTRIBUTION + " (simulated)")

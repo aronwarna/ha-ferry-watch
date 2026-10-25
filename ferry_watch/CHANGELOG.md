@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.22.0
+
+The rain radar over the map (card T4).
+
+- New switch "Rain radar" under Menu › On the map. It shows FMI's Finnish radar composite
+  for the last hour in 5-minute frames, at 70% opacity to start with. It opens on the
+  newest frame; press play on the time bar and the hour plays at two frames a second.
+- It uses FMI's new radar layer (radar_finland_cappi_dbzh), which replaces the old ones
+  FMI retires in November 2026. From October to April it uses FMI's winter colours, which
+  show light snow; in summer the summer colours.
+- Frames are kept on the NAS for 6 hours and removed from the disk within half an hour
+  after that, whether or not anyone is looking. If FMI is down it shows with the switch
+  and in Settings, and nothing else is affected.
+- In the simulator the radar switch replaces "Rain (test)", with drawn rain cells.
+
 ## 0.21.0
 
 The Baltic sea ice chart over the map (card T3).
