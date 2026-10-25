@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.18.1
+
+Fixes from the NAS log of 23 to 25 October:
+
+- Drawn chart, Archipelago Sea and Åland: about 25 areas there never got a
+  chart, because a single Traficom depth area (the open water around
+  thousands of islands) is more than 4 MB on its own. Such an area is now
+  read piece by piece, keeping only the parts that reach into the area being
+  drawn, so it no longer needs the whole thing in memory.
+- Land Survey (lakes, rocks, names, land detail): your NAS hasn't been able
+  to connect to it at all since 23 October. Ferry Watch now asks again after
+  a quarter of an hour, then half an hour, and so on up to every 6 hours,
+  instead of three times in a row every hour, and says so in the log.
+- Water traffic signs: when Väylä's server is busy (it answered a burst of
+  requests with "403 Forbidden"), the request is tried again after a short
+  pause instead of waiting an hour.
+- Swedish and Estonian side: OpenStreetMap's "502 Gateway Timeout" (server
+  at capacity) is asked again once a little later, like its other busy
+  answers.
+- Submarine cables: Traficom doesn't publish them yet (its open data entry
+  says "not available for now"), so none show. They'll appear on their own
+  once Traficom adds them.
+
 ## 0.18.0
 
 - Drawn chart, Swedish and Estonian side: the shallows are now the same

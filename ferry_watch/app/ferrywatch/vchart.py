@@ -82,8 +82,10 @@ BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge
 POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
 FAILED_RETRY = 3600
-SERVICE_DOWN_FOR = 900  # s a service that timed out is left alone
+SERVICE_DOWN_FOR = 900  # s a service that timed out is left alone...
+SERVICE_DOWN_MAX = 6 * 3600  # ...doubling each time it times out again, up to this
 GET_RETRIES = (3, 15)  # s to wait before asking again after a dropped connection
+BUSY_STATUS = (403, 429, 502, 503, 504)  # answers from a busy server, asked again like a dropped connection
 CAPS_MAX_AGE = 86400  # s between reads of which layers each service has
 PAGE = 2000  # features per request; a page over MAX_RESPONSE is asked for again in halves
 MML_PAGE = 1000
@@ -91,6 +93,9 @@ MML_PAGES = {"height": 250, "building": 500, "road": 500, "lake": 250}  # long o
 # Bytes; a bigger page is asked for again in halves. Parsing a page is the biggest use of RAM
 # here, about seven times its size (a 4 MB page of depth areas takes some 30 MB for a moment).
 MAX_RESPONSE = 4 * 1024 * 1024
+# Bytes of a single feature over MAX_RESPONSE read with LeanGeoJSON, which keeps only the
+# parts of it in the block (never the answer whole).
+LEAN_MAX = 64 * 1024 * 1024
 # Parsed blocks kept in RAM, by their array sizes (blocks with land detail take a few MB
 # each at full detail, so the cache holds a handful of them)...
 MEMORY_BYTES = 16 * 1024 * 1024
@@ -157,7 +162,10 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
         "call": ("avoin:Rdocal_L",),
     }, "line", ("_src",)),
     "pilot": (TRAFICOM_OPEN_WFS, "avoin:PilotBoardingPlace_P", "point", ("objnam",)),
-    # Submarine cables and pipelines (the paper chart's magenta wavy and dashed lines).
+    # Submarine cables and pipelines (the paper chart's magenta wavy and dashed lines). On the
+    # NAS (Oct 2026) neither service lists these: Traficom's open data entry for them
+    # ("Merikartan johtotiedot", avoin WFS) says "not available for now". The names stay, so
+    # they're picked up from the daily capabilities read once Traficom publishes them.
     "cable": (TRAFICOM_WFS, {
         "cable": ("rajoitettu:CableSubmarine_L", "avoin:CableSubmarine_L"),
         "pipe": ("rajoitettu:PipelineSubmarineOnBelow_L", "avoin:PipelineSubmarineOnBelow_L"),
@@ -2099,6 +2107,95 @@ def _unknown_type(err: Exception) -> bool:
         s in text for s in ("typename", "feature type", "unknown", "not found", "no such", "does not exist")))
 
 
+_COORDS_KEY = re.compile(rb'"coordinates"\s*:\s*\[')
+_COORD_TOKEN = re.compile(rb"[\[\]]|[-+0-9.eE]+")
+
+
+class LeanGeoJSON:
+    """A GeoJSON answer too big to parse whole (one Traficom depth area around the Archipelago
+    Sea is more than MAX_RESPONSE by itself), fed a chunk at a time. Everything but the
+    geometries' coordinates is kept as text and parsed at the end; the coordinates are read
+    number by number, and each ring or line that doesn't reach into ``bbox`` (most of such an
+    area's island holes) is dropped as soon as it ends, so only what the block needs is held."""
+
+    def __init__(self, bbox: tuple[float, float, float, float]):
+        self.bbox = bbox
+        self.text = bytearray()  # the answer with each coordinates array replaced by its index
+        self.geoms: list[list] = []
+        self.kept = self.dropped = 0  # rings and lines
+        self._buf = bytearray()
+        self._stack: list[list] | None = None  # open arrays while inside coordinates
+
+    def feed(self, chunk: bytes) -> None:
+        self._buf += chunk
+        while self._buf:
+            if self._stack is None:
+                m = _COORDS_KEY.search(self._buf)
+                if m is None:
+                    keep = len(self._buf) - 32  # the key may be cut by the chunk's end
+                    if keep > 0:
+                        self.text += self._buf[:keep]
+                        del self._buf[:keep]
+                    return
+                self.text += self._buf[:m.start()] + b'"coordinates":' + str(len(self.geoms)).encode()
+                del self._buf[:m.end()]
+                self._stack = [[]]
+            elif not self._coords():
+                return
+
+    def _coords(self) -> bool:
+        """Read coordinates from the buffer; True once the array closed."""
+        stack, buf = self._stack, bytes(self._buf)
+        end, closed = 0, False
+        for m in _COORD_TOKEN.finditer(buf):
+            tok = m.group()
+            if tok == b"[":
+                stack.append([])
+            elif tok == b"]":
+                arr = stack.pop()
+                if not stack:
+                    self.geoms.append(arr)
+                    self._stack = None
+                    end, closed = m.end(), True
+                    break
+                if arr and isinstance(arr[0], list) and arr[0] and isinstance(arr[0][0], float):
+                    if self._reaches(arr):  # a ring or a line
+                        stack[-1].append(arr)
+                        self.kept += 1
+                    else:
+                        self.dropped += 1
+                elif arr:
+                    stack[-1].append(arr)
+            elif m.end() == len(buf):
+                break  # a number the chunk's end may have cut: read with the next one
+            else:
+                stack[-1].append(float(tok))
+            end = m.end()
+        del self._buf[:end]
+        return closed
+
+    def _reaches(self, run: list) -> bool:
+        x0, y0, x1, y1 = self.bbox
+        xs = [p[0] for p in run]
+        if max(xs) < x0 or min(xs) > x1:
+            return False
+        ys = [p[1] for p in run]
+        return not (max(ys) < y0 or min(ys) > y1)
+
+    def close(self) -> dict:
+        if self._stack is not None:
+            raise ValueError("answer ended inside a geometry")
+        self.text += self._buf
+        page = json.loads(self.text)
+        self.text = bytearray()
+        for feature in page.get("features") or []:
+            geom = feature.get("geometry") or {}
+            if isinstance(geom.get("coordinates"), int):
+                geom["coordinates"] = self.geoms[geom["coordinates"]]
+        self.geoms = []
+        return page
+
+
 def _with_limit(url: str, params: dict[str, str] | None, limit: int) -> tuple[str, dict[str, str] | None]:
     """The same request for fewer features a page (``limit`` in the params, or in a next-page link)."""
     if params is not None:
@@ -2168,7 +2265,8 @@ class VectorChart:
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
         self._failed: dict[tuple, float] = {}
-        self._down: dict[str, float] = {}  # service -> when it last timed out or dropped
+        self._down: dict[str, float] = {}  # service -> until when it's left alone, after timing out
+        self._down_streak: dict[str, int] = {}  # service -> times it timed out in a row
         # file name -> (mtime, some layer failed, type names the services didn't have then)
         self._missing: dict[str, tuple[float, bool, tuple]] = {}
         self._filled: dict[str, float] = {}  # part "" file -> mtime it was seen without 0.16.5's drawn contours
@@ -2730,7 +2828,7 @@ class VectorChart:
                 bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
                 derived = DERIVED_BY.get(key)
                 services = {service_of(name) for _, name in source_names(key)}
-                down = [s for s in services if time.time() - self._down.get(s, 0) < SERVICE_DOWN_FOR]
+                down = [s for s in services if time.time() < self._down.get(s, 0)]
                 if down and key != "depth":
                     # A service that just timed out isn't asked again for every layer of every
                     # block: those layers count as missing and are fetched again later.
@@ -2739,10 +2837,12 @@ class VectorChart:
                 try:
                     absent += await self._fetch_into(builders[key], key, bx, by, bbox, builders.get(derived))
                     self.errors.pop(key, None)
+                    for service in services:
+                        self._down_streak.pop(service, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
                     if isinstance(err, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
                         for service in services:
-                            self._down[service] = time.time()
+                            self._service_down(service)
                     msg = self._scrub(str(err) or type(err).__name__)
                     if self.errors.get(key) != msg:
                         _LOGGER.warning("Chart data %s for block %s,%s failed: %s", key, bx, by, msg)
@@ -2813,10 +2913,29 @@ class VectorChart:
                 self._log_once(f"absent {name}", "Chart layer %s is not there: %s", name, str(err)[:120])
         return absent
 
+    def _service_down(self, service: str) -> None:
+        """Leave a service that timed out alone for a while: a quarter of an hour, doubling
+        while it keeps timing out (the NAS couldn't reach the Land Survey for days on end)."""
+        streak = self._down_streak.get(service, 0) + 1
+        self._down_streak[service] = streak
+        pause = min(SERVICE_DOWN_FOR * 2 ** (streak - 1), SERVICE_DOWN_MAX)
+        self._down[service] = time.time() + pause
+        if streak > 1:
+            self._log_once(f"down {service} {min(streak, 6)}", "Chart service %s still can't be reached; "
+                           "asked again in %.1f h", urlsplit(service).hostname, pause / 3600)
+
     async def _get_bytes(self, url: str, params: dict[str, str] | None, what: str) -> bytearray:
         for wait in GET_RETRIES:
             try:
                 return await self._get_once(url, params, what)
+            except asyncio.TimeoutError:
+                raise  # no answer at all (not even a connection): asking again at once won't help
+            except _HTTPError as err:
+                if err.status not in BUSY_STATUS:
+                    raise
+                # Busy, or shedding load (Väylä's nginx answered a burst with 403s): once more, later.
+                _LOGGER.debug("Chart %s request answered %s, again in %s s", what, err.status, wait)
+                await asyncio.sleep(wait)
             except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as err:
                 # A dropped connection (often a pooled one the server had already closed, or a
                 # busy server shedding load) is worth asking again after a pause.
@@ -2835,6 +2954,25 @@ class VectorChart:
             if resp.status != 200:
                 raise _HTTPError(resp.status, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
         return body
+
+    async def _get_lean(self, url: str, params: dict[str, str], what: str) -> dict:
+        x0, y0, x1, y1 = (float(v) for v in params["bbox"].split(",")[:4])
+        lean = LeanGeoJSON((x0, y0, x1, y1))
+        size = 0
+        async with self.session.get(url, params=params, headers={"User-Agent": USER_AGENT},
+                                    timeout=aiohttp.ClientTimeout(total=600, sock_connect=20, sock_read=60)) as resp:
+            if resp.status != 200:
+                text = (await resp.content.read(2000)).decode("utf-8", "replace")
+                raise _HTTPError(resp.status, self._scrub(text.strip()))
+            async for chunk in resp.content.iter_chunked(1 << 18):
+                size += len(chunk)
+                if size > LEAN_MAX:
+                    raise _TooBig(f"more than {LEAN_MAX // 1048576} MB of {what} data in one feature")
+                await asyncio.to_thread(lean.feed, chunk)
+        page = await asyncio.to_thread(lean.close)
+        _LOGGER.info("Chart data %s: one feature of %.1f MB read in parts (%s rings or lines kept, %s outside "
+                     "the area dropped)", what, size / 1048576, lean.kept, lean.dropped)
+        return page
 
     async def _get_json(self, url: str, params: dict[str, str] | None, what: str) -> dict:
         body = await self._get_bytes(url, params, what)
@@ -2881,10 +3019,11 @@ class VectorChart:
             try:
                 page = await self._get_json(url, params, what)
             except _TooBig:
-                if count <= 25:
-                    raise
-                count //= 2  # dense area: the same page again, in halves
-                continue
+                if count > 1:
+                    count //= 2  # dense area: the same page again, in halves
+                    continue
+                # One feature bigger than that by itself: read it keeping only what's in the bbox.
+                page = await self._get_lean(url, params, what)
             got = page.get("features") or []
             got_total += len(got)
             if sink is None:
@@ -2900,6 +3039,7 @@ class VectorChart:
                 return features
             start += len(got)
             del got
+            count = min(PAGE, count * 2)  # back up to full pages after a dense stretch
 
     async def _fetch_mml(self, key: str, bbox: tuple[float, float, float, float],
                          sink: Callable[[Iterable[dict]], None], name: str | None = None) -> None:

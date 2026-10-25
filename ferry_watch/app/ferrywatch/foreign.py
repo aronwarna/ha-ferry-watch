@@ -1819,7 +1819,7 @@ class ForeignSource:
                 size = 0
                 async with self.chart.session.post(OVERPASS, data={"data": query}, headers={"User-Agent": USER_AGENT},
                                                    timeout=aiohttp.ClientTimeout(total=OVERPASS_TIMEOUT)) as resp:
-                    if resp.status in (429, 504) and not attempt:
+                    if resp.status in (429, 502, 503, 504) and not attempt:
                         # Busy (its slots for this address are taken): once more, a little later.
                         self._last_overpass = time.monotonic() + OVERPASS_BUSY_WAIT - OVERPASS_PAUSE
                         continue

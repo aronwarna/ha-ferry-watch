@@ -1169,3 +1169,92 @@ def test_spar_buoys_lean_clear_of_each_other():
     assert leans[(30000, 10000)] < 0 < leans[(30150, 10000)]  # side by side: apart
     assert all(abs(a) <= 50 for a in leans.values())
     assert leans[(50000, 10000)] <= 10  # not its usual lean to the right, over the fairway
+
+
+def _big_depth_answer():
+    """A Traficom depth area as the NAS got it around the Archipelago Sea: one MultiPolygon
+    whose island holes reach far outside the block asked for."""
+    def square(x, y, r):
+        return [[x - r, y - r], [x + r, y - r], [x + r, y + r], [x - r, y + r], [x - r, y - r]]
+    holes_in = [square(1000.5 + i * 10, 1000.25, 2) for i in range(5)]
+    holes_out = [square(50000 + i * 10, 50000, 2) for i in range(200)]
+    far_poly = [square(90000, 90000, 100)]
+    feature = {"type": "Feature", "id": "DepthArea_A.1",
+               "geometry": {"type": "MultiPolygon",
+                            "coordinates": [[square(0, 0, 100000), *holes_in, *holes_out], far_poly]},
+               "geometry_name": "geom",
+               "properties": {"DRVAL1": 10.0, "DRVAL2": 20.0, "OBJNAM": "[not] coordinates"}}
+    return {"type": "FeatureCollection", "features": [feature], "numberMatched": 1, "numberReturned": 1}
+
+
+def test_lean_geojson_keeps_only_what_reaches_the_block():
+    body = json.dumps(_big_depth_answer()).encode()
+    for size in (1, 7, 64, len(body)):  # any chunking, even mid-number or mid-key
+        lean = vchart.LeanGeoJSON((0, 0, 2000, 2000))
+        for i in range(0, len(body), size):
+            lean.feed(body[i:i + size])
+        page = lean.close()
+        (feature,) = page["features"]
+        assert feature["properties"] == {"DRVAL1": 10.0, "DRVAL2": 20.0, "OBJNAM": "[not] coordinates"}
+        (poly,) = feature["geometry"]["coordinates"]  # the far polygon dropped whole
+        assert len(poly) == 6 and poly[1][0] == [998.5, 998.25]  # outer ring and the 5 holes inside
+        assert lean.kept == 6 and lean.dropped == 201
+
+
+def test_page_too_big_for_one_feature_is_read_lean(tmp_path, monkeypatch):
+    asked = []
+
+    async def once(self, url, params, what):
+        asked.append(int(params["count"]))
+        raise vchart._TooBig("too big")
+
+    async def lean(self, url, params, what):
+        asked.append(("lean", params["count"]))
+        return _big_depth_answer()
+
+    monkeypatch.setattr(VectorChart, "_get_once", once)
+    monkeypatch.setattr(VectorChart, "_get_lean", lean)
+    chart = VectorChart(tmp_path, None)
+    params = {"bbox": "0,0,2000,2000,EPSG:3857"}
+    features = asyncio.run(chart._paged("https://example.org", params, "depth", None))
+    assert len(features) == 1
+    assert asked[0] == vchart.PAGE and asked[-2:] == [1, ("lean", "1")]  # halved all the way down first
+
+
+def test_unreachable_service_is_left_alone_longer_each_time(tmp_path, monkeypatch):
+    calls = []
+
+    async def once(self, url, params, what):
+        calls.append(url)
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(VectorChart, "_get_once", once)
+    chart = VectorChart(tmp_path, None)
+    try:
+        asyncio.run(chart._get_bytes("https://example.org", None, "lake"))
+    except asyncio.TimeoutError:
+        pass
+    assert len(calls) == 1  # no connection at all: not asked again at once
+    now = time.time()
+    pauses = []
+    for _ in range(7):
+        chart._service_down(vchart.MML_API)
+        pauses.append(round(chart._down[vchart.MML_API] - now, -1))
+    assert pauses[:3] == [vchart.SERVICE_DOWN_FOR, 2 * vchart.SERVICE_DOWN_FOR, 4 * vchart.SERVICE_DOWN_FOR]
+    assert pauses[-1] == vchart.SERVICE_DOWN_MAX
+
+
+def test_busy_answer_is_asked_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "GET_RETRIES", (0, 0))
+    calls = []
+
+    async def once(self, url, params, what):
+        calls.append(url)
+        if len(calls) < 2:
+            raise vchart._HTTPError(403, "<html><head><title>403 Forbidden</title></head></html>")
+        return bytearray(b"{}")
+
+    monkeypatch.setattr(VectorChart, "_get_once", once)
+    chart = VectorChart(tmp_path, None)
+    assert asyncio.run(chart._get_bytes("https://example.org", None, "sign")) == bytearray(b"{}")
+    assert len(calls) == 2
