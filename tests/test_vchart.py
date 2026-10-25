@@ -1085,49 +1085,29 @@ def test_zoomed_out_tiles_keep_shallows_and_islands():
         assert land >= 0.9 * total / (1 if z == 8 else 4), (z, land, total)
 
 
-def test_contour_gaps_are_filled_from_depth_areas():
-    # A 15-20 m area beside a 20-50 m one along a slanted edge; Traficom's 20 m contour
-    # covers only the lower half of it. A second 20-50 m area beside the first has no
-    # shallower water next to it: no line goes between them.
-    a = [(10000, 10000), (30000, 10000), (40000, 50000), (10000, 50000)]
-    b = [(30000, 10000), (50000, 10000), (55000, 50000), (40000, 50000)]
-    c = [(50000, 10000), (60000, 10000), (60000, 50000), (55000, 50000)]
-    full = vchart.layers_from_rows({
-        "depth": [[["15", "20"], None, [a]], [["20", "50"], None, [b]], [["20", "50"], None, [c]]],
-        "contour": [[["20"], None, [(35000, 30000), (40000, 50000)]], [["10"], None, [(10000, 30000), (20000, 30000)]]],
-    })
-    out = vchart.fill_contour_gaps(full["depth"], full["contour"])
-    added = [out.pts(out.vo[i], out.vo[i + 1]) for i in range(full["contour"].n, out.n)]
-    assert all(out.props[out.pi[i]] == ("20",) for i in range(full["contour"].n, out.n))
-    assert len(added) == 1
-    xs = [p[0] for p in added[0]]
-    # From the corner at 30000 along the shared edge to near where the real line starts.
-    assert min(xs) == 30000 and 33500 < max(xs) <= 35100
-    assert all(abs((x - 30000) * 4 - (y - 10000)) < 6 for x, y in added[0][1:-1])  # on the edge a/b
-
-
-def test_refill_adds_contours_to_old_files(tmp_path):
+def test_files_with_drawn_contours_are_fetched_again(tmp_path):
+    # 0.16.5 drew contours along depth-area edges and marked the files "fill".
+    assert vchart._fetch_again({"missing": [], "fill": 1}, "1_2.fwc")
     chart = VectorChart(tmp_path, None, fake_chart_layer)
 
     async def run():
         z, x, y = tile_at(60.005, 24.4, 12)
         await chart.tile(z, x, y)
-        path = chart._path(*vchart.blocks_for(z, x, y)[0])
-        meta = vchart.read_meta(path)
-        assert meta["fill"] == vchart.CONTOUR_FILL
-        # As written before the gaps were filled:
+        key = vchart.blocks_for(z, x, y)[0]
+        path = chart._path(*key)
+        assert "fill" not in vchart.read_meta(path)
+        assert not await chart._gap_filled(path)
         head, full = vchart.read_block(path, len(vchart.LEVELS) - 1)
-        vchart.write_block(path, {k: v for k, v in head.items() if k != "fill"}, vchart.make_levels(full),
-                           vchart.make_overview(full))
-        os.utime(path, (1000.0, time.time() - 100))
-        mtime = path.stat().st_mtime
+        vchart.write_block(path, {**{k: v for k, v in head.items() if k != "ov"}, "fill": 1},
+                           vchart.make_levels(full), vchart.make_overview(full))
+        os.utime(path, (1000.0, time.time() - 2 * vchart.FAILED_RETRY))
         chart._filled.clear()
         chart._forget()
-        assert await chart._unfilled(path)
-        await chart._ensure_part(*vchart.blocks_for(z, x, y)[0], "")
-        assert vchart.read_meta(path)["fill"] == vchart.CONTOUR_FILL
-        assert path.stat().st_mtime == mtime + 1  # keeps its age
-        assert not await chart._unfilled(path)
+        assert await chart._gap_filled(path)
+        await chart._ensure_part(*key, "")
+        assert "fill" not in vchart.read_meta(path)
+        assert time.time() - path.stat().st_mtime < 60  # fetched again
+        assert not await chart._gap_filled(path)
 
     asyncio.run(run())
 

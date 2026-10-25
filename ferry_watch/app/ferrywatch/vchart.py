@@ -102,7 +102,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 11  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 12  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -1852,139 +1852,11 @@ def _with_limit(url: str, params: dict[str, str] | None, limit: int) -> tuple[st
 
 
 def finish_part(built: dict[str, Layer]) -> dict[str, Layer]:
-    """A fetched part as it's stored: landmarks get their heights and the height labels go,
-    and the depth contours get their gaps filled."""
+    """A fetched part as it's stored: landmarks get their heights and the height labels go."""
     labels = built.pop("markh", None)
     if "landmark" in built:
         built["landmark"] = join_heights(built["landmark"], labels)
-    if "depth" in built and "contour" in built:
-        built["contour"] = fill_contour_gaps(built["depth"], built["contour"])
     return built
-
-
-# --- filling gaps in the depth contours ----------------------------------------------
-# Traficom's contour lines stop where depth areas compiled at different scales meet (often
-# along a straight join), although the depth areas themselves carry on: a 15-20 m area
-# next to a 20-50 m one is a 20 m contour all the same. So the edges of each area that
-# starts at a contour depth are drawn as that contour where shallower water lies beside them
-# and no contour line runs within GAP_NEAR of them. The test is done on masks of the block
-# at GAP_PX units a pixel (about 7 m), one contour depth at a time.
-
-CONTOUR_FILL = 1  # bump when fill_contour_gaps changes: part "" files are then redone from their full level
-GAP_PX = 48
-GAP_NEAR = 4  # px: the width of the band round each contour line counted as "has a line"
-GAP_SIDE = 2  # px: how far beside an edge the shallower water is looked for
-GAP_MIN = 150  # block units (about 20 m): shorter pieces are left out
-
-
-def _rows_mask(layer: Layer, rows: list[int], size: int, lo: int) -> Any:
-    """A mask of where some of an area layer's rows are (each row even-odd), GAP_PX units a pixel."""
-    from PIL import Image, ImageChops, ImageDraw
-    mask = Image.new("1", (size, size), 0)
-    co = layer.co
-    for i in rows:
-        x0, y0, x1, y1 = layer.bbox(i)
-        box = (max(0, (x0 - lo) // GAP_PX), max(0, (y0 - lo) // GAP_PX),
-               min(size, (x1 - lo) // GAP_PX + 2), min(size, (y1 - lo) // GAP_PX + 2))
-        if box[2] <= box[0] or box[3] <= box[1]:
-            continue
-        acc = Image.new("1", (box[2] - box[0], box[3] - box[1]), 0)
-        for r in layer.rings(i):
-            v0, v1 = layer.vo[r], layer.vo[r + 1]
-            xs, ys = co[2 * v0:2 * v1:2], co[2 * v0 + 1:2 * v1:2]
-            # Each ring is XORed into just its own box: holes cost no more than their size.
-            rx0, ry0 = max(box[0], (min(xs) - lo) // GAP_PX), max(box[1], (min(ys) - lo) // GAP_PX)
-            rx1, ry1 = min(box[2], (max(xs) - lo) // GAP_PX + 2), min(box[3], (max(ys) - lo) // GAP_PX + 2)
-            if rx1 <= rx0 or ry1 <= ry0:
-                continue
-            ring = Image.new("1", (rx1 - rx0, ry1 - ry0), 0)
-            ImageDraw.Draw(ring).polygon([((x - lo) / GAP_PX - rx0, (y - lo) / GAP_PX - ry0) for x, y in zip(xs, ys)],
-                                         fill=1)
-            sub = (rx0 - box[0], ry0 - box[1], rx1 - box[0], ry1 - box[1])
-            acc.paste(ImageChops.logical_xor(acc.crop(sub), ring), sub[:2])
-        mask.paste(1, box, acc)
-    return mask
-
-
-def fill_contour_gaps(depth: Layer, contour: Layer) -> Layer:
-    """The contour layer with lines added along depth-area edges where Traficom's contours
-    have gaps (see above)."""
-    from PIL import Image, ImageDraw
-    margin = UNITS * TILE_BUFFER // EXTENT  # how far past the block build_into keeps areas
-    lo, hi = -margin, UNITS + margin
-    size = (hi - lo) // GAP_PX + 2
-    bands = [(_num(p[0]), _num(p[1])) for p in depth.props]
-    levels = [_num(p[0]) for p in contour.props]
-    b = LayerBuilder("line")
-    co = contour.co
-    for i in range(contour.n):  # the lines there are, as they are
-        b.line(contour.props[contour.pi[i]], contour.pts(contour.vo[i], contour.vo[i + 1]))
-    added = 0
-    for value in CONTOURS:
-        deep = [i for i in range(depth.n) if bands[depth.pi[i]][0] == value]
-        if not deep:
-            continue
-        shallow = _rows_mask(depth, [i for i in range(depth.n) if bands[depth.pi[i]][1] is not None
-                                     and bands[depth.pi[i]][1] <= value], size, lo)
-        lines = Image.new("1", (size, size), 0)
-        draw = ImageDraw.Draw(lines)
-        props = None
-        for i in range(contour.n):
-            if levels[contour.pi[i]] == value:
-                props = props or contour.props[contour.pi[i]]
-                v0, v1 = contour.vo[i], contour.vo[i + 1]
-                draw.line([((co[2 * v] - lo) / GAP_PX, (co[2 * v + 1] - lo) / GAP_PX) for v in range(v0, v1)],
-                          fill=1, width=GAP_NEAR)
-        props = props or (value,)
-        sp, lp = shallow.load(), lines.load()
-
-        def at(px, x: float, y: float) -> bool:
-            ix, iy = int(x), int(y)
-            return 0 <= ix < size and 0 <= iy < size and bool(px[ix, iy])
-
-        dco = depth.co
-        for i in deep:
-            for r in depth.rings(i):
-                v0, v1 = depth.vo[r], depth.vo[r + 1]
-                run: list[tuple[int, int]] = []
-                pieces = []
-                for v in range(v0, v1):
-                    w = v + 1 if v + 1 < v1 else v0  # the ring closes back to its first corner
-                    ax, ay, bx, by = dco[2 * v], dco[2 * v + 1], dco[2 * w], dco[2 * w + 1]
-                    if (ax, ay) == (bx, by):
-                        continue
-                    if (ax == bx and ax in (lo, hi)) or (ay == by and ay in (lo, hi)):
-                        if run:  # where build_into cut the area at the block's margin
-                            pieces.append(run)
-                            run = []
-                        continue
-                    length = math.hypot(bx - ax, by - ay)
-                    nx, ny = -(by - ay) / length * GAP_SIDE, (bx - ax) / length * GAP_SIDE
-                    steps = math.ceil(length / (2 * GAP_PX))  # long straight joins are tested along their length
-                    for k in range(steps):
-                        px0, py0 = ax + (bx - ax) * k / steps, ay + (by - ay) * k / steps
-                        px1, py1 = ax + (bx - ax) * (k + 1) / steps, ay + (by - ay) * (k + 1) / steps
-                        mx, my = ((px0 + px1) / 2 - lo) / GAP_PX, ((py0 + py1) / 2 - lo) / GAP_PX
-                        if not at(lp, mx, my) and (at(sp, mx + nx, my + ny) or at(sp, mx - nx, my - ny)):
-                            if not run:
-                                run = [(round(px0), round(py0))]
-                            run.append((round(px1), round(py1)))
-                        elif run:
-                            pieces.append(run)
-                            run = []
-                if run:
-                    if pieces and pieces[0][0] == run[-1]:
-                        pieces[0] = run + pieces[0][1:]  # one piece across the ring's start
-                    else:
-                        pieces.append(run)
-                for piece in pieces:
-                    if sum(math.dist(piece[k], piece[k + 1]) for k in range(len(piece) - 1)) >= GAP_MIN:
-                        b.line(props, piece)
-                        added += 1
-        del shallow, lines
-    if added:
-        _LOGGER.debug("Filled %s gaps in the depth contours", added)
-    return b.layer
 
 
 # --- overviews (zooms 8-9) ------------------------------------------------------------
@@ -2041,7 +1913,7 @@ class VectorChart:
         self._down: dict[str, float] = {}  # service -> when it last timed out or dropped
         # file name -> (mtime, some layer failed, type names the services didn't have then)
         self._missing: dict[str, tuple[float, bool, tuple]] = {}
-        self._filled: dict[str, float] = {}  # part "" file -> mtime it was seen with its contours filled
+        self._filled: dict[str, float] = {}  # part "" file -> mtime it was seen without 0.16.5's drawn contours
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
         self._coast: OrderedDict[tuple[int, int], tuple] = OrderedDict()  # block -> (region, coastal sites)
         self._caps: dict[str, set[str]] = {}  # service -> type names (collection ids) it has
@@ -2312,8 +2184,8 @@ class VectorChart:
                 for key in blocks:
                     await self._ensure_heritage(*key)
                     if self._fresh(key):
-                        if await self._unfilled(self._path(*key)):
-                            await self._ensure_part(*key, "")  # fills its contours' gaps
+                        if await self._gap_filled(self._path(*key)):
+                            await self._ensure_part(*key, "")  # fetched again without them
                             await asyncio.sleep(KEEP_PAUSE)
                         continue
                     self._wanted[key] = math.inf  # never skipped as "the map moved on"
@@ -2507,9 +2379,6 @@ class VectorChart:
         if old.exists():
             await self._convert(old, path)
         age = _age(path)
-        if age is not None and part == "" and await self._unfilled(path):
-            await self._refill(path)
-            age = _age(path)
         if age is not None and age < MAX_AGE and not (age > FAILED_RETRY and await self._has_missing(path)):
             return True
         if time.time() - self._failed.get((bx, by, part), 0) < FAILED_RETRY:
@@ -2519,8 +2388,10 @@ class VectorChart:
         self._failed[(bx, by, part)] = time.time()
         return age is not None
 
-    async def _unfilled(self, path: Path) -> bool:
-        """Whether a part file was written before the contours' gaps were filled (CONTOUR_FILL)."""
+    async def _gap_filled(self, path: Path) -> bool:
+        """Whether a part file has the contours 0.16.5 drew along depth-area edges ("fill" in
+        its meta). They made lines the paper chart doesn't have (along fairway areas), and
+        which lines were Traficom's isn't kept, so such files are fetched again."""
         try:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
@@ -2531,33 +2402,10 @@ class VectorChart:
             meta = await asyncio.to_thread(read_meta, path)
         except (OSError, ValueError, EOFError):
             return False  # unreadable: _read_parts deals with it
-        if meta.get("fill", 0) >= CONTOUR_FILL:
+        if not meta.get("fill"):
             self._filled[path.name] = mtime
             return False
         return True
-
-    async def _refill(self, path: Path) -> None:
-        """Fill the contours' gaps in a part file from its full level, without downloading it
-        again. The file keeps its age (and a second more, so overview tiles are cut again)."""
-        try:
-            async with self._reading:
-                mtime = path.stat().st_mtime
-
-                def refill() -> None:
-                    meta, full = read_block(path, len(LEVELS) - 1)
-                    if "depth" in full and "contour" in full:
-                        full["contour"] = fill_contour_gaps(full["depth"], full["contour"])
-                    meta = {k: v for k, v in meta.items() if k != "ov"}
-                    write_block(path, {**meta, "fill": CONTOUR_FILL}, make_levels(full), make_overview(full))
-
-                await asyncio.to_thread(refill)
-                os.utime(path, (mtime + 1, mtime + 1))
-                self._filled[path.name] = mtime + 1
-        except FileNotFoundError:
-            return
-        except (OSError, ValueError, EOFError) as err:
-            _LOGGER.warning("Could not fill the contours of chart block %s: %s", path.name, err)
-            self._filled[path.name] = path.stat().st_mtime if path.exists() else 0
 
     async def _has_missing(self, path: Path) -> bool:
         """Whether some layer of a part failed when it was fetched, the part's PART_REV is
@@ -2659,8 +2507,6 @@ class VectorChart:
 
         def write() -> None:
             meta = {"v": 2, "missing": missing, "absent": absent, "rev": PART_REV.get(part, 0)}
-            if "contour" in built:
-                meta["fill"] = CONTOUR_FILL
             write_block(path, meta, make_levels(built), make_overview(built))
 
         await asyncio.to_thread(write)
@@ -3074,10 +2920,10 @@ class _HTTPError(aiohttp.ClientError):
 
 def _fetch_again(meta: dict, name: str) -> bool:
     """Whether a block part file is to be fetched again soon: a layer failed when it was
-    fetched, or the file is older than its part's PART_REV."""
+    fetched, the file is older than its part's PART_REV, or it has 0.16.5's drawn contours."""
     bits = name.split(".")
     part = bits[1] if len(bits) == 3 else ""
-    return bool(meta.get("missing")) or meta.get("rev", 0) < PART_REV.get(part, 0)
+    return bool(meta.get("missing")) or meta.get("rev", 0) < PART_REV.get(part, 0) or bool(meta.get("fill"))
 
 
 def _age(path: Path) -> float | None:

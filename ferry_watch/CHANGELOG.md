@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.6
+
+- Drawn chart: the depth contours added in 0.16.5 are gone again. They ran
+  along fairway edges where the paper chart has no line, so contours now end
+  where Traficom's data ends them, as before. Chart blocks saved by 0.16.5 are
+  downloaded again in the background; until a block is, it can still show
+  the extra lines.
+- Island names showing ahead of lake names (from 0.16.5) stays.
+
 ## 0.16.5
 
 - Drawn chart: depth contours no longer stop suddenly. Where the official
