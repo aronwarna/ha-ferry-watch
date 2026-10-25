@@ -1130,3 +1130,24 @@ def test_lake_names_on_islands_wait_for_close_zooms():
 
     assert names(13) == ["Kyrkfjärden", "Träskön eller Storlandet"]
     assert "Träsket" in names(15)
+
+
+def test_leading_line_front_and_marks_on_it(tmp_path):
+    # The simulator's Dragesvik leading line runs from its rear mark past the front mark
+    # out to sea in the south; a directional light on Svartö has a narrow white beam.
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+        lead_tile, _ = await chart.tile(*tile_at(59.9876, 24.0918, 14))
+        dir_tile, _ = await chart.tile(*tile_at(59.9982, 24.1756, 14))
+        return lead_tile, dir_tile
+
+    lead_tile, dir_tile = asyncio.run(run())
+    (bearing, line, (fx, fy, ux, uy)), = lead_tile["lead"]
+    front = next(a for a in lead_tile["aid"] if a[5] == "Dragesvik alempi")
+    # Solid from the front mark on, out to sea (south, down the tile).
+    assert abs(fx - front[0]) <= 2 and abs(fy - front[1]) <= 2 and uy > 0.99
+    assert abs(front[7] - (bearing + 180) % 360) < 0.5  # the mark's bearing out to sea
+    assert all(len(a) == 7 for a in lead_tile["aid"] if a[5] != "Dragesvik alempi")
+    light = next(a for a in dir_tile["aid"] if a[2] == "d")
+    assert light[5] == "Svartö suunta" and len(light) == 7
+    assert sorted(s[4] for s in dir_tile["sector"] if s[:2] == light[:2]) == ["p", "v", "vi"]

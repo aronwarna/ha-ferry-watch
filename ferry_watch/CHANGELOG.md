@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.17.0
+
+- Drawn chart: every sea mark now follows Traficom's symbol key
+  (merkkienselitys), on the Finnish and the foreign side alike.
+- Leading lines are dashed behind the front mark and solid from it out to
+  sea, with the bearing in red beside them ("356,9° — 176,9°"). Leading
+  lights only show their yellow flare along the line, with no sector arcs.
+- Sector lights: thin coloured arcs, dotted sector limits and the colour
+  letters outside the arc. A narrow white sector is a yellow wedge.
+- Directional lights get a flare and a solid black line along the beam,
+  with its bearing in red.
+- A lighthouse is a black six-pointed star with a ring in its light's
+  colour up close. A racon on it is written under the light's character.
+- Spars, buoys, edge marks, leading beacons, cairns, beacon towers and radar
+  marks are redrawn to the key's shapes and sizes. Rocks, wrecks, foul
+  ground, the pilot station, anchorages, pipelines, the boat-route band and
+  draught figures were also touched up.
+- The chart is recut from what's already on the NAS. Nothing is downloaded
+  again.
+
 ## 0.16.6
 
 - Drawn chart: the depth contours added in 0.16.5 are gone again. They ran

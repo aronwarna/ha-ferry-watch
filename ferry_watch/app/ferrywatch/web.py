@@ -125,8 +125,14 @@ class Web:
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
         r.add_static("/static/", STATIC, append_version=False)
+        if DEV:
+            # Every chart symbol drawn by vchart.js, for checking against Traficom's key.
+            r.add_get("/dev/symbols", self.dev_symbols)
 
     # --- pages -----------------------------------------------------------
+
+    async def dev_symbols(self, request: web.Request) -> web.StreamResponse:
+        return web.FileResponse(Path(__file__).parent / "devpages" / "symbols.html")
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         html = (STATIC / "index.html").read_text()

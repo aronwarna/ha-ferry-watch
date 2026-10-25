@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart symbols</title>
+<style>
+  body { margin: 16px; font: 13px system-ui, sans-serif; background: #fff; color: #222; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: #555; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  figure { margin: 0; border: 1px solid #ddd; }
+  figcaption { padding: 4px 6px; border-top: 1px solid #ddd; max-width: 256px; }
+  canvas { display: block; width: 256px; height: 256px; }
+</style>
+</head>
+<body>
+<h1>Chart symbols</h1>
+<p>Every symbol of the drawn chart, drawn by vchart.js from made-up tiles, for checking against Traficom's key (merkkienselitys). Simulator only.</p>
+<div class="grid" id="grid"></div>
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/vchart.js"></script>
+<script>
+  // Tiles are 512 units across (two per CSS pixel); each entry is one tile's data.
+  const E = 512;
+  const water = [[1, [0, 0, E, 0, E, E, 0, E]]];
+  const deep = [[4, [0, 0, E, 0, E, E, 0, E]]];
+  const sea = (extra) => ({ e: E, depth: deep, ...extra });
+  const spar = (cat, name, lit, colours) => sea({ aid: [[256, 300, "v", cat, lit ? 1 : 0, name, colours || ""]] });
+  const row = (type, cat, lit, colours, x = 256, y = 300, extra = []) => [x, y, type, cat, lit, "", colours, ...extra];
+  const blob = (cx, cy, r) => { const p = []; for (let i = 0; i < 24; i++) { const a = i * Math.PI / 12; p.push(cx + r * Math.cos(a) * (1 + 0.15 * Math.sin(3 * a)), cy + r * Math.sin(a)); } return p; };
+
+  const ENTRIES = [
+    ["spar-n", "Spar buoy, north cardinal", 14, spar(3)],
+    ["spar-s", "Spar buoy, south cardinal", 14, spar(4)],
+    ["spar-e", "Spar buoy, east cardinal", 14, spar(6)],
+    ["spar-w", "Spar buoy, west cardinal", 14, spar(5)],
+    ["spar-port", "Spar buoy, port", 14, spar(1)],
+    ["spar-stbd", "Spar buoy, starboard", 14, spar(2)],
+    ["spar-isol", "Spar buoy, isolated danger", 14, spar(7)],
+    ["spar-safe", "Spar buoy, safe water", 14, spar(8)],
+    ["spar-special", "Spar buoy, special", 14, spar(9)],
+    ["spar-lit", "Lit spar buoy (viittapoiju), south", 14, spar(4, "", true, "W")],
+    ["buoy", "Buoy (ice buoy), starboard, lit green", 14, sea({ aid: [row("p", 2, 1, "G")] })],
+    ["buoy-port", "Buoy (spindle buoy), port, lit red", 14, sea({ aid: [row("p", 1, 1, "R")] })],
+    ["edge-e", "Edge mark, east, lit", 14, sea({ aid: [row("r", 6, 1, "W")] })],
+    ["edge-port", "Edge mark, port, lit red", 14, sea({ aid: [row("r", 1, 1, "R")] })],
+    ["radar", "Radar mark, lit", 14, sea({ aid: [row("u", 99, 1, "W")] })],
+    ["lead-beacons", "Leading beacons and line", 14, sea({
+      land: [blob(120, 300, 30), blob(470, 300, 60)],
+      depth: [[1, [0, 0, E, 0, E, E, 0, E], blob(120, 300, 30), blob(470, 300, 60)]],
+      aid: [row("l", 99, 0, "", 470, 300, [270]), row("l", 99, 0, "", 120, 300, [270])],
+      lead: [[null, [470, 300, 0, 300], 120, 300, -1, 0]],
+      fline: [[null, 6, [120, 300, 0, 300]]],
+    })],
+    ["lead-lights", "Leading lights with leading line", 14, sea({
+      land: [[0, 0, 220, 0, 180, 200, 160, 300, 190, 512, 0, 512]],
+      depth: [[1, [220, 0, E, 0, E, E, 190, E, 160, 300, 180, 200]]],
+      aid: [row("l", 99, 1, "W", 20, 300, [90]), row("l", 99, 1, "W", 120, 300, [90])],
+      light: [[20, 300, "LFl W 6s"], [120, 300, "Q W"]],
+      lead: [[269.3, [20, 300, 536, 300], 120, 300, 1, 0]],
+    })],
+    ["lighthouse", "Lighthouse with racon (all-round white light)", 14, sea({
+      land: [blob(256, 256, 30)],
+      depth: [[1, [0, 0, E, 0, E, E, 0, E], blob(256, 256, 30)]],
+      aid: [[256, 256, "m", 99, 1, "Porin majakka", "W"], [256, 256, "t", 99, 0, "", ""]],
+      light: [[256, 256, "Fl W 12s"]],
+    })],
+    ["racon", "Radar beacon (racon)", 14, sea({ aid: [[256, 256, "t", 99, 0, "", ""]] })],
+    ["sector", "Sector light with a narrow white sector", 14, sea({
+      aid: [row("s", 99, 1, "WRG", 60, 260)],
+      light: [[60, 260, "Fl(3) WRG 15s"]],
+      sector: [[60, 260, 255, 265, "vi"], [60, 260, 265, 271, "v"], [60, 260, 271, 292, "p"]],
+      fline: [[6.0, 2, [130, 470, 160, 330, 190, 300, 500, 245]]],
+    })],
+    ["sector-wide", "Sector light, white sector wider", 14, sea({
+      aid: [row("s", 99, 1, "WRG", 60, 260)],
+      light: [[60, 260, "Fl(3) WRG 15s"]],
+      sector: [[60, 260, 252, 262, "vi"], [60, 260, 262, 276, "v"], [60, 260, 276, 292, "p"]],
+    })],
+    ["directional", "Directional light", 14, sea({
+      aid: [row("d", 99, 1, "W", 40, 380)],
+      light: [[40, 380, "Oc 12s"]],
+      sector: [[40, 380, 254.5, 256.5, "v"]],
+    })],
+    ["sector-small", "Sector light zoomed out", 12, sea({
+      aid: [row("s", 99, 1, "WRG", 256, 220)],
+      light: [[256, 220, "Fl(3) WRG 15s"]],
+      sector: [[256, 220, 255, 265, "vi"], [256, 220, 265, 271, "v"], [256, 220, 271, 292, "p"]],
+    })],
+    ["minor", "Minor light", 14, sea({ aid: [row("a", 99, 1, "W")], light: [[256, 300, "Fl 3s"]] })],
+    ["cairn", "Cairn", 14, { e: E, land: [[0, 0, E, 0, E, E, 0, E]], aid: [row("k", 99, 0, "")] }],
+    ["tower", "Beacon tower (båk)", 14, { e: E, land: [[0, 0, E, 0, E, E, 0, E]], aid: [row("b", 99, 0, "")] }],
+    ["rock-above", "Rock and rocks above water", 14, sea({ depth: water, rock: [[180, 256, 3]], rockpt: [[330, 256, 3]] })],
+    ["rock-awash", "Rock and rocks awash", 14, sea({ depth: water, rock: [[180, 256, 2]], rockpt: [[330, 256, 2]] })],
+    ["rock-under", "Rock and rocks under water", 14, sea({ depth: water, rock: [[180, 256, 1]], rockpt: [[330, 256, 1]] })],
+    ["foul", "Foul area", 14, sea({ depth: water, rockarea: [[2, blob(256, 256, 80)]], rockpt: [[290, 220, 2]], rock: [[210, 290, 3]] })],
+    ["wreck-safe", "Wreck, not dangerous", 14, sea({ wreck: [[256, 256, 2]] })],
+    ["wreck-danger", "Dangerous wreck, depth unknown", 14, sea({ wreck: [[256, 256, 1]] })],
+    ["wreck-hull", "Wreck showing", 14, sea({ depth: water, wreck: [[256, 256, 3]] })],
+    ["pilot", "Pilot boarding place", 14, sea({ pilot: [[256, 256]] })],
+    ["fairway-main", "Main merchant fairway, swept area", 14, sea({
+      farea: [[1, 10, 1, [0, 200, 512, 200, 512, 300, 0, 300]]],
+      fline: [[10.0, 1, [0, 250, 512, 250]]],
+    })],
+    ["boat-route", "Boat route with its draught", 14, sea({ fline: [[1.5, 5, [0, 260, 512, 250]]] })],
+    ["draught", "Fairway with its draught", 14, sea({ fline: [[4.5, 3, [0, 256, 512, 256]]] })],
+    ["trunk", "Small-craft trunk route", 14, sea({ band: [[[0, 256, 512, 256]]], fline: [[2.4, 4, [0, 256, 512, 256]]] })],
+    ["cable", "Submarine cable", 14, sea({ cable: [["cable", [0, 256, 512, 256]]] })],
+    ["pipe", "Submarine pipeline", 14, sea({ cable: [["pipe", [0, 256, 512, 256]]] })],
+    ["anchorage", "Anchorage area", 14, sea({ farea: [[2, null, null, [100, 120, 412, 120, 412, 392, 100, 392]]] })],
+    ["restricted", "Restricted area", 14, sea({ restrict: [["02", null, [100, 120, 412, 120, 412, 392, 100, 392]]] })],
+    ["wind", "Wind turbine", 14, { e: E, land: [[0, 0, E, 0, E, E, 0, E]], landmark: [[256, 300, "wind turbine", null, null]] }],
+    ["radio", "Radio mast", 14, { e: E, land: [[0, 0, E, 0, E, E, 0, E]], landmark: [[256, 300, "radio mast", null, null]] }],
+    ["tower-land", "Tower", 14, { e: E, land: [[0, 0, E, 0, E, E, 0, E]], landmark: [[256, 300, "tower", null, null]] }],
+    ["soundings", "Soundings", 14, sea({ sounding: [[180, 256, 12], [320, 256, 9.7]] })],
+    ["unsurveyed", "Unsurveyed area", 14, sea({ tss: [["unsurveyed", null, blob(256, 256, 120)]] })],
+  ];
+
+  const grid = document.getElementById("grid");
+  const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
+  for (const [id, title, z, data] of ENTRIES) {
+    const fig = document.createElement("figure");
+    fig.id = `cell-${id}`;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 256 * dpr;
+    fig.append(canvas);
+    const cap = document.createElement("figcaption");
+    cap.textContent = `${title} (zoom ${z})`;
+    fig.append(cap);
+    grid.append(fig);
+    FerryChart.drawTileWithLabels(canvas, data, { z, x: 0, y: 0 });
+  }
+  window.SYMBOLS = ENTRIES.map(([id, title, z]) => ({ id, title, z }));
+</script>
+</body>
+</html>

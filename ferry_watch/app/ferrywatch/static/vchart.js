@@ -24,7 +24,7 @@
     fairway: "#000000",
     fairwayArea: "#eceded",
     builtUp: "#eceded",
-    band: "#bed389", // under the small-craft trunk route
+    band: "#80ce51", // under the small-craft trunk route, the key's green
     magenta: "#9d3289",
     magentaLight: "#c47db5",
     red: "#c63541",
@@ -41,6 +41,13 @@
     tssZone: "rgba(157, 50, 137, 0.26)",
     tssSep: "rgba(157, 50, 137, 0.5)",
     unsurveyed: "#a9cce8", // the key's lines across an unsurveyed area
+    // Lights in the key's own inks: flares and sectors; a white light's arcs and ring in
+    // orange-yellow with a thin dark edge.
+    lightY: "#fcd205",
+    lightR: "#ee294a",
+    lightG: "#33b875",
+    lightArc: "#f6b10a",
+    wreckFill: "#d6eefa", // inside the dotted ring of a dangerous wreck
   };
   const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", Roboto, sans-serif';
   const SERIF = '"Times New Roman", Times, "Liberation Serif", "Noto Serif", serif';
@@ -56,14 +63,17 @@
   const MIN_TEXT = 10; // CSS px: names stay readable when zoomed out
   const OVERVIEW_Z = 9; // at and below this, the overview chart's look: no clutter, big names
 
-  const LIGHT = { W: C.yellow, R: C.red, G: C.green, Y: C.yellow };
-  // A sector light zoomed out: one flare per colour, fanned out (compass bearings).
-  const FAN = { R: 190, W: 160, G: 130, Y: 220 };
+  const LIGHT = { W: C.lightY, R: C.lightR, G: C.lightG, Y: C.lightY };
+  const ARC = { W: C.lightArc, R: C.lightR, G: C.lightG, Y: C.lightArc }; // sector arcs and rings
+  // A sector light zoomed out, as the key draws it on small-scale charts: one flare per
+  // colour from the star, red to the lower left, yellow straight down, green to the lower right.
+  const FAN = { R: 215, W: 180, G: 145, Y: 180 };
   const SECTOR = { v: "W", p: "R", vi: "G", k: "Y" };
 
   const TYPE_NAMES = {
     v: "spar buoy", p: "buoy", r: "beacon", l: "leading mark", k: "cairn", m: "lighthouse",
     s: "sector light", d: "directional light", a: "minor light", t: "radar beacon", o: "mark",
+    b: "beacon tower", u: "radar mark",
   };
   const CATEGORY_NAMES = {
     1: "Port (red)", 2: "Starboard (green)", 3: "North cardinal", 4: "South cardinal",
@@ -173,6 +183,38 @@
       } else if (phase === 2) ctx.lineTo(x1, y1);
       d += len;
     }
+  }
+
+  function lineLength(flat) {
+    let d = 0;
+    for (let i = 2; i < flat.length; i += 2) d += Math.hypot(flat[i] - flat[i - 2], flat[i + 1] - flat[i - 1]);
+    return d;
+  }
+
+  // A leading line cut where it passes its front mark: `front` is [x, y, ux, uy] from the
+  // tile, (ux, uy) the way out to sea. Without one it is all solid: no mark stands on it
+  // anywhere near, so this is its seaward part.
+  function splitLead(flat, front) {
+    if (front.length < 4) return { dashed: [], solid: [flat] };
+    const [fx, fy, ux, uy] = front;
+    const g = (i) => (flat[i] - fx) * ux + (flat[i + 1] - fy) * uy;
+    const dashed = [], solid = [];
+    let cur = [flat[0], flat[1]], sea = g(0) >= 0;
+    for (let i = 2; i < flat.length; i += 2) {
+      const g1 = g(i);
+      if ((g1 >= 0) !== sea) {
+        const g0 = g(i - 2), t = g0 / (g0 - g1);
+        const cx = flat[i - 2] + (flat[i] - flat[i - 2]) * t, cy = flat[i - 1] + (flat[i + 1] - flat[i - 1]) * t;
+        cur.push(cx, cy);
+        (sea ? solid : dashed).push(cur);
+        cur = [cx, cy];
+        sea = !sea;
+      }
+      cur.push(flat[i], flat[i + 1]);
+    }
+    (sea ? solid : dashed).push(cur);
+    const real = (p) => p.length >= 4 && lineLength(p) > 0.5;
+    return { dashed: dashed.filter(real), solid: solid.filter(real) };
   }
 
   // The longest nearly straight stretch of a line that is at least `need` long: its ends
@@ -318,9 +360,10 @@
   // A label along a line, on its longest straight stretch, kept whole inside the tile.
   // Returns the stretch of line to leave out under it (null if it's beside the line), or
   // false if it found no room. These stay in the tiles, as they break the line under them.
+  // `o.draw(ctx, w)` with `o.width` draws something other than plain text, centred on 0, 0.
   function alongLine(ctx, label, flat, e, o) {
     ctx.font = o.font;
-    const w = textWidth(ctx, o.text, o.spacing || 0);
+    const w = o.width ?? textWidth(ctx, o.text, o.spacing || 0);
     const run = straightRun(flat, Math.max(o.need, w + 2 * (o.pad || 0)));
     if (!run) return false;
     const at = o.at ?? 0.5;
@@ -345,9 +388,10 @@
       ctx.translate(cx, cy);
       ctx.rotate(a);
       ctx.font = o.font;
-      ctx.fillStyle = o.color;
+      ctx.fillStyle = ctx.strokeStyle = o.color;
       ctx.textBaseline = "alphabetic";
-      spacedText(ctx, o.text, -w / 2, 0.35 * o.size, o.spacing || 0);
+      if (o.draw) o.draw(ctx, w);
+      else spacedText(ctx, o.text, -w / 2, 0.35 * o.size, o.spacing || 0);
       ctx.restore();
     });
     if (o.offset) return null;
@@ -386,10 +430,40 @@
     return [x - w / 2 - pad, y - 0.45 * big, x + w / 2 + (decimal ? 0.5 * big : 0) + pad, y + (decimal ? 0.62 : 0.45) * big];
   }
 
-  // 9 -> "(9,0)"; a shallow boat route's depth plainly, as the chart prints it: 2.4 -> "2,4".
-  const fmtDraught = (d) => (d < 4.5 ? d.toFixed(1).replace(".", ",") : `(${d.toFixed(1).replace(".", ",")})`);
   const fmtDeg = (v) => `${v.toFixed(1).padStart(5, "0").replace(".", ",")}°`;
-  const bearingText = (b) => `${fmtDeg(b)} - ${fmtDeg((b + 180) % 360)}`; // 273.7 -> "273,7° - 093,7°"
+  // A leading line's bearing as the key prints it, both ways with a long dash: 269.3 ->
+  // "269,3° — 089,3°"; a directional light's with a short one: "255,5° - 075,5°".
+  const bearingText = (b, dash = "—") => `${fmtDeg(b)} ${dash} ${fmtDeg((b + 180) % 360)}`;
+
+  // A fairway's draught as the key sets it into the line: the figure, its decimal smaller,
+  // between two angle brackets whose points the line runs into: ⟨4,5⟩. A boat route's
+  // advisory draught slopes. Returns the alongLine options for it.
+  function draughtLabel(ctx, draught, boat, size) {
+    const whole = `${Math.floor(draught + 1e-6)},`;
+    const tenth = String(Math.round((draught - Math.floor(draught + 1e-6)) * 10) % 10);
+    const big = `${boat ? "italic " : ""}${size}px ${SANS}`, small = `${boat ? "italic " : ""}${0.7 * size}px ${SANS}`;
+    ctx.font = big;
+    const wb = textWidth(ctx, whole, 0);
+    ctx.font = small;
+    const ws = textWidth(ctx, tenth, 0);
+    const depth = 0.34 * size, room = 0.16 * size;
+    const width = wb + ws + 2 * (depth + room);
+    return {
+      text: whole + tenth, font: big, size, width, need: 3 * width, pad: 0,
+      draw(g, w) {
+        const x0 = -w / 2 + depth + room, base = 0.36 * size;
+        g.font = big; g.textAlign = "left";
+        g.fillText(whole, x0, base);
+        g.font = small;
+        g.fillText(tenth, x0 + wb - 0.04 * size, base + (boat ? 0.14 * size : 0)); // a boat route's sits lower
+        g.beginPath();
+        for (const sign of [-1, 1]) {
+          g.moveTo(sign * (w / 2 - depth), -0.42 * size); g.lineTo(sign * w / 2, 0); g.lineTo(sign * (w / 2 - depth), 0.42 * size);
+        }
+        g.lineWidth = 0.075 * size; g.lineJoin = "miter"; g.stroke();
+      },
+    };
+  }
 
   // A light's character as charts print it: ("Fl (2) 10 s", "WRG") -> "Fl(2)WRG.10s", and
   // ("Iso WRG 4s", "WRG") -> "Iso.WRG.4s" when the character names its colours itself.
@@ -409,10 +483,12 @@
   }
 
   // --- navigation aids --------------------------------------------------------------
+  // Shapes after Traficom's symbol key (merkkienselitys): every buoy and beacon stands
+  // upright on its position, a small circle on a short base line.
 
-  // A light's flare as the paper chart prints it: a bold teardrop, pointed at the light and
-  // round at its far end, yellow (white light, edged black), red or green. `bearing` is the
-  // compass direction it points to.
+  // A light's flare as the key prints it: a teardrop, pointed at the light and round at its
+  // far end, yellow (white light, edged black), red or green. `bearing` is the compass
+  // direction it points to.
   function flare(ctx, x, y, s, lw, color, bearing) {
     const L = 46 * s, r = 7 * s, cy = L - r;
     ctx.save();
@@ -426,7 +502,7 @@
     ctx.closePath();
     ctx.fillStyle = color;
     ctx.fill();
-    if (color === C.yellow) {
+    if (color === C.lightY) {
       ctx.lineWidth = 0.9 * lw;
       ctx.strokeStyle = C.black;
       ctx.stroke();
@@ -442,8 +518,10 @@
     return [cx - r, cy - r, cx + r, cy + r];
   }
 
-  // A leading light points its flare along its leading line, out to sea.
+  // The compass bearing out to sea of the leading line a mark stands on: the tile says so
+  // (aid[7]); a tile from before that only has the lines, so the nearest one's far end.
   function leadBearing(aid, leads) {
+    if (aid.length > 7) return aid[7];
     for (const row of leads) {
       const line = Array.isArray(row[1]) ? row[1] : row[0];
       if (!Array.isArray(line)) continue;
@@ -459,35 +537,88 @@
     return null;
   }
 
-  // One flare in the light's colour, or for a sector light a fan of one per colour.
-  // Returns the compass bearings drawn.
-  function drawFlares(ctx, aid, s, lw, bearing) {
-    const colours = [...new Set(String(aid[6] || "").replace(/[^WRGY]/g, ""))];
-    if (bearing != null || colours.length <= 1) {
-      const b = bearing ?? 135;
-      flare(ctx, aid[0], aid[1], s, lw, LIGHT[colours[0]] || C.yellow, b);
-      return [b];
+  const lightColours = (aid) => [...new Set(String(aid[6] || "").replace(/[^WRGY]/g, ""))];
+  const norm = (deg) => ((deg % 360) + 360) % 360;
+  // Whether a sector (from° clockwise to°, bearings towards the light) holds a bearing.
+  const holds = (from, to, b) => norm(b - from) <= norm(to - from);
+
+  // How a light is drawn, after the key:
+  // - on a leading line, a leading light: only its flare along the line, out to sea (no arc
+  //   and no bar, whatever narrow sector Väylä gives it); sectors well off the line stay;
+  // - a directional light, or a light with nothing but a narrow beam: a flare and a solid
+  //   black line out along the beam, its bearing in red ("Suuntaloisto");
+  // - a sector light: coloured arcs, a narrow white sector a yellow wedge;
+  // - else one flare in its colour.
+  // `rows` are its sector rows. Returns { lead?, dir?, beam?, arcs }: arcs as { from, to,
+  // letter, span, a1, a2 } with a1..a2 canvas angles round the light.
+  const NARROW = 8; // degrees: a white sector this narrow is the light's beam
+  // Tile units: how far round a light its arcs (and the dotted limits, 1.3 times as far) and
+  // a directional light's beam reach, all within the 448 units round the tile the server
+  // sends lights and sectors for, so a light outside the tile draws the same in both.
+  const ARC_MAX = 330, BEAM_MAX = 420;
+  // Where along a directional light's beam its bearing may go, nearest the middle first.
+  const BEAM_AT = Array.from({ length: 17 }, (_, i) => 0.5 + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.05);
+  function lightPlan(aid, rows, leads) {
+    const type = aid ? aid[2] : "s";
+    const arcs = rows.map(([, , from, to, colour]) => {
+      const a1 = ((from + 90) * Math.PI) / 180;
+      let a2 = ((to + 90) * Math.PI) / 180;
+      if (a2 <= a1) a2 += 2 * Math.PI;
+      return { from, to, letter: SECTOR[colour] || "W", span: norm(to - from) || 360, a1, a2 };
+    });
+    const lead = aid && "lsda".includes(type) ? leadBearing(aid, leads) : null;
+    if (lead != null) {
+      const toward = norm(lead + 180);
+      return { lead, arcs: arcs.filter((a) => a.span > 15 && !holds(a.from, a.to, toward)) };
     }
-    for (const c of colours) flare(ctx, aid[0], aid[1], s, lw, LIGHT[c], FAN[c]);
-    return colours.map((c) => FAN[c]);
+    const narrow = arcs.filter((a) => a.letter === "W" && a.span <= NARROW);
+    const total = arcs.reduce((sum, a) => sum + a.span, 0);
+    if (arcs.length && (type === "d" || (narrow.length && total <= 30))) {
+      const beam = narrow[0] || arcs.reduce((m, a) => (a.span < m.span ? a : m));
+      const toward = norm(beam.from + beam.span / 2);
+      return { dir: norm(toward + 180), toward, beam, arcs: [] };
+    }
+    return { arcs };
+  }
+
+  // Flares for a light, by its plan: along its leading line or beam, a fan for a sector
+  // light zoomed out, else one. Returns the compass bearings drawn.
+  function drawFlares(ctx, aid, s, lw, plan, close) {
+    const colours = lightColours(aid);
+    const main = LIGHT[colours.includes("W") ? "W" : colours[0]] || C.lightY;
+    const along = plan.lead ?? plan.dir;
+    if (along != null) {
+      flare(ctx, aid[0], aid[1], s, lw, plan.beam ? LIGHT[plan.beam.letter] : main, along);
+      return [along];
+    }
+    if (close && plan.arcs.length) return []; // its arcs show its colours
+    if (colours.length > 1 || plan.arcs.length) {
+      const fan = colours.length ? colours : [...new Set(plan.arcs.map((a) => a.letter))];
+      for (const c of fan) flare(ctx, aid[0], aid[1], s, lw, LIGHT[c], FAN[c]);
+      return fan.map((c) => FAN[c]);
+    }
+    flare(ctx, aid[0], aid[1], s, lw, main, 135);
+    return [135];
   }
 
   // The position of a buoy or beacon: a small circle on a short base line.
-  function base(ctx, s, lw) {
+  const FOOT = 2.1; // the position circle's radius
+  function base(ctx, s, lw, half = 6.5) {
+    const f = FOOT * s;
     ctx.lineWidth = lw;
     ctx.strokeStyle = C.black;
     ctx.beginPath();
-    ctx.moveTo(-7 * s, 0); ctx.lineTo(-2.6 * s, 0);
-    ctx.moveTo(2.6 * s, 0); ctx.lineTo(7 * s, 0);
-    ctx.moveTo(2.6 * s, 0); ctx.arc(0, 0, 2.6 * s, 0, 7);
+    ctx.moveTo(-half * s, 0); ctx.lineTo(-f, 0);
+    ctx.moveTo(f, 0); ctx.lineTo(half * s, 0);
+    ctx.moveTo(f, 0); ctx.arc(0, 0, f, 0, 7);
     ctx.stroke();
   }
 
-  // Topmarks as on Finnish charts, standing on (x, y): port an open square, starboard a
-  // cone, cardinals two cones, isolated danger two balls, safe water a ball, special an X.
+  // Topmarks as the key draws them, standing on (x, y): port an open square, starboard a
+  // cone, cardinals two cones, isolated danger two balls, safe water a ring, special an X.
   // Returns the topmark's height.
   function topmark(ctx, cat, x, y, s, lw) {
-    const w = 4 * s, h = 6.5 * s, gap = 2 * s;
+    const w = 4.8 * s, h = 7.6 * s, gap = 0.9 * s;
     const cone = (yb, up) => {
       ctx.beginPath();
       ctx.moveTo(x - w, yb); ctx.lineTo(x + w, yb); ctx.lineTo(x, up ? yb - h : yb + h);
@@ -499,21 +630,21 @@
     ctx.strokeStyle = C.black;
     let top = 0;
     switch (cat) {
-      case 1: ctx.lineWidth = 1.6 * s; ctx.strokeRect(x - 3 * s, y - 8.5 * s, 6 * s, 8.5 * s); top = 9; break;
-      case 2: ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x + w, y); ctx.lineTo(x, y - 8 * s); ctx.closePath(); ctx.fill(); top = 8; break;
-      case 3: cone(y, true); cone(y - h - gap, true); top = 15; break; // north: both up
-      case 4: cone(y - h, false); cone(y - 2 * h - gap, false); top = 15; break; // south: both down
-      case 5: cone(y, true); cone(y - 2 * h - gap, false); top = 15; break; // west: points together
-      case 6: cone(y - h, false); cone(y - h - gap, true); top = 15; break; // east: bases together
-      case 7: ball(y - 2.8 * s, 2.6 * s); ball(y - 8.6 * s, 2.6 * s); top = 11; break;
-      case 8: ctx.fillStyle = C.red; ball(y - 3 * s, 2.9 * s); top = 6; break;
+      case 1: ctx.lineWidth = 1.5 * s; ctx.strokeRect(x - 3 * s, y - 9 * s, 6 * s, 8.3 * s); top = 9; break;
+      case 2: ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x + w, y); ctx.lineTo(x, y - 9.5 * s); ctx.closePath(); ctx.fill(); top = 10; break;
+      case 3: cone(y, true); cone(y - h - gap, true); top = 16; break; // north: both up
+      case 4: cone(y - h, false); cone(y - 2 * h - gap, false); top = 16; break; // south: both down
+      case 5: cone(y, true); cone(y - 2 * h - gap, false); top = 16; break; // west: points together
+      case 6: cone(y - h, false); cone(y - h - gap, true); top = 16; break; // east: bases together
+      case 7: ball(y - 3.3 * s, 3.3 * s); ball(y - 10 * s, 3.3 * s); top = 13; break;
+      case 8: ctx.lineWidth = 1.4 * s; ctx.beginPath(); ctx.arc(x, y - 3.9 * s, 3.2 * s, 0, 7); ctx.stroke(); top = 8; break;
       case 9:
-        ctx.strokeStyle = C.black; ctx.lineWidth = 1.8 * s;
+        ctx.lineWidth = 1.7 * s;
         ctx.beginPath();
-        ctx.moveTo(x - w, y - 7 * s); ctx.lineTo(x + w, y);
-        ctx.moveTo(x + w, y - 7 * s); ctx.lineTo(x - w, y);
+        ctx.moveTo(x - 3.8 * s, y - 7.6 * s); ctx.lineTo(x + 3.8 * s, y);
+        ctx.moveTo(x + 3.8 * s, y - 7.6 * s); ctx.lineTo(x - 3.8 * s, y);
         ctx.stroke();
-        top = 7;
+        top = 8;
         break;
       default: break;
     }
@@ -524,115 +655,118 @@
   // How far each kind of symbol reaches round its point (chart px: left, top, right,
   // bottom), for labels and soundings to keep clear of.
   const EXTENT = {
-    v: [-7, -48, 18, 3], vl: [-7, -46, 9, 3], p: [-7, -38, 14, 3], r: [-7, -42, 7, 2], l: [-7, -30, 7, 3],
-    k: [-6, -11, 6, 1], m: [-10, -10, 10, 10], s: [-8, -8, 8, 8], d: [-4, -4, 4, 4], a: [-4, -4, 4, 4],
-    t: [-5, -5, 5, 5], o: [-4, -4, 4, 4],
+    v: [-7, -46, 7, 3], p: [-8, -42, 18, 3], r: [-9, -38, 9, 3], u: [-11, -38, 11, 3], l: [-7, -17, 7, 3],
+    k: [-7, -6, 7, 1], b: [-8, -14, 8, 3], m: [-10, -10, 10, 10], s: [-7, -7, 7, 7], d: [-5, -5, 5, 5],
+    a: [-5, -5, 5, 5], t: [-4, -4, 4, 4], o: [-4, -4, 4, 4],
   };
   function markExtent(aid) {
-    const [, , type, , lit] = aid;
-    return EXTENT[type === "v" && lit ? "vl" : type] || EXTENT.o;
+    return EXTENT[aid[2]] || EXTENT.o;
   }
   function markBox(aid, s) {
     const [l, t, r, b] = markExtent(aid);
     return [aid[0] + l * s, aid[1] + t * s, aid[0] + r * s, aid[1] + b * s];
   }
 
-  // The light's own point: a small dot in the light's colour, as the paper chart marks it.
-  function lightDot(ctx, aid, s, lw) {
-    const col = String(aid[6] || "").replace(/[^WRGY]/g, "")[0];
+  // A star of n points round (0, 0), its points R out and its notches `inner` (of R) in.
+  function starPath(ctx, n, R, inner) {
     ctx.beginPath();
-    ctx.arc(0, 0, 2.6 * s, 0, 7);
-    ctx.fillStyle = LIGHT[col] || C.yellow;
+    for (let i = 0; i < 2 * n; i++) {
+      const r = i % 2 ? inner * R : R, a = -Math.PI / 2 + (i * Math.PI) / n;
+      ctx.lineTo(r * Math.cos(a), r * Math.sin(a));
+    }
+    ctx.closePath();
+  }
+
+  // A light's star as the key draws it: an open five-pointed star with a bold outline.
+  function lightStar(ctx, R, s) {
+    starPath(ctx, 5, R, 0.45);
+    ctx.fillStyle = "#ffffff";
     ctx.fill();
-    ctx.lineWidth = 0.8 * lw;
+    ctx.lineWidth = Math.max(1.2 * s, 0.17 * R);
+    ctx.lineJoin = "miter";
     ctx.strokeStyle = C.black;
     ctx.stroke();
   }
 
-  // The black symbol of a buoy, beacon or light, as the paper chart draws them.
-  // `lead`: for a leading mark, the compass bearing of its leading line out to sea.
-  function drawMark(ctx, aid, s, lw, zoom, lead) {
-    const [x, y, type, cat, lit] = aid;
+  // The black symbol of a buoy, beacon or light, as the key draws them.
+  function drawMark(ctx, aid, s, lw, zoom) {
+    const [x, y, type, cat] = aid;
     ctx.save();
     ctx.translate(x, y);
-    // A leading mark's board stands on the far side of it from the sea, along its line.
-    if (type === "l" && lead != null) ctx.rotate(((lead + 180) * Math.PI) / 180);
     ctx.fillStyle = C.black;
     ctx.strokeStyle = C.black;
     ctx.lineWidth = lw;
     ctx.lineJoin = "miter";
     const tops = zoom >= 12;
     if (type === "v") {
-      // Spar buoys: a thin stick leaning right, or a black bar standing up when lit,
-      // with the topmark above.
+      // Spar buoy: a thin upright stick with its topmark (lit or not; a light adds its flare).
       base(ctx, s, lw);
-      if (lit) {
-        ctx.beginPath();
-        ctx.moveTo(-3.6 * s, -2.6 * s); ctx.lineTo(-2.4 * s, -28 * s); ctx.lineTo(2.4 * s, -28 * s); ctx.lineTo(3.6 * s, -2.6 * s);
-        ctx.closePath();
-        ctx.fill();
-        if (tops) topmark(ctx, cat, 0, -30 * s, s, lw);
-      } else {
-        ctx.rotate(0.36);
-        ctx.beginPath();
-        ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -31 * s);
-        ctx.lineWidth = 1.7 * s;
-        ctx.stroke();
-        if (tops) topmark(ctx, cat, 0, -31.5 * s, s, lw);
-      }
-    } else if (type === "p") {
-      // Buoys lean to the right: a slim bell, filled when lit.
-      base(ctx, s, lw);
-      ctx.rotate(0.3);
-      const top = -19 * s;
       ctx.beginPath();
-      ctx.moveTo(-5.5 * s, -2.6 * s); ctx.lineTo(-2.2 * s, top + 2.2 * s);
-      ctx.arc(0, top + 2.2 * s, 2.2 * s, Math.PI, 0);
-      ctx.lineTo(5.5 * s, -2.6 * s);
-      ctx.closePath();
-      if (lit) ctx.fill();
-      else { ctx.lineWidth = 1.2 * lw; ctx.stroke(); }
-      if (tops) topmark(ctx, cat, 0, top - 0.6 * s, s, lw);
-    } else if (type === "r") {
-      // Fixed beacon: a black bar on a base line, with its topmark.
-      ctx.beginPath(); ctx.moveTo(-7 * s, 0); ctx.lineTo(7 * s, 0); ctx.lineWidth = 1.2 * lw; ctx.stroke();
-      ctx.fillRect(-3 * s, -24 * s, 6 * s, 24 * s);
-      if (tops) topmark(ctx, cat, 0, -25.5 * s, s, lw);
-    } else if (type === "l") {
-      // Leading mark: an open square board on a post, as the paper chart draws them.
-      base(ctx, s, lw);
-      ctx.beginPath(); ctx.moveTo(0, -2.6 * s); ctx.lineTo(0, -17 * s);
-      ctx.lineWidth = 1.7 * s; ctx.stroke();
-      ctx.beginPath();
-      ctx.rect(-4.5 * s, -26 * s, 9 * s, 9 * s);
-      ctx.fillStyle = "#ffffff"; ctx.fill();
-      ctx.lineWidth = 1.6 * s; ctx.stroke();
-    } else if (type === "k") {
-      // Cairn: a small open triangle.
-      ctx.beginPath(); ctx.moveTo(-5.5 * s, 0); ctx.lineTo(5.5 * s, 0); ctx.lineTo(0, -10.5 * s); ctx.closePath();
-      ctx.lineWidth = 1.3 * lw;
+      ctx.moveTo(0, -FOOT * s); ctx.lineTo(0, -28 * s);
+      ctx.lineWidth = 1.5 * s;
       ctx.stroke();
-    } else if (type === "m" || type === "s") {
-      // Lighthouse: a black star; a sector light an open star.
-      const R = (type === "m" ? 10 : 8) * s;
+      if (tops) topmark(ctx, cat, 0, -28.5 * s, s, lw);
+    } else if (type === "p") {
+      // Buoy: a black bell leaning to the right, its topmark leaning with it.
+      base(ctx, s, lw);
+      ctx.rotate(0.4);
+      const top = -24 * s;
       ctx.beginPath();
-      for (let i = 0; i < 10; i++) {
-        const r = i % 2 ? 0.4 * R : R, a = -Math.PI / 2 + (i * Math.PI) / 5;
-        ctx.lineTo(r * Math.cos(a), r * Math.sin(a));
-      }
+      ctx.moveTo(-6.8 * s, -FOOT * s); ctx.quadraticCurveTo(-3 * s, -8 * s, -2.4 * s, top + 2.4 * s);
+      ctx.arc(0, top + 2.4 * s, 2.4 * s, Math.PI, 0);
+      ctx.quadraticCurveTo(3 * s, -8 * s, 6.8 * s, -FOOT * s);
       ctx.closePath();
-      if (type === "m") ctx.fill();
-      else {
-        ctx.fillStyle = "#ffffff"; ctx.fill();
-        ctx.lineWidth = 1.2 * lw; ctx.stroke();
-        ctx.beginPath(); ctx.arc(0, 0, 1.4 * s, 0, 7); ctx.fillStyle = C.black; ctx.fill();
+      ctx.fill();
+      ctx.beginPath(); ctx.moveTo(0, top); ctx.lineTo(0, top - 3 * s); ctx.lineWidth = 1.5 * s; ctx.stroke();
+      if (tops) topmark(ctx, cat, 0, top - 3 * s, s, lw);
+    } else if (type === "r" || type === "u") {
+      // Edge mark: a short black bar on its circle, a thin stick and the topmark. A radar
+      // mark: the bar under a radar reflector's arc.
+      base(ctx, s, lw, 9);
+      if (type === "r") {
+        ctx.fillRect(-2.4 * s, -14 * s, 4.8 * s, 14 * s - FOOT * s);
+        ctx.beginPath(); ctx.moveTo(0, -14 * s); ctx.lineTo(0, -21 * s); ctx.lineWidth = 1.4 * s; ctx.stroke();
+        if (tops) topmark(ctx, cat, 0, -21 * s, s, lw);
+      } else {
+        ctx.fillRect(-2.4 * s, -14 * s, 4.8 * s, 14 * s - FOOT * s);
+        ctx.beginPath();
+        ctx.arc(0, -12 * s, 11 * s, (215 * Math.PI) / 180, (325 * Math.PI) / 180);
+        for (const deg of [222, 246, 270, 294, 318]) {
+          const a = (deg * Math.PI) / 180;
+          ctx.moveTo(Math.cos(a) * 11 * s, -12 * s + Math.sin(a) * 11 * s);
+          ctx.lineTo(Math.cos(a) * 14.5 * s, -12 * s + Math.sin(a) * 14.5 * s);
+        }
+        ctx.lineWidth = 1.5 * s; ctx.lineCap = "round"; ctx.stroke();
       }
-    } else if (type === "t") {
-      // Radar beacon: a dot; the Racon ring is drawn with the flares.
-      ctx.beginPath(); ctx.arc(0, 0, 1.8 * s, 0, 7); ctx.fill();
+    } else if (type === "l") {
+      // Leading beacon: a thin upright black bar on its circle, always upright.
+      base(ctx, s, lw);
+      ctx.fillRect(-1.8 * s, -16 * s, 3.6 * s, 16 * s - FOOT * s);
+    } else if (type === "k") {
+      // Cairn: a small black mound on a base line.
+      ctx.beginPath(); ctx.moveTo(-7 * s, 0); ctx.lineTo(7 * s, 0); ctx.lineWidth = lw; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-4.8 * s, 0); ctx.lineTo(-3 * s, -4.8 * s); ctx.lineTo(3 * s, -4.8 * s); ctx.lineTo(4.8 * s, 0);
+      ctx.closePath(); ctx.fill();
+    } else if (type === "b") {
+      // Beacon tower (båk): a tall open tower over its circle.
+      base(ctx, s, lw);
+      ctx.beginPath();
+      ctx.moveTo(-5.8 * s, 0); ctx.lineTo(-3.2 * s, -13 * s); ctx.lineTo(3.2 * s, -13 * s); ctx.lineTo(5.8 * s, 0);
+      ctx.lineWidth = 1.2 * lw; ctx.stroke();
+    } else if (type === "m") {
+      // Lighthouse: a black six-pointed star with thin rays round a small open centre.
+      const R = 10 * s;
+      starPath(ctx, 6, R, 0.3);
+      ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 0.17 * R, 0, 7); ctx.fillStyle = "#ffffff"; ctx.fill();
+    } else if (type === "s") {
+      lightStar(ctx, 7 * s, s);
     } else if (type === "d" || type === "a") {
-      // Minor and directional lights: the light's dot.
-      lightDot(ctx, aid, s, lw);
+      lightStar(ctx, 5 * s, s);
+    } else if (type === "t") {
+      // Radar beacon: a small ringed dot; its magenta ring is drawn with the flares.
+      ctx.beginPath(); ctx.arc(0, 0, FOOT * s, 0, 7); ctx.lineWidth = lw; ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 1 * s, 0, 7); ctx.fill();
     } else {
       // Other marks: a dot in a ring.
       ctx.beginPath(); ctx.arc(0, 0, 2.8 * s, 0, 7); ctx.stroke();
@@ -643,42 +777,37 @@
 
   // --- rocks, wrecks and heritage ---------------------------------------------------
 
-  // Rocks as on Finnish charts, the bar being the water line: T under water, ⊥ at the
-  // surface, and a rock above water a tiny islet (a ringed dot of land). A rock cluster is
-  // a cross with four dots (two islets for one above water).
-  const ROCK_REACH = 8; // chart px round a rock's point that its symbol covers
+  // Rocks as the key draws them, the bar being the water line: T under water, + awash, ⊥
+  // above water. A cluster of rocks (kivikko) is the same sign with dots: two beside the
+  // foot of a T, two beside the top of a ⊥, four round a +.
+  const ROCK_REACH = 9; // chart px round a rock's point that its symbol covers
   function drawRock(ctx, x, y, kind, s, group) {
-    const a = 7 * s, h = 9.5 * s;
+    const a = 8 * s, h = 11 * s;
     ctx.lineWidth = 1.9 * s;
     ctx.lineCap = "butt";
     ctx.strokeStyle = ctx.fillStyle = C.black;
-    if (kind === 3) {
-      ctx.lineWidth = 1.1 * s;
-      for (const [dx, dy] of group ? [[-3.2, 1.5], [3.4, -1.8]] : [[0, 0]]) {
-        ctx.beginPath(); ctx.arc(x + dx * s, y + dy * s, 3.6 * s, 0, 7);
-        ctx.fillStyle = C.land; ctx.fill(); ctx.stroke();
-      }
-      ctx.fillStyle = C.black;
-      return;
-    }
+    const dot = (dx, dy) => { ctx.beginPath(); ctx.arc(x + dx * s, y + dy * s, 1.2 * s, 0, 7); ctx.fill(); };
     ctx.beginPath();
-    if (group) {
+    if (kind === 2) {
+      const v = 0.85 * a;
       ctx.moveTo(x - a, y); ctx.lineTo(x + a, y);
-      ctx.moveTo(x, y - a); ctx.lineTo(x, y + a);
+      ctx.moveTo(x, y - v); ctx.lineTo(x, y + v);
       ctx.stroke();
-      for (const [dx, dy] of [[-4.2, -4.2], [4.2, -4.2], [-4.2, 4.2], [4.2, 4.2]]) {
-        ctx.fillRect(x + dx * s - 1.1 * s, y + dy * s - 1.1 * s, 2.2 * s, 2.2 * s);
-      }
+      if (group) for (const [dx, dy] of [[-4.6, -4.4], [4.6, -4.4], [-4.6, 4.4], [4.6, 4.4]]) dot(dx, dy);
       return;
     }
     // The symbol stands on (or hangs from) its point, centred on it.
-    const y0 = kind === 2 ? y + h / 2 : y - h / 2;
+    const above = kind === 3;
+    const y0 = above ? y + h / 2 : y - h / 2;
     ctx.moveTo(x - a, y0); ctx.lineTo(x + a, y0);
-    ctx.moveTo(x, y0); ctx.lineTo(x, kind === 2 ? y0 - h : y0 + h);
+    ctx.moveTo(x, y0); ctx.lineTo(x, above ? y0 - h : y0 + h);
     ctx.stroke();
+    if (group) for (const dx of [-5.6, 5.6]) dot(dx, above ? -h / s / 2 + 1.2 : h / s / 2 - 1.2);
   }
 
-  // Wrecks: hull showing as a black hull; others as the wreck sign, dangerous ones ringed.
+  // Wrecks as the key draws them: one not dangerous to surface navigation the wreck sign (a
+  // line with three ticks); a dangerous one, depth unknown, the sign in a dotted ring filled
+  // pale blue; one showing a sunken hull's silhouette on its position.
   function drawWreck(ctx, x, y, kind, s, color) {
     const t = 1.3 * s;
     ctx.save();
@@ -686,21 +815,25 @@
     ctx.strokeStyle = ctx.fillStyle = color;
     ctx.lineCap = "butt";
     if (kind === 3) {
+      ctx.beginPath(); ctx.moveTo(-7 * t, 0); ctx.lineTo(7 * t, 0); ctx.lineWidth = 1.2 * s; ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(-6 * t, -1 * t); ctx.lineTo(6 * t, -1 * t); ctx.lineTo(4 * t, 2.5 * t); ctx.lineTo(-4 * t, 2.5 * t);
+      ctx.moveTo(-6 * t, -0.2 * t); ctx.lineTo(-6.6 * t, -3.6 * t); ctx.lineTo(-3 * t, -1.9 * t); ctx.lineTo(1 * t, -1.2 * t);
+      ctx.lineTo(1 * t, -6 * t); ctx.lineTo(2.1 * t, -5.8 * t); ctx.lineTo(1.9 * t, -1 * t); ctx.lineTo(6.6 * t, -0.2 * t);
       ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(0, -1 * t); ctx.lineTo(0, -5 * t); ctx.lineWidth = 2 * s; ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 0.9 * t, 0, 7); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.lineWidth = 0.8 * s; ctx.stroke();
     } else {
-      ctx.lineWidth = 1.6 * s;
-      ctx.beginPath();
-      ctx.moveTo(-6 * t, 0); ctx.lineTo(6 * t, 0);
-      for (const dx of [-3, 0, 3]) { ctx.moveTo(dx * t, -2.2 * t); ctx.lineTo(dx * t, 2.2 * t); }
-      ctx.stroke();
       if (kind === 1) {
         ctx.beginPath(); ctx.ellipse(0, 0, 9 * t, 5 * t, 0, 0, 7);
+        ctx.fillStyle = C.wreckFill; ctx.fill();
         ctx.lineWidth = 1.2 * s; ctx.lineCap = "round";
         ctx.setLineDash([0.01, 2.6 * s]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.lineCap = "butt";
       }
+      ctx.lineWidth = 1.15 * s;
+      ctx.beginPath();
+      ctx.moveTo(-7 * t, 0); ctx.lineTo(7 * t, 0);
+      for (const dx of [-3.6, 0, 3.6]) { ctx.moveTo(dx * t, -2.4 * t); ctx.lineTo(dx * t, 2.4 * t); }
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -804,11 +937,28 @@
     }
   }
 
+  // Points every `period` along a line, starting `first` in: fn(x, y).
+  function alongEvery(flat, first, period, fn) {
+    let d = 0, next = first;
+    for (let i = 2; i < flat.length; i += 2) {
+      const x0 = flat[i - 2], y0 = flat[i - 1], x1 = flat[i], y1 = flat[i + 1];
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      if (!len) continue;
+      for (; next <= d + len; next += period) fn(x0 + ((x1 - x0) * (next - d)) / len, y0 + ((y1 - y0) * (next - d)) / len);
+      d += len;
+    }
+  }
+
   function drawCables(ctx, rows, s, unit) {
     for (const [kind, line] of rows) {
       if (!Array.isArray(line)) continue;
       if (kind === "pipe") {
-        strokeLine(ctx, line, C.magenta, 1.4 * unit, [9 * unit, 4 * unit]);
+        // The key's pipeline: magenta dashes, each ending in a dot.
+        strokeLine(ctx, line, C.magenta, 1.6 * unit, [7 * unit, 5 * unit]);
+        ctx.beginPath();
+        alongEvery(line, 7 * unit, 12 * unit, (x, y) => { ctx.moveTo(x + 2.3 * unit, y); ctx.arc(x, y, 2.3 * unit, 0, 7); });
+        ctx.fillStyle = C.magenta;
+        ctx.fill();
         continue;
       }
       wavyLine(ctx, line, Math.max(7 * unit, 13 * s), Math.max(1.4 * unit, 2.6 * s));
@@ -971,7 +1121,7 @@
     ctx.lineWidth = 1.2 * lw;
     ctx.lineJoin = "miter";
     ctx.lineCap = "butt";
-    const foot = () => { ctx.beginPath(); ctx.arc(0, 0, 2.6 * s, 0, 7); ctx.stroke(); };
+    const foot = () => { ctx.beginPath(); ctx.arc(0, 0, FOOT * s, 0, 7); ctx.stroke(); };
     let box = [-6, -28, 6, 3];
     if (k.includes("wind")) {
       foot();
@@ -995,10 +1145,13 @@
       ctx.lineWidth = 1.6 * lw; ctx.stroke();
       box = [-5, -17, 5, 5];
     } else if (k.includes("tower") || k.includes("torni")) {
+      // The key's tower: a slender tapering outline over its circle.
       foot();
-      ctx.strokeRect(-3 * s, -16 * s, 6 * s, 13.4 * s);
-      ctx.beginPath(); ctx.moveTo(-4.5 * s, -16 * s); ctx.lineTo(4.5 * s, -16 * s); ctx.stroke();
-      box = [-5, -18, 5, 3];
+      ctx.beginPath();
+      ctx.moveTo(-3.2 * s, -2 * s); ctx.lineTo(-2 * s, -15 * s); ctx.lineTo(2 * s, -15 * s); ctx.lineTo(3.2 * s, -2 * s);
+      ctx.moveTo(-3.4 * s, -15 * s); ctx.lineTo(3.4 * s, -15 * s);
+      ctx.stroke();
+      box = [-5, -17, 5, 3];
     } else if (k.includes("mast") || k.includes("masto") || k.includes("radio")) {
       // A tall narrow lattice mast; a radio mast sends out waves from its top.
       foot();
@@ -1025,18 +1178,19 @@
     return [x + box[0] * s, y + box[1] * s, x + box[2] * s, y + box[3] * s];
   }
 
-  // A pilot boarding place: a magenta circle with a flag.
+  // A pilot boarding place as the key draws it: a magenta circle round a diamond.
   function drawPilot(ctx, x, y, s, lw) {
     ctx.save();
     ctx.translate(x, y);
     ctx.strokeStyle = ctx.fillStyle = C.magenta;
     ctx.lineWidth = 1.5 * lw;
     ctx.beginPath(); ctx.arc(0, 0, 8 * s, 0, 7); ctx.stroke();
-    ctx.beginPath(); ctx.arc(0, 0, 1.6 * s, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(0, -8 * s); ctx.lineTo(0, -21 * s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, -21 * s); ctx.lineTo(9 * s, -17.5 * s); ctx.lineTo(0, -14 * s); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(0, -6.4 * s); ctx.quadraticCurveTo(2.2 * s, -2 * s, 3 * s, 0); ctx.quadraticCurveTo(2.2 * s, 2 * s, 0, 6.4 * s);
+    ctx.quadraticCurveTo(-2.2 * s, 2 * s, -3 * s, 0); ctx.quadraticCurveTo(-2.2 * s, -2 * s, 0, -6.4 * s);
+    ctx.fill();
     ctx.restore();
-    return [x - 9 * s, y - 22 * s, x + 10 * s, y + 9 * s];
+    return [x - 9 * s, y - 9 * s, x + 9 * s, y + 9 * s];
   }
 
   // A radio calling-in point: a magenta circle with an arrow the way ships report.
@@ -1267,6 +1421,7 @@
       lit.push({ x, y, character, aid, type, key: aid ? placeKey(aid[5]) : "", merged: null });
     }
     const litAids = (data.aid || []).filter((a) => a[4] && a[5]);
+    const sectored = new Set((data.sector || []).map((r) => `${r[0]},${r[1]}`));
     const names = [];
     for (const [x, y, text, kind] of data.name || []) {
       if (!text) continue;
@@ -1311,17 +1466,25 @@
     // Light characters beside their lights; major lights not named after an island also
     // get their name above.
     const islandKeys = new Set(names.filter((n) => n.kind === "i" || n.kind === "l").map((n) => placeKey(n.texts[0])));
+    // A racon on a lit mark is lettered under the light's character, as the key does.
+    const racons = zoom >= 13 ? (data.aid || []).filter((a) => a[2] === "t") : [];
+    const withLight = new Set();
     for (const l of lit) {
       const lines = [];
       if (l.merged) lines.push([l.merged, "litIsland"]);
       else if ((l.type === "s" || l.type === "m") && l.aid[5] && !islandKeys.has(l.key)) lines.push([l.aid[5], "lightName"]);
       lines.push([lightText(l.character, l.aid ? l.aid[6] || "" : ""), "light"]);
+      const racon = racons.find((a) => Math.abs(a[0] - l.x) <= 1 && Math.abs(a[1] - l.y) <= 1);
+      if (racon) { lines.push(["Racon", "racon"]); withLight.add(racon); }
       const rank = { m: 0, s: 1, d: 2 }[l.type] ?? 3;
-      add({ prio: PRIO.light, rank, x: l.x, y: l.y, lines, sym: l.aid ? markExtent(l.aid) : EXTENT.o });
+      let sym = l.aid ? markExtent(l.aid) : EXTENT.o;
+      // A lighthouse's colour ring up close: its name and character outside the ring, as in the key.
+      if (zoom >= 14 && l.type === "m" && l.aid.length <= 7 && !sectored.has(`${l.x},${l.y}`)) sym = [-50, -50, 50, 50];
+      add({ prio: PRIO.light, rank, x: l.x, y: l.y, lines, sym });
     }
-    for (const aid of data.aid || []) {
-      if (aid[2] !== "t" || zoom < 13) continue;
-      add({ prio: PRIO.light, rank: 4, x: aid[0], y: aid[1], lines: [["Racon", "racon"]], sym: [-20, -20, 20, 20] });
+    for (const aid of racons) {
+      if (withLight.has(aid)) continue;
+      add({ prio: PRIO.light, rank: 4, x: aid[0], y: aid[1], lines: [["Racon", "racon"]], sym: [-24, -24, 24, 24] });
     }
     // Heights of masts, chimneys and the like: "(131)".
     if (zoom >= 13) {
@@ -1416,7 +1579,12 @@
     ctx.lineCap = "butt";
     ctx.lineJoin = "round";
 
-    const aidAt = new Map((data.aid || []).map((aid) => [`${aid[0]},${aid[1]}`, aid]));
+    // A light and an unlit mark at one point (a lighthouse with its racon): the light.
+    const aidAt = new Map();
+    for (const aid of data.aid || []) {
+      const key = `${aid[0]},${aid[1]}`;
+      if (!aidAt.has(key) || (aid[4] && !aidAt.get(key)[4])) aidAt.set(key, aid);
+    }
     // Labels claim their first spots first, so soundings and labels along lines keep clear.
     const label = claims();
     const cands = labelCandidates(data, zoom, aidAt);
@@ -1514,24 +1682,39 @@
       ctx.restore();
     }
 
-    // 4. Main merchant fairways (class 1) in grey over the depths; anchorages outlined.
+    // 4. Main merchant fairways (class 1) in grey over the depths, edged as the key's swept
+    // fairway area in magenta dashes: every piece's edge stroked twice as wide, then all the
+    // pieces filled over it, so only the outer half of the outline shows (and none where
+    // two pieces meet). Anchorages outlined.
     const anchors = [];
+    const main = [];
     for (const row of data.farea || []) {
       const [code, draught, vl, ...rings] = row;
       if (Array.isArray(vl)) rings.unshift(vl); // a tile from before fairway classes
       const cls = Array.isArray(vl) ? null : vl;
       if (code === 1 || code === 11) {
-        if (cls === 1 || (cls == null && draught >= 7.5)) {
-          ctx.beginPath();
-          for (const ring of rings) path(ctx, ring, true);
-          ctx.fillStyle = C.fairwayArea;
-          ctx.fill("evenodd");
-        }
+        if (cls === 1 || (cls == null && draught >= 7.5)) main.push(rings);
       } else if (code === 2 && !overview) {
+        // The key's anchorage area: magenta dashes with small anchors along them, a big one inside.
         strokeRings(ctx, rings, C.magenta, 1.2 * unit, [8 * unit, 5 * unit]);
+        if (zoom >= 13) {
+          const m = 7 * s;
+          for (const ring of rings) {
+            alongEvery([...ring, ring[0], ring[1]], 50 * unit, 130 * unit, (x, y) => {
+              if (x > m && y > m && x < e - m && y < e - m) anchor(ctx, x, y, 0.45 * s, 0.7 * lw, C.magenta);
+            });
+          }
+        }
         const p = labelPoint(rings, e, 14 * s, 24 * s);
         if (p) anchors.push(p);
       }
+    }
+    if (!overview) for (const rings of main) strokeRings(ctx, rings, C.magenta, 2.4 * unit, [9 * unit, 5 * unit]);
+    for (const rings of main) {
+      ctx.beginPath();
+      for (const ring of rings) path(ctx, ring, true);
+      ctx.fillStyle = C.fairwayArea;
+      ctx.fill("evenodd");
     }
 
     // 5. Traffic separation schemes and other routeing measures.
@@ -1543,7 +1726,7 @@
     if (data.tssline) drawTssLines(ctx, data.tssline, unit);
 
     // 6. The small-craft trunk route's green band.
-    for (const [line] of data.band || []) strokeLine(ctx, line, C.band, 18 * s);
+    for (const [line] of data.band || []) strokeLine(ctx, line, C.band, 12 * s);
 
     // 7. Contours: 3 m dotted, 6 m dashed, 10 m and deeper solid with a figure in a break.
     const labelled = new Set();
@@ -1573,26 +1756,32 @@
     // Submarine cables and pipelines.
     if (data.cable) drawCables(ctx, data.cable, s, unit);
 
-    // 9. Leading lines, dashed; the fairway line drawn over one makes it solid there.
+    // 9. Leading lines as the key draws them: dashed behind the front mark, solid from it
+    // out to sea, the bearing in red beside the solid part.
     for (const row of data.lead || []) {
-      let [bearing, line] = row;
+      let [bearing, line, ...front] = row;
       if (!line) { line = bearing; bearing = null; } // a tile from before bearings
-      strokeLine(ctx, line, C.black, 1.1 * unit, [8 * unit, 5 * unit]);
-      if (zoom >= 13 && bearing != null) {
-        const size = Math.max(MIN_TEXT * unit, 21 * s);
+      const { dashed, solid } = splitLead(line, front);
+      for (const piece of dashed) strokeLine(ctx, piece, C.black, 1.1 * unit, [11 * unit, 6 * unit]);
+      for (const piece of solid) strokeLine(ctx, piece, C.black, 1.4 * unit);
+      if (zoom >= 13 && bearing != null && solid.length) {
+        const size = Math.max(MIN_TEXT * unit, 19 * s);
         const b = (bearing * Math.PI) / 180;
-        // Beside the line, to the right of a ship heading along it.
-        alongLine(ctx, label, line, e, {
-          text: bearingText(bearing), font: `${size}px ${SANS}`, size, color: C.red, need: 220 * unit, at: 0.35, alternate: coords,
-          offset: [Math.cos(b) * 0.85 * size, Math.sin(b) * 0.85 * size],
-        });
+        const longest = solid.reduce((m, p) => (lineLength(p) > lineLength(m) ? p : m));
+        // Beside the line, to the right of a ship heading along it, where it fits in the tile.
+        for (const at of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+          if (alongLine(ctx, label, longest, e, {
+            text: bearingText(bearing), font: `${size}px ${SANS}`, size, color: C.lightR, need: 0, at, alternate: coords,
+            offset: [Math.cos(b) * 0.8 * size, Math.sin(b) * 0.8 * size],
+          }) !== false) break;
+        }
       }
     }
 
     // 10. Piers, quays and breakwaters.
     for (const [line] of data.shore || []) strokeLine(ctx, line, C.black, 2 * unit);
 
-    // 11. Fairway lines, with their draught "(9,0)" set into the line once per tile;
+    // 11. Fairway lines, with their draught "⟨9,0⟩" set into the line once per tile;
     // boat routes dashed, their advisory draught in italics.
     const draughts = new Set();
     for (const row of data.fline || []) {
@@ -1602,19 +1791,14 @@
       if (overview && boat) continue;
       let gap = null;
       if (zoom >= 12 && draught != null) {
-        const text = fmtDraught(draught);
-        if (!draughts.has(text)) {
-          const size = Math.max(MIN_TEXT * unit, 23 * s);
-          ctx.font = `${boat ? "italic " : ""}${size}px ${SANS}`;
-          const w = textWidth(ctx, text, 0.08 * size);
-          gap = alongLine(ctx, label, line, e, {
-            text, font: ctx.font, size, spacing: 0.08 * size, color: C.fairway, need: 3 * w, pad: -0.05 * size,
-            alternate: zoom >= 14 ? coords : null,
-          }) || null;
-          if (gap) draughts.add(text);
+        const size = Math.max(MIN_TEXT * unit, 22 * s);
+        const o = draughtLabel(ctx, draught, boat, size);
+        if (!draughts.has(o.text)) {
+          gap = alongLine(ctx, label, line, e, { ...o, color: C.fairway, alternate: zoom >= 14 ? coords : null }) || null;
+          if (gap) draughts.add(o.text);
         }
       }
-      if (boat) strokeLine(ctx, line, C.fairway, (zoom >= 12 ? 1.6 : 1.2) * unit, [12 * unit, 6 * unit], gap);
+      if (boat) strokeLine(ctx, line, C.fairway, (zoom >= 12 ? 1.6 : 1.2) * unit, [14 * unit, 8 * unit], gap);
       else strokeLine(ctx, line, C.fairway, (zoom >= 13 ? 2.2 : 1.6) * unit, null, gap);
     }
 
@@ -1642,7 +1826,7 @@
         if (Math.max(x1 - x0, y1 - y0) >= 24 * unit) {
           // A wide cluster: a dotted danger line round it.
           ctx.lineCap = "round";
-          strokeRings(ctx, rings, C.black, unit, [0.01 * unit, 3 * unit]);
+          strokeRings(ctx, rings, C.black, 1.6 * unit, [0.01 * unit, 3.4 * unit]);
           ctx.lineCap = "butt";
         }
         if (data.rockpt) continue; // the signs come with their own points
@@ -1670,94 +1854,163 @@
         }
       }
       for (const [x, y] of anchors) {
-        anchor(ctx, x, y, s, lw);
+        anchor(ctx, x, y, s, lw, C.magenta);
         symbol([x - 7 * s, y - 12 * s, x + 7 * s, y + 12 * s], x, y);
       }
     }
 
-    // 13. Light sectors up close: coloured arcs round the light, their limits dotted, a
-    // colour letter outside each. A sector "from 200° to 238°" is seen from ships bearing
-    // 200-238° towards the light, so it lies on the opposite side. A narrow white sector
-    // (a directional light's) is a yellow strip out along its middle, as on the chart.
-    const arcsAt = new Set();
-    if (zoom >= 14 && data.sector?.length) {
-      const r = 58 * s, width = 7 * s;
-      const arcs = data.sector.map(([x, y, from, to, colour]) => {
-        arcsAt.add(`${x},${y}`);
-        const a1 = ((from + 90) * Math.PI) / 180;
-        let a2 = ((to + 90) * Math.PI) / 180;
-        if (a2 <= a1) a2 += 2 * Math.PI;
-        const letter = SECTOR[colour] || "W";
-        return { x, y, a1, a2, letter, strip: letter === "W" && a2 - a1 <= (8 * Math.PI) / 180 };
-      });
+    // 13. Lights as the key draws them (see lightPlan): sector arcs up close, a narrow white
+    // sector a yellow wedge, a directional light's beam, a lighthouse's colour ring. A sector
+    // "from 200° to 238°" is seen from ships bearing 200-238° towards the light, so it lies
+    // on the opposite side.
+    const sectorRows = new Map();
+    for (const row of data.sector || []) {
+      const key = `${row[0]},${row[1]}`;
+      if (!sectorRows.has(key)) sectorRows.set(key, []);
+      sectorRows.get(key).push(row);
+    }
+    const plans = new Map(); // lit aid -> its plan
+    const taken = new Set(); // sector keys an aid has
+    for (const aid of data.aid || []) {
+      if (!aid[4]) continue;
+      let rows = [];
+      for (const dx of [0, -1, 1]) {
+        for (const dy of [0, -1, 1]) {
+          const key = `${aid[0] + dx},${aid[1] + dy}`;
+          if (!rows.length && sectorRows.has(key) && !taken.has(key)) { rows = sectorRows.get(key); taken.add(key); }
+        }
+      }
+      plans.set(aid, lightPlan(aid, rows, data.lead || []));
+    }
+    const lights = [...plans].map(([aid, plan]) => ({ x: aid[0], y: aid[1], aid, plan }));
+    for (const [key, rows] of sectorRows) {
+      if (!taken.has(key)) lights.push({ x: rows[0][0], y: rows[0][1], aid: null, plan: lightPlan(null, rows, []) });
+    }
+    const r = Math.min(80 * s, ARC_MAX), ringR = Math.min(46 * s, ARC_MAX), width = 4.5 * s;
+    // Soundings keep off the arcs, wedges and beams; labels too where they can.
+    const keepOff = (x, y, px, py) => {
+      const box = [px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s];
+      marks.push(box);
+      if (inside(x, y)) label.soft.push(box);
+    };
+    const narrow = (arc) => arc.letter === "W" && arc.span <= NARROW;
+    if (zoom >= 14) {
+      // The limits, dotted from the light to a little past the arcs.
       ctx.lineCap = "round";
       ctx.setLineDash([0.01 * unit, 4 * unit]);
       ctx.beginPath();
-      for (const { x, y, a1, a2, strip } of arcs) {
-        if (strip) continue;
-        for (const a of [a1, a2]) {
-          ctx.moveTo(x + Math.cos(a) * 4 * s, y + Math.sin(a) * 4 * s);
-          ctx.lineTo(x + Math.cos(a) * 2.2 * r, y + Math.sin(a) * 2.2 * r);
+      for (const { x, y, plan } of lights) {
+        for (const arc of plan.arcs) {
+          for (const a of [arc.a1, arc.a2]) {
+            ctx.moveTo(x + Math.cos(a) * 7 * s, y + Math.sin(a) * 7 * s);
+            ctx.lineTo(x + Math.cos(a) * 1.3 * r, y + Math.sin(a) * 1.3 * r);
+          }
         }
       }
       ctx.strokeStyle = C.black;
-      ctx.lineWidth = 1.2 * unit;
+      ctx.lineWidth = 1.1 * unit;
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.lineCap = "butt";
-      // Soundings keep off the arcs and strips; labels too where they can.
-      for (const { x, y, a1, a2, strip } of arcs) {
-        const own = inside(x, y);
-        const near = (px, py) => {
-          const box = [px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s];
-          marks.push(box);
-          if (own) label.soft.push(box);
-        };
-        const mid = (a1 + a2) / 2;
-        if (strip) for (let d = 8 * s; d <= 3.2 * r; d += 8 * s) near(x + Math.cos(mid) * d, y + Math.sin(mid) * d);
-        else for (let a = a1; a <= a2; a += (8 * s) / r) near(x + Math.cos(a) * r, y + Math.sin(a) * r);
-      }
-      for (const { x, y, a1, a2, strip } of arcs) {
-        if (!strip) continue;
-        const a = (a1 + a2) / 2, len = 3.2 * r;
-        ctx.beginPath();
-        ctx.moveTo(x + Math.cos(a) * 4 * s, y + Math.sin(a) * 4 * s);
-        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
-        ctx.strokeStyle = C.black; ctx.lineWidth = 5 * s + 1.4 * unit; ctx.stroke();
-        ctx.strokeStyle = C.yellow; ctx.lineWidth = 5 * s; ctx.stroke();
-      }
-      for (const pass of [0, 1]) {
-        for (const { x, y, a1, a2, letter, strip } of arcs) {
-          if (strip) continue;
-          const yellow = LIGHT[letter] === C.yellow;
-          if (pass === 0 && !yellow) continue;
-          ctx.beginPath();
-          ctx.arc(x, y, r, a1, a2);
-          ctx.strokeStyle = pass === 0 ? C.black : LIGHT[letter];
-          ctx.lineWidth = pass === 0 ? width + 1.5 * unit : width;
-          ctx.stroke();
+      for (const { x, y, plan } of lights) {
+        for (const arc of plan.arcs) {
+          if (narrow(arc)) {
+            // A narrow white sector: a yellow wedge out to the arcs, no edge.
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, arc.a1, arc.a2); ctx.closePath();
+            ctx.fillStyle = C.lightY; ctx.fill();
+            const mid = (arc.a1 + arc.a2) / 2;
+            for (let d = 8 * s; d <= r; d += 8 * s) keepOff(x, y, x + Math.cos(mid) * d, y + Math.sin(mid) * d);
+          } else {
+            for (let a = arc.a1; a <= arc.a2; a += (8 * s) / r) keepOff(x, y, x + Math.cos(a) * r, y + Math.sin(a) * r);
+          }
         }
       }
+      // Thin coloured arcs, a white light's orange-yellow with a thin dark edge; an all-round
+      // lighthouse a ring in its light's colour.
+      const rings = lights.filter((l) => l.aid && l.aid[2] === "m" && l.plan.lead == null && l.plan.dir == null && !l.plan.arcs.length);
+      for (const l of rings) l.plan.ring = lightColours(l.aid)[0] || "W";
+      for (const pass of [0, 1]) {
+        for (const { x, y, plan } of lights) {
+          const parts = plan.ring ? [{ a1: 0, a2: 2 * Math.PI, letter: plan.ring }] : plan.arcs.filter((arc) => !narrow(arc));
+          for (const { a1, a2, letter } of parts) {
+            const pale = ARC[letter] === C.lightArc;
+            if (pass === 0 && !pale) continue;
+            ctx.beginPath();
+            ctx.arc(x, y, plan.ring ? ringR : r, a1, a2);
+            ctx.strokeStyle = pass === 0 ? C.black : ARC[letter];
+            ctx.lineWidth = pass === 0 ? width + 1.1 * unit : width;
+            ctx.stroke();
+          }
+        }
+      }
+      for (const { x, y } of rings) {
+        for (let a = 0; a < 2 * Math.PI; a += (8 * s) / ringR) keepOff(x, y, x + Math.cos(a) * ringR, y + Math.sin(a) * ringR);
+      }
+      // Each sector's colour letter just outside its arc, turned to follow it.
       ctx.font = `${13 * s}px ${SANS}`;
       ctx.fillStyle = C.black;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      for (const { x, y, a1, a2, letter, strip } of arcs) {
-        if (strip || a2 - a1 < 0.05) continue;
-        const a = (a1 + a2) / 2, lx = x + Math.cos(a) * (r + 10 * s), ly = y + Math.sin(a) * (r + 10 * s);
-        ctx.fillText(letter, lx, ly);
-        marks.push([lx - 5 * s, ly - 7 * s, lx + 5 * s, ly + 7 * s]);
+      for (const { x, y, plan } of lights) {
+        const placed = [];
+        for (const { a1, a2, letter } of plan.arcs) {
+          if (a2 - a1 < 0.03) continue;
+          // Narrow neighbours' letters would touch: the later one steps further out.
+          const a = (a1 + a2) / 2;
+          let d = r + 9 * s, lx, ly;
+          for (let tries = 0; tries < 4; tries++, d += 12 * s) {
+            lx = x + Math.cos(a) * d;
+            ly = y + Math.sin(a) * d;
+            if (!placed.some(([px, py]) => Math.hypot(px - lx, py - ly) < 12 * s)) break;
+          }
+          placed.push([lx, ly]);
+          ctx.save();
+          ctx.translate(lx, ly);
+          ctx.rotate(a + Math.PI / 2); // the letter's top outwards, as in the key
+          ctx.fillText(letter, 0, 0);
+          ctx.restore();
+          marks.push([lx - 6 * s, ly - 6 * s, lx + 6 * s, ly + 6 * s]);
+        }
+      }
+    }
+    // A directional light's beam from zoom 13: a solid black line out along it, its bearing
+    // in red beside it ("255,5° - 075,5°", towards the light first).
+    if (zoom >= 13) {
+      const len = Math.min(3.2 * r, BEAM_MAX);
+      for (const { x, y, plan } of lights) {
+        if (plan.dir == null) continue;
+        const a = (plan.dir * Math.PI) / 180, ux = Math.sin(a), uy = -Math.cos(a);
+        const beam = [x + ux * 8 * s, y + uy * 8 * s, x + ux * len, y + uy * len];
+        strokeLine(ctx, beam, C.black, 1.4 * unit);
+        for (let d = 50 * s; d <= len; d += 8 * s) keepOff(x, y, x + ux * d, y + uy * d);
+        const size = Math.max(MIN_TEXT * unit, 17 * s);
+        const b = (plan.toward * Math.PI) / 180;
+        const text = bearingText(plan.toward, "-"), font = `${size}px ${SANS}`;
+        const run = [x + ux * 30 * s, y + uy * 30 * s, x + ux * len, y + uy * len];
+        const off = [Math.cos(b) * 0.8 * size, Math.sin(b) * 0.8 * size];
+        // Every tile round the light draws the same beam: the label goes at the first spot
+        // along it that lies wholly in one tile, and that tile draws it.
+        ctx.font = font;
+        const w = textWidth(ctx, text, 0), h = 0.9 * size;
+        const hx = (Math.abs(ux) * w + Math.abs(uy) * h) / 2, hy = (Math.abs(uy) * w + Math.abs(ux) * h) / 2;
+        const oneTile = (lo, hi) => Math.floor((lo - 1) / e) === Math.floor((hi + 1) / e);
+        const at = BEAM_AT.find((t) => {
+          const cx = run[0] + (run[2] - run[0]) * t + off[0], cy = run[1] + (run[3] - run[1]) * t + off[1];
+          return oneTile(cx - hx, cx + hx) && oneTile(cy - hy, cy + hy);
+        });
+        if (at != null) alongLine(ctx, label, run, e, { text, font, size, color: C.lightR, need: 0, at, offset: off });
       }
     }
 
     // 14. Navigation aids: every flare first, then the black symbols over them. Floating
     // marks before fixed ones, lights last. Radar beacons get their magenta ring.
-    const order = { v: 0, p: 0, k: 1, l: 1, r: 2, o: 2, t: 2, a: 3, d: 3, s: 3, m: 4 };
+    const order = { v: 0, p: 0, k: 1, l: 1, b: 1, r: 2, u: 2, o: 2, t: 2, a: 3, d: 3, s: 3, m: 4 };
     const aids = (data.aid || []).slice().sort((a, b) => (order[a[2]] ?? 2) - (order[b[2]] ?? 2));
     for (const aid of aids) {
-      if (!aid[4] || arcsAt.has(`${aid[0]},${aid[1]}`)) continue;
-      const lead = "lds".includes(aid[2]) ? leadBearing(aid, data.lead || []) : null;
-      for (const b of drawFlares(ctx, aid, s, lw, lead)) {
+      if (!aid[4]) continue;
+      const plan = plans.get(aid) || { arcs: [] };
+      if (plan.ring) continue; // its ring shows its light
+      for (const b of drawFlares(ctx, aid, s, lw, plan, zoom >= 14)) {
         const box = flareBox(aid[0], aid[1], s, b);
         marks.push(box);
         if (inside(aid[0], aid[1])) label.soft.push(box);
@@ -1765,19 +2018,12 @@
     }
     for (const aid of aids) {
       if (aid[2] !== "t") continue;
-      ctx.beginPath(); ctx.arc(aid[0], aid[1], 20 * s, 0, 7);
+      ctx.beginPath(); ctx.arc(aid[0], aid[1], 22 * s, 0, 7);
       ctx.lineWidth = 1.3 * lw; ctx.strokeStyle = C.magenta; ctx.stroke();
     }
     for (const aid of aids) {
-      const lead = aid[2] === "l" ? leadBearing(aid, data.lead || []) : null;
-      drawMark(ctx, aid, s, lw, zoom, lead);
-      if (lead == null) symbol(markBox(aid, s), aid[0], aid[1]);
-      else {
-        // The board's box, wherever its line turns it.
-        const a = ((lead + 180) * Math.PI) / 180, bx = aid[0] + Math.sin(a) * 21 * s, by = aid[1] - Math.cos(a) * 21 * s;
-        symbol([Math.min(aid[0], bx) - 7 * s, Math.min(aid[1], by) - 7 * s, Math.max(aid[0], bx) + 7 * s, Math.max(aid[1], by) + 7 * s],
-          aid[0], aid[1]);
-      }
+      drawMark(ctx, aid, s, lw, zoom);
+      symbol(markBox(aid, s), aid[0], aid[1]);
     }
 
     // 15. Landmarks, pilot boarding places and signs.
@@ -2284,7 +2530,23 @@
     };
   }
 
+  // For the simulator's symbol sheet (/dev/symbols): a tile drawn with its own labels, each
+  // in its first spot clear of the symbols, as the screen's labels mostly are.
+  function drawTileWithLabels(canvas, data, coords) {
+    const res = drawTile(canvas, data, coords, 1);
+    const ctx = canvas.getContext("2d");
+    const taken = [...res.hard, ...res.soft];
+    for (const cand of res.cands) {
+      const lay = layoutLabel(ctx, cand, data.e / 256, scaleAt(coords.z));
+      const box = (sp) => [cand.x + sp.box[0], cand.y + sp.box[1], cand.x + sp.box[2], cand.y + sp.box[3]];
+      const spot = lay.spots.find((sp) => !taken.some((b) => overlaps(box(sp), b))) || lay.spots[0];
+      taken.push(box(spot));
+      drawLabel(ctx, lay, cand.x + spot.dx, cand.y + spot.dy, spot.align);
+    }
+  }
+
   window.FerryChart = {
+    drawTileWithLabels,
     layer: (opts) => new ChartLayer({ minZoom: serverMinZoom, ...opts }),
     // A tile layer for Traficom's raster charts (as L.tileLayer), without their black no-data.
     rasterLayer: (url, opts) => new RasterLayer(url, opts),
