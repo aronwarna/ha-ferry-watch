@@ -1132,9 +1132,10 @@ def test_lake_names_on_islands_wait_for_close_zooms():
     assert "Träsket" in names(15)
 
 
-def test_leading_line_front_and_marks_on_it(tmp_path):
+def test_leading_line_solid_only_along_the_fairway(tmp_path):
     # The simulator's Dragesvik leading line runs from its rear mark past the front mark
-    # out to sea in the south; a directional light on Svartö has a narrow white beam.
+    # out to sea in the south, and its boat route joins it 1.4 km south of the front mark;
+    # a directional light on Svartö has a narrow white beam.
     async def run():
         chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
         lead_tile, _ = await chart.tile(*tile_at(59.9876, 24.0918, 14))
@@ -1142,12 +1143,29 @@ def test_leading_line_front_and_marks_on_it(tmp_path):
         return lead_tile, dir_tile
 
     lead_tile, dir_tile = asyncio.run(run())
-    (bearing, line, (fx, fy, ux, uy)), = lead_tile["lead"]
+    # Dashed by the marks, solid only from where the route joins it on out to sea.
+    (bearing, line, solid), = lead_tile["lead"]
     front = next(a for a in lead_tile["aid"] if a[5] == "Dragesvik alempi")
-    # Solid from the front mark on, out to sea (south, down the tile).
-    assert abs(fx - front[0]) <= 2 and abs(fy - front[1]) <= 2 and uy > 0.99
+    assert solid and all(len(piece) >= 4 for piece in solid)
+    assert min(min(piece[1::2]) for piece in solid) > front[1] + 150
     assert abs(front[7] - (bearing + 180) % 360) < 0.5  # the mark's bearing out to sea
-    assert all(len(a) == 7 for a in lead_tile["aid"] if a[5] != "Dragesvik alempi")
+    assert all(len(a) == 7 or a[7] is None for a in lead_tile["aid"] if a[5] != "Dragesvik alempi")
     light = next(a for a in dir_tile["aid"] if a[2] == "d")
-    assert light[5] == "Svartö suunta" and len(light) == 7
+    assert light[5] == "Svartö suunta" and len(light) == 7  # not on a leading line, not leaning
     assert sorted(s[4] for s in dir_tile["sector"] if s[:2] == light[:2]) == ["p", "v", "vi"]
+
+
+def test_spar_buoys_lean_clear_of_each_other():
+    from ferrywatch.vchart import LayerBuilder, spar_leans
+    aids = LayerBuilder("point")
+    aids.point(("Viitta", 1, "E", "lone"), 10000, 10000)
+    aids.point(("Viitta", 1, "E", "left"), 30000, 10000)
+    aids.point(("Viitta", 2, "E", "right"), 30150, 10000)
+    aids.point(("Poiju", 1, "E", "buoy"), 50000, 10000)
+    fline = LayerBuilder("line")
+    fline.line((None, None), [(50350, 8000), (50350, 10600)])  # just right of the buoy
+    leans = spar_leans({"aid": aids.layer, "fline": fline.layer})
+    assert leans[(10000, 10000)] == 0  # nothing in its way: upright
+    assert leans[(30000, 10000)] < 0 < leans[(30150, 10000)]  # side by side: apart
+    assert all(abs(a) <= 50 for a in leans.values())
+    assert leans[(50000, 10000)] <= 10  # not its usual lean to the right, over the fairway

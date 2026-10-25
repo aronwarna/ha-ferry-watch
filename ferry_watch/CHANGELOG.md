@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.1
+
+- Drawn chart: leading lines are now dashed through their marks and on out
+  to sea, and solid only where they are the fairway, as the key draws them
+  ("firm line is fairway"). The red bearing sits beside the solid part.
+- Spar buoys and ice buoys can now lean, as on the paper chart, to keep
+  clear of each other and of the fairway line. They lean at most 50° from
+  upright, and each one keeps its lean at every zoom level.
+- The chart is recut from what's already on the NAS. Nothing is downloaded
+  again.
+
 ## 0.17.0
 
 - Drawn chart: every sea mark now follows Traficom's symbol key

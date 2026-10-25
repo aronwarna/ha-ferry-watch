@@ -75,7 +75,8 @@ BAY = (7.4, 3.9, 8.6)  # the bay's x, mouth and head y
 SKERRIES = [(10.2, 5.6, 0.45, 9), (11.4, 6.6, 0.3, 6), (9.6, 3.9, 0.35, 7), (12.1, 4.6, 0.5, 11),
             (10.9, 3.1, 0.25, 5), (4.2, 3.2, 0.3, 6), (3.1, 9.6, 0.35, 7), (2.4, 11.4, 0.25, 4),
             (8.9, 10.8, 0.3, 6), (12.4, 9.4, 0.4, 8), (5.1, 6.4, 0.18, 3), (11.0, 8.2, 0.2, 4)]
-BOAT_ROUTE = [(0.4, 2.0), (4.6, 2.6), (7.35, 3.6), (7.4, 6.2), (7.25, 8.3)]
+# The boat route meets the leading line south of its front mark and follows it out to sea.
+BOAT_ROUTE = [(0.4, 2.0), (4.6, 2.6), (7.425, 2.2), (7.5, 0.8)]
 LEAD = [(7.2, 9.6), (7.35, 3.6), (7.5, 0.8)]  # rear mark, front mark, out to sea
 CABLE = [(0.0, 7.3), (2.6, 6.9), (5.0, 7.7), (6.2, 9.0)]
 
@@ -348,7 +349,7 @@ def scene() -> dict[str, list[dict]]:
     out["restrict"] = [_poly([_km_line([(6.95, 5.0), (7.85, 5.0), (7.85, 8.6), (6.95, 8.6), (6.95, 5.0)])],
                              rajoitustyypit="01", suuruus=5)]
     marks = [(4.6, 2.75, "Viitta", 1, "E", "Drages 1"), (4.6, 2.45, "Viitta", 2, "E", "Drages 2"),
-             (6.6, 3.2, "Viitta", 2, "K", "Drages 3"), (7.25, 4.9, "Viitta", 1, "E", "Drages 4"),
+             (6.6, 2.2, "Viitta", 2, "K", "Drages 3"), (7.25, 4.9, "Viitta", 1, "E", "Drages 4"),
              (7.55, 5.6, "Viitta", 2, "E", "Drages 5"), (7.2, 9.6, "Linjamerkki", 99, "K", "Dragesvik ylempi"),
              (7.35, 3.6, "Linjamerkki", 99, "K", "Dragesvik alempi"), (9.6, 3.9, "Sektoriloisto", 99, "K", "Rönnbåda"),
              (2.0, 2.3, "Viitta", 3, "E", "Sandö N"), (11.6, 3.0, "Poiju", 4, "K", "Svartö S"),
@@ -356,7 +357,7 @@ def scene() -> dict[str, list[dict]]:
     out["aid"] = [_km_point(x, y, turvalaitetyyppifi=t, navigointilajikoodi=cat, valaistu=lit, nimifi=name)
                   for x, y, t, cat, lit, name in marks]
     out["light"] = [_km_point(9.6, 3.9, viralvalotunnuse="Fl WRG 3s"), _km_point(7.2, 9.6, viralvalotunnuse="Iso 4s"),
-                    _km_point(7.35, 3.6, viralvalotunnuse="Iso 2s"), _km_point(6.6, 3.2, viralvalotunnuse="Fl G 3s"),
+                    _km_point(7.35, 3.6, viralvalotunnuse="Iso 2s"), _km_point(6.6, 2.2, viralvalotunnuse="Fl G 3s"),
                     _km_point(11.6, 3.0, viralvalotunnuse="Q(6)+LFl 15s"),
                     _km_point(12.0, 4.25, viralvalotunnuse="Oc WRG 4s")]
     out["sector"] = [_km_point(9.6, 3.9, alkukulma=a, loppukulma=b, vari=col)
@@ -365,7 +366,7 @@ def scene() -> dict[str, list[dict]]:
         _km_point(12.0, 4.25, alkukulma=a, loppukulma=b, vari=col)
         for a, b, col in ((39, 43, "vi"), (43, 47, "v"), (47, 51, "p"))] + [
         _km_point(x, y, alkukulma=0, loppukulma=360, vari=col)
-        for x, y, col in ((7.2, 9.6, "v"), (7.35, 3.6, "v"), (6.6, 3.2, "vi"), (11.6, 3.0, "v"))]
+        for x, y, col in ((7.2, 9.6, "v"), (7.35, 3.6, "v"), (6.6, 2.2, "vi"), (11.6, 3.0, "v"))]
     names = [(2.6, 8.4, "Sandöfjärden", "swe", 36000), (10.6, 6.2, "Svartöfjärden", "swe", 36000),
              (8.4, 7.4, "Källviklandet", "swe", 35020), (6.2, 5.6, "Porkkalanniemi", "fin", 35060),
              (6.2, 5.6, "Porkala udd", "swe", 35060), (7.7, 6.9, "Dragesviken", "swe", 36000),

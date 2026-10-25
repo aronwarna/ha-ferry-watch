@@ -102,7 +102,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 13  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 15  # bump when tiles change, so browsers don't keep drawing cached old ones
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -223,12 +223,13 @@ PART_MIN_Z = {"land": 12, "mark": 12}
 AID_TYPES = {
     "viitta": "v", "poiju": "p", "reunamerkki": "r", "linjamerkki": "l", "kummeli": "k",
     "sektoriloisto": "s", "merimajakka": "m", "tunnusmajakka": "b", "suuntaloisto": "d",
-    "apuloisto": "a", "tutkamerkki": "u", "tutkamajakka": "t",
+    "apuloisto": "a", "tutkamerkki": "u", "tutkamajakka": "t", "jääpoiju": "p",
 }
 MAJOR_AIDS = ("m", "s")  # all that is drawn zoomed out, as on overview charts
 # Marks that stand on a leading line: the leading marks and lights (not buoys or edge marks).
 LEAD_AIDS = ("l", "s", "d", "a", "m", "b")
 LEAD_REACH = 170  # block units (about 25 m): a mark this close to a leading line stands on it
+LEAD_ON_FAIRWAY = 100  # block units (about 15 m): a fairway's line this close runs along a leading line
 # Light sector colours as chart letters, in the order charts print them.
 LIGHT_COLOURS = {"v": "W", "p": "R", "vi": "G", "k": "Y"}
 
@@ -1120,19 +1121,151 @@ def join_heights(marks: Layer, labels: Layer | None) -> Layer:
     return b.layer
 
 
-def lead_marks(data: dict) -> tuple[dict[int, tuple | None], dict[tuple[int, int], float]]:
-    """Where each of a block's leading lines turns from dashed to solid, and which marks stand
-    on one. The key draws a leading line dashed behind the front mark and solid from it out
-    to sea. The front mark is the one nearest the sea end of the line, and the sea end the
-    one further from the marks on it (Väylä draws a line from its rear mark out to sea; a line
-    with one mark on it starts at that mark). Returns {line: (front x, y, seaward unit x, y)
-    or None when no mark is on it in this block (all solid)} and {mark point: compass bearing
-    of its line out to sea}, in block units."""
+def _fairway_on_lead(data: dict, pts: list) -> list[tuple[float, float]] | None:
+    """The stretches of a leading line that a fairway's line runs along, as (from, to)
+    distances along it in block units, merged. None when the block has no fairway lines
+    at all (the foreign side, or Väylä's data missing)."""
+    segs = []
+    for key in ("fline", "route"):
+        layer = data.get(key)
+        if layer is None:
+            continue
+        for i in range(layer.n):
+            line = layer.pts(layer.vo[i], layer.vo[i + 1])
+            segs.extend(zip(line, line[1:]))
+    if not segs:
+        return None
+    found = []
+    start = 0.0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        if length == 0:
+            continue
+        ux, uy = dx / length, dy / length
+        for (cx, cy), (ex, ey) in segs:
+            # Both ends of the fairway's stretch close to the leading line...
+            dc = (cx - ax) * uy - (cy - ay) * ux
+            de = (ex - ax) * uy - (ey - ay) * ux
+            if abs(dc) > LEAD_ON_FAIRWAY or abs(de) > LEAD_ON_FAIRWAY:
+                continue
+            # ... and lying along it, not just crossing it there.
+            tc = (cx - ax) * ux + (cy - ay) * uy
+            te = (ex - ax) * ux + (ey - ay) * uy
+            t0, t1 = max(0.0, min(tc, te)), min(length, max(tc, te))
+            if t1 - t0 > LEAD_ON_FAIRWAY:
+                found.append((start + t0, start + t1))
+        start += length
+    merged: list[tuple[float, float]] = []
+    for t0, t1 in sorted(found):
+        if merged and t0 <= merged[-1][1] + LEAD_ON_FAIRWAY:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], t1))
+        else:
+            merged.append((t0, t1))
+    return merged
+
+
+def _sub_line(pts: list, cum: list[float], t0: float, t1: float) -> list[tuple[float, float]]:
+    """The part of a line from t0 to t1 along it."""
+    def at(t: float) -> tuple[float, float]:
+        for j in range(len(pts) - 1):
+            if cum[j + 1] >= t:
+                f = 0.0 if cum[j + 1] == cum[j] else (t - cum[j]) / (cum[j + 1] - cum[j])
+                return pts[j][0] + f * (pts[j + 1][0] - pts[j][0]), pts[j][1] + f * (pts[j + 1][1] - pts[j][1])
+        return float(pts[-1][0]), float(pts[-1][1])
+    inner = [(float(px), float(py)) for (px, py), c in zip(pts, cum) if t0 < c < t1]
+    return [at(t0), *inner, at(t1)]
+
+
+# Spar buoys and buoys may lean off their usual way, as on the paper chart, to keep clear of
+# each other and of the fairway; never past LEAN_MAX from upright. Worked out once, at
+# zoom 14's scale, so a mark keeps its lean at every zoom.
+LEANING_AIDS = {"v": 0, "p": 23}  # type: its usual lean, degrees clockwise from upright
+LEAN_MAX = 50
+LEAN_STEPS = (0, 10, -10, 20, -20, 30, -30, 40, -40, 50, -50)  # tried in this order from the usual
+LEAN_REACH = 1150  # block units: a symbol's reach from its foot at zoom 14 (about 36 px)
+LEAN_CLEAR = 260  # block units: how close (about 8 px at zoom 14) another symbol or a fairway may come
+STICK_AIDS = ("v", "p", "r", "u", "l", "b")  # marks standing up from their point
+
+
+def spar_leans(data: dict) -> dict[tuple[int, int], int]:
+    """The lean of each spar buoy and buoy in a block: {point: degrees clockwise from
+    upright}, in block units. Each mark weighs only what's round it (the other marks as
+    drawn upright, the fairway and leading lines), so every block holding it agrees."""
+    cached = data.get("_leans")
+    if cached is not None:
+        return cached
+    leans: dict[tuple[int, int], int] = {}
+    aid = data.get("aid")
+    if aid is None or not aid.n:
+        data["_leans"] = leans
+        return leans
+    cell = 1024
+    grid: dict[tuple[int, int], list] = {}
+
+    def add(x: float, y: float, owner) -> None:
+        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, owner))
+
+    marks = []
+    for j in range(aid.n):
+        x, y = aid.co[2 * j], aid.co[2 * j + 1]
+        letter = AID_TYPES.get(str(aid.props[aid.pi[j]][0] or "").lower(), "o")
+        marks.append((x, y, letter))
+        add(x, y, j)
+        if letter in STICK_AIDS:
+            for f in (0.35, 0.7, 1.0):
+                add(x, y - f * LEAN_REACH, j)
+    for key in ("fline", "lead"):
+        layer = data.get(key)
+        if layer is None:
+            continue
+        for i in range(layer.n):
+            line = layer.pts(layer.vo[i], layer.vo[i + 1])
+            for (ax, ay), (bx, by) in zip(line, line[1:]):
+                n = max(1, int(math.hypot(bx - ax, by - ay) // (LEAN_CLEAR / 2)))
+                for t in range(n + 1):
+                    add(ax + (bx - ax) * t / n, ay + (by - ay) * t / n, None)
+    reach = LEAN_REACH + LEAN_CLEAR
+    for j, (x, y, letter) in enumerate(marks):
+        usual = LEANING_AIDS.get(letter)
+        if usual is None:
+            continue
+        near = [(qx, qy) for gx in range(int((x - reach) // cell), int((x + reach) // cell) + 1)
+                for gy in range(int((y - reach) // cell), int((y + reach) // cell) + 1)
+                for qx, qy, owner in grid.get((gx, gy), ()) if owner != j]
+        best = None
+        for step in LEAN_STEPS:
+            a = usual + step
+            if abs(a) > LEAN_MAX:
+                continue
+            ux, uy = math.sin(math.radians(a)), -math.cos(math.radians(a))
+            cost = abs(step) * 0.004  # the usual way when nothing is in it
+            for qx, qy in near:
+                t = max(0.15 * LEAN_REACH, min(LEAN_REACH, (qx - x) * ux + (qy - y) * uy))
+                d = math.hypot(x + ux * t - qx, y + uy * t - qy)
+                if d < LEAN_CLEAR:
+                    cost += 1 - d / LEAN_CLEAR
+            if best is None or cost < best[0] - 1e-9:
+                best = (cost, a)
+        leans[(x, y)] = best[1]
+    data["_leans"] = leans
+    return leans
+
+
+def lead_marks(data: dict) -> tuple[dict[int, list], dict[tuple[int, int], float]]:
+    """Which stretches of a block's leading lines are drawn solid, and which marks stand on
+    one. The key draws a leading line dashed, through its marks and on out to sea, and solid
+    only where it is the fairway: where a fairway's line runs along it. Without fairway lines
+    in the block (the foreign side), it's solid from the front mark out to sea: the mark
+    nearest the line's sea end, the end further from the marks on it (Väylä draws a line from
+    its rear mark out to sea; a line with one mark on it starts at that mark). Returns {line:
+    [solid stretch as points]} and {mark point: compass bearing of its line out to sea}, in
+    block units."""
     lead, aid = data.get("lead"), data.get("aid")
-    fronts: dict[int, tuple | None] = {}
+    solids: dict[int, list] = {}
     bearings: dict[tuple[int, int], float] = {}
     if lead is None or not lead.n:
-        return fronts, bearings
+        return solids, bearings
     marks = []
     if aid is not None:
         for j in range(aid.n):
@@ -1140,7 +1273,7 @@ def lead_marks(data: dict) -> tuple[dict[int, tuple | None], dict[tuple[int, int
                 marks.append((aid.co[2 * j], aid.co[2 * j + 1]))
     for i in range(lead.n):
         pts = lead.pts(lead.vo[i], lead.vo[i + 1])
-        fronts[i] = None
+        solids[i] = []
         if len(pts) < 2:
             continue
         x0, y0, x1, y1 = lead.bbox(i)
@@ -1150,6 +1283,7 @@ def lead_marks(data: dict) -> tuple[dict[int, tuple | None], dict[tuple[int, int
         total = cum[-1]
         if total <= 0:
             continue
+        fairway = _fairway_on_lead(data, pts)
         on = []  # (distance along the line, mark)
         for mx, my in marks:
             if not (x0 - LEAD_REACH <= mx <= x1 + LEAD_REACH and y0 - LEAD_REACH <= my <= y1 + LEAD_REACH):
@@ -1165,30 +1299,30 @@ def lead_marks(data: dict) -> tuple[dict[int, tuple | None], dict[tuple[int, int
             if best and best[0] <= LEAD_REACH:
                 on.append((best[1], (mx, my)))
         if not on:
+            if fairway is None:
+                solids[i] = [list(pts)]  # no marks or fairway to go by: all solid, as before
+            else:
+                solids[i] = [_sub_line(pts, cum, t0, t1) for t0, t1 in fairway]
             continue
         mean = sum(t for t, _ in on) / len(on)
         seaward_up = mean <= total / 2  # the sea end is the line's last point
         front_t = max(t for t, _ in on) if seaward_up else min(t for t, _ in on)
-
-        def at(t: float) -> tuple[float, float]:
-            for j in range(len(pts) - 1):
-                if cum[j + 1] >= t:
-                    f = 0.0 if cum[j + 1] == cum[j] else (t - cum[j]) / (cum[j + 1] - cum[j])
-                    return pts[j][0] + f * (pts[j + 1][0] - pts[j][0]), pts[j][1] + f * (pts[j + 1][1] - pts[j][1])
-            return float(pts[-1][0]), float(pts[-1][1])
-
-        fx, fy = at(front_t)
+        if fairway is None:
+            stretches = [(front_t, total)] if seaward_up else [(0.0, front_t)]
+        else:
+            stretches = fairway
+        solids[i] = [_sub_line(pts, cum, t0, t1) for t0, t1 in stretches if t1 - t0 > 1]
+        # The marks' bearing out to sea, along the line's stretch past the front mark.
+        (fx, fy), = _sub_line(pts, cum, front_t, front_t)[:1]
         sx, sy = pts[-1] if seaward_up else pts[0]
         if math.hypot(sx - fx, sy - fy) < 1:  # the front mark at the sea end: the last stretch's way
             (ax, ay), (bx, by) = (pts[-2], pts[-1]) if seaward_up else (pts[1], pts[0])
             sx, sy = fx + bx - ax, fy + by - ay
         d = math.hypot(sx - fx, sy - fy) or 1.0
-        ux, uy = (sx - fx) / d, (sy - fy) / d
-        fronts[i] = (fx, fy, ux, uy)
-        bearing = round(math.degrees(math.atan2(ux, -uy)) % 360, 1)
+        bearing = round(math.degrees(math.atan2((sx - fx) / d, -(sy - fy) / d)) % 360, 1)
         for _, m in on:
             bearings.setdefault(m, bearing)
-    return fronts, bearings
+    return solids, bearings
 
 
 def heritage_props(feature: dict) -> tuple | None:
@@ -1376,7 +1510,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             else:
                 land_rects.append(rect)
 
-        fronts, on_lead = lead_marks(data) if z >= LAYER_MIN_Z["lead"] else ({}, {})
+        solids, on_lead = lead_marks(data) if z >= LAYER_MIN_Z["lead"] else ({}, {})
+        leans = spar_leans(data) if z >= 12 and "aid" in data else {}
         for key, layer in data.items():
             if key[0] == "_" or z < LAYER_MIN_Z.get(key, 99):
                 continue
@@ -1404,8 +1539,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     if seen in seen_points:
                         continue  # the same point from two blocks' margins
                     seen_points.add(seen)
-                    if key == "aid" and (px, py) in on_lead:
-                        out.append([tx, ty, p, on_lead[(px, py)]])
+                    if key == "aid":
+                        out.append([tx, ty, p, on_lead.get((px, py)), leans.get((px, py))])
                     else:
                         out.append([tx, ty, p])
                 continue
@@ -1453,14 +1588,19 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                                       or (z < 13 and ROAD_CLASSES.get(_int(p[0]), 2) > 2)):
                     continue  # paths only from zoom 13; no ferry lines or ice roads
                 pts = _run_pts(layer, layer.vo[i], layer.vo[i + 1], bx0, by0, bx1, by1)
-                front = None
-                if key == "lead" and fronts.get(i):
-                    fx, fy, ux, uy = fronts[i]
-                    front = [round((fx - ox) * k, 1), round((fy - oy) * k, 1), round(ux, 3), round(uy, 3)]
+                solid = None
+                if key == "lead" and i in solids:
+                    # Its solid stretches go with the line's first part in the tile.
+                    solid = [_flat(simplify(piece, tol)) for stretch in solids[i]
+                             for piece in clip_line(conv(stretch), lo, lo, hi, hi) if len(piece) >= 2]
                 for part in clip_line(conv(pts), lo, lo, hi, hi):
                     flat = _flat(simplify(part, tol))
                     if len(flat) >= 4:
-                        out.append([p, flat, front] if front else [p, flat])
+                        if solid is None:
+                            out.append([p, flat])
+                        else:
+                            out.append([p, flat, solid])
+                            solid = []
     if land_rects or sea_blocks:
         # Land: the Finnish area, painted under the depth areas.
         minx, miny, maxx, maxy = _tile_mercator(z, x, y)
@@ -1523,13 +1663,14 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
       deep first. Dredged and unsurveyed areas are in here too (they also come as tss rows,
       for their limits), and at the sea border the Finnish sea beyond Traficom's depths.
     - contour: [metres, line]; farea: [type, draught, class, ...rings]; fline: [draught, class, line]
-    - lead: [bearing, line, front?] with front [x, y, seaward ux, uy]: the line is dashed behind
-      that point and solid on its seaward side (no front: all solid); band: [line]; restrict: [types, value, ...rings]; shore: [line]
+    - lead: [bearing, line, solid?] with solid a list of lines: the leading line is dashed, and
+      solid along those stretches, where it's the fairway (no solid: all solid); band: [line]; restrict: [types, value, ...rings]; shore: [line]
       (shore structures, pontoons, berths, dams and gates)
     - rockarea: [kind, ...rings]; rockpt: [x, y, kind] where each rock cluster's sign goes
       (the middle of its whole outline, the same in every tile); sector: [x, y, from°, to°, colour]; light: [x, y, text]
-    - aid: [x, y, type, category, lit, name, colours, lead?] (lead: the compass bearing out to sea
-      of the leading line it stands on); sounding: [x, y, depth]
+    - aid: [x, y, type, category, lit, name, colours, lead?, lean?] (lead: the compass bearing out
+      to sea of the leading line it stands on, or null; lean: a spar buoy's or buoy's lean in
+      degrees clockwise from upright); sounding: [x, y, depth]
     - rock / wreck: [x, y, kind]; heritage: see _heritage_rows; name: [x, y, text, kind]
     - tss: [kind, orient, ...rings] kind lane, zone, prec, deep, twoway, dredged or
       unsurveyed; orient a lane's direction of traffic in degrees, or null
@@ -1572,7 +1713,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                          for p, line in rows["fline"] for draught, jnro, own in [_pad(p, 3)[:3]]]
     if "lead" in rows:
         # With the front mark's point and the seaward way when a mark is on the line.
-        tile["lead"] = [[_num(_pad(p, 1)[0]), line, *front] for p, line, *front in rows["lead"]]
+        tile["lead"] = [[_num(_pad(p, 1)[0]), line, *solid] for p, line, *solid in rows["lead"]]
     if "route" in rows:
         # The small-craft trunk route (class 4) gets the chart's green band.
         tile["band"] = [[line] for p, line in rows["route"] if _int(p[0]) == 4]
@@ -1634,7 +1775,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                           if a is not None and b is not None and (b - a) % 360 != 0]
     if "aid" in rows:
         aids = []
-        for px, py, (kind, cat, lit, name), *lead in rows["aid"]:
+        for px, py, (kind, cat, lit, name), *extra in rows["aid"]:
+            lead, lean = (extra + [None, None])[:2]
             letter = AID_TYPES.get(str(kind or "").lower(), "o")
             lit = 1 if lit == "K" else 0
             # Zoomed out, only the major lights; then lit marks; all from zoom 13, as on charts.
@@ -1644,8 +1786,10 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                 (colours[(px + dx, py + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (px + dx, py + dy) in colours),
                 set())
             row = [px, py, letter, _int(cat), lit, name, "".join(ch for ch in "WRGY" if ch in found)]
-            if lead:
-                row.append(lead[0])  # on a leading line: its bearing out to sea
+            if lead is not None or lean is not None:
+                row.append(lead)  # on a leading line: its bearing out to sea
+            if lean is not None:
+                row.append(lean)  # a spar buoy's or buoy's lean, degrees clockwise from upright
             aids.append(row)
         tile["aid"] = aids
     if "light" in rows:

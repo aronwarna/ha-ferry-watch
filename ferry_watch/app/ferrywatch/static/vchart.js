@@ -191,32 +191,6 @@
     return d;
   }
 
-  // A leading line cut where it passes its front mark: `front` is [x, y, ux, uy] from the
-  // tile, (ux, uy) the way out to sea. Without one it is all solid: no mark stands on it
-  // anywhere near, so this is its seaward part.
-  function splitLead(flat, front) {
-    if (front.length < 4) return { dashed: [], solid: [flat] };
-    const [fx, fy, ux, uy] = front;
-    const g = (i) => (flat[i] - fx) * ux + (flat[i + 1] - fy) * uy;
-    const dashed = [], solid = [];
-    let cur = [flat[0], flat[1]], sea = g(0) >= 0;
-    for (let i = 2; i < flat.length; i += 2) {
-      const g1 = g(i);
-      if ((g1 >= 0) !== sea) {
-        const g0 = g(i - 2), t = g0 / (g0 - g1);
-        const cx = flat[i - 2] + (flat[i] - flat[i - 2]) * t, cy = flat[i - 1] + (flat[i + 1] - flat[i - 1]) * t;
-        cur.push(cx, cy);
-        (sea ? solid : dashed).push(cur);
-        cur = [cx, cy];
-        sea = !sea;
-      }
-      cur.push(flat[i], flat[i + 1]);
-    }
-    (sea ? solid : dashed).push(cur);
-    const real = (p) => p.length >= 4 && lineLength(p) > 0.5;
-    return { dashed: dashed.filter(real), solid: solid.filter(real) };
-  }
-
   // The longest nearly straight stretch of a line that is at least `need` long: its ends
   // and where it starts and ends along the line.
   function straightRun(flat, need) {
@@ -521,7 +495,7 @@
   // The compass bearing out to sea of the leading line a mark stands on: the tile says so
   // (aid[7]); a tile from before that only has the lines, so the nearest one's far end.
   function leadBearing(aid, leads) {
-    if (aid.length > 7) return aid[7];
+    if (aid.length > 7) return aid[7] ?? null;
     for (const row of leads) {
       const line = Array.isArray(row[1]) ? row[1] : row[0];
       if (!Array.isArray(line)) continue;
@@ -659,8 +633,17 @@
     k: [-7, -6, 7, 1], b: [-8, -14, 8, 3], m: [-10, -10, 10, 10], s: [-7, -7, 7, 7], d: [-5, -5, 5, 5],
     a: [-5, -5, 5, 5], t: [-4, -4, 4, 4], o: [-4, -4, 4, 4],
   };
+  // A spar buoy's or buoy's lean (degrees clockwise from upright): the tile's, else the
+  // key's usual way (a buoy leans right).
+  const USUAL_LEAN = { v: 0, p: 23 };
+  const leanOf = (aid) => (aid[2] in USUAL_LEAN ? aid[8] ?? USUAL_LEAN[aid[2]] : 0);
   function markExtent(aid) {
-    return EXTENT[aid[2]] || EXTENT.o;
+    const ext = EXTENT[aid[2]] || EXTENT.o;
+    if (!(aid[2] in USUAL_LEAN)) return ext;
+    // Its symbol turned round its foot: the box round the turned top and the foot.
+    const a = (leanOf(aid) * Math.PI) / 180, h = -ext[1], w = 8;
+    const tx = Math.sin(a) * h, ty = -Math.cos(a) * h;
+    return [Math.min(-w, tx - w), Math.min(-3, ty - w), Math.max(w, tx + w), 3];
   }
   function markBox(aid, s) {
     const [l, t, r, b] = markExtent(aid);
@@ -699,17 +682,20 @@
     ctx.lineJoin = "miter";
     const tops = zoom >= 12;
     if (type === "v") {
-      // Spar buoy: a thin upright stick with its topmark (lit or not; a light adds its flare).
+      // Spar buoy: a thin stick with its topmark (lit or not; a light adds its flare), upright
+      // or leaning as the tile says.
       base(ctx, s, lw);
+      ctx.rotate((leanOf(aid) * Math.PI) / 180);
       ctx.beginPath();
       ctx.moveTo(0, -FOOT * s); ctx.lineTo(0, -28 * s);
       ctx.lineWidth = 1.5 * s;
       ctx.stroke();
       if (tops) topmark(ctx, cat, 0, -28.5 * s, s, lw);
     } else if (type === "p") {
-      // Buoy: a black bell leaning to the right, its topmark leaning with it.
+      // Buoy: a black bell leaning (to the right unless the tile says otherwise), its
+      // topmark leaning with it.
       base(ctx, s, lw);
-      ctx.rotate(0.4);
+      ctx.rotate((leanOf(aid) * Math.PI) / 180);
       const top = -24 * s;
       ctx.beginPath();
       ctx.moveTo(-6.8 * s, -FOOT * s); ctx.quadraticCurveTo(-3 * s, -8 * s, -2.4 * s, top + 2.4 * s);
@@ -1479,7 +1465,7 @@
       const rank = { m: 0, s: 1, d: 2 }[l.type] ?? 3;
       let sym = l.aid ? markExtent(l.aid) : EXTENT.o;
       // A lighthouse's colour ring up close: its name and character outside the ring, as in the key.
-      if (zoom >= 14 && l.type === "m" && l.aid.length <= 7 && !sectored.has(`${l.x},${l.y}`)) sym = [-50, -50, 50, 50];
+      if (zoom >= 14 && l.type === "m" && l.aid[7] == null && !sectored.has(`${l.x},${l.y}`)) sym = [-50, -50, 50, 50];
       add({ prio: PRIO.light, rank, x: l.x, y: l.y, lines, sym });
     }
     for (const aid of racons) {
@@ -1756,13 +1742,14 @@
     // Submarine cables and pipelines.
     if (data.cable) drawCables(ctx, data.cable, s, unit);
 
-    // 9. Leading lines as the key draws them: dashed behind the front mark, solid from it
-    // out to sea, the bearing in red beside the solid part.
+    // 9. Leading lines as the key draws them: dashed through the marks and on out to sea,
+    // solid only where they are the fairway (the tile says where), the bearing in red beside
+    // the solid part. A tile without that is all solid.
     for (const row of data.lead || []) {
-      let [bearing, line, ...front] = row;
+      let [bearing, line, given] = row;
       if (!line) { line = bearing; bearing = null; } // a tile from before bearings
-      const { dashed, solid } = splitLead(line, front);
-      for (const piece of dashed) strokeLine(ctx, piece, C.black, 1.1 * unit, [11 * unit, 6 * unit]);
+      const solid = Array.isArray(given) && given.every(Array.isArray) ? given.filter((p) => p.length >= 4) : [line];
+      if (solid[0] !== line) strokeLine(ctx, line, C.black, 1.1 * unit, [11 * unit, 6 * unit]);
       for (const piece of solid) strokeLine(ctx, piece, C.black, 1.4 * unit);
       if (zoom >= 13 && bearing != null && solid.length) {
         const size = Math.max(MIN_TEXT * unit, 19 * s);
