@@ -104,6 +104,9 @@ class Web:
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
+        r.add_get("/api/overlays", self.overlays)
+        r.add_get("/api/overlay/{overlay_id}/{ts}", self.overlay_points)
+        r.add_get("/api/overlay/{overlay_id}/{ts}/{z}/{x}/{y}", self.overlay_tile)
         r.add_post("/api/vchart/sample", self.vchart_sample)
         r.add_get("/api/vchart/sample/{name}", self.vchart_sample_file)
         r.add_post("/api/aircraft", self.set_aircraft)
@@ -140,7 +143,8 @@ class Web:
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css",
-                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js"):
+                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js",
+                     "static/overlays.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -202,6 +206,36 @@ class Web:
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
         return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": "image/png"})
+
+    async def overlays(self, request: web.Request) -> web.Response:
+        on = {i for i in request.query.get("times", "").split(",") if i}
+        return web.json_response({"overlays": await self.fw.overlays.listing(on), "now": time.time()},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def overlay_tile(self, request: web.Request) -> web.StreamResponse:
+        try:
+            ts, z, x = (int(request.match_info[k]) for k in ("ts", "z", "x"))
+            y = int(request.match_info["y"].split(".")[0])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        overlay = self.fw.overlays.registry.get(request.match_info["overlay_id"])
+        path = await self.fw.overlays.tile(overlay.id, ts, z, x, y) if overlay else None
+        if not path:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
+        # A frame's picture doesn't change: the browser may keep it as long as the NAS does.
+        age = int(min(overlay.max_age, 7 * 86400))
+        return web.FileResponse(path, headers={"Cache-Control": f"max-age={age}", "Content-Type": "image/png"})
+
+    async def overlay_points(self, request: web.Request) -> web.Response:
+        try:
+            ts = int(request.match_info["ts"])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        data = await self.fw.overlays.points(request.match_info["overlay_id"], ts)
+        if data is None:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})
+        return web.json_response(data, dumps=lambda d: json.dumps(d, separators=(",", ":")),
+                                 headers={"Cache-Control": "max-age=600"})
 
     async def vchart_tile(self, request: web.Request) -> web.Response:
         try:

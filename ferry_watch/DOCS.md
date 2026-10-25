@@ -103,18 +103,18 @@ The menu button (top right) has four tabs:
 
 - **Ships**: your ships, with their alert switches, and **Add a ship**.
 - **On the map**: switches for what the map shows besides your ships (sea
-  conditions, other ships, rescue aircraft, weather stations, harbours, faulty
-  lights and buoys, wrecks and coastal heritage), your saved routes and the
-  fleets.
+  conditions, other ships, rescue aircraft, weather stations, weather layers,
+  harbours, faulty lights and buoys, wrecks and coastal heritage), your saved
+  routes and the fleets.
 - **Stats**: inner-route passages, see above.
 - **Settings**: notifications and the test button, chart storage, the Land
   Survey API key, data sources, the version and the memory the add-on uses,
   with where it goes (chart, foreign depths, database, ships, aircraft, and the
   program itself: Python and its libraries).
 
-The switches for other ships, weather stations, harbours, faulty lights and
-heritage are remembered by each browser or phone on its own; the others are
-kept by the add-on.
+The switches for other ships, weather stations, weather layers, harbours,
+faulty lights and heritage are remembered by each browser or phone on its own;
+the others are kept by the add-on.
 
 ## Next passage
 
@@ -242,6 +242,21 @@ for its name, how long ago it reported, wind, gusts, direction, air temperature,
 sea temperature or wave height where measured, and the wind and gusts over the
 past 24 hours. The add-on asks FMI at most every 10 minutes, and only while the
 panel is open; the 24 hours are fetched when you open a station.
+
+## Weather layers and the time bar
+
+Weather layers such as the sea ice chart, the rain radar and the wind forecast
+(added one by one in later versions) get a switch each under **On the map**,
+with an opacity slider once switched on. While a layer with more than one time
+is on, a time bar sits above the ship chips: play, pause, step a frame back or
+forward, or drag to a time. It starts at the newest frame and keeps showing the
+newest as new ones come in. With several layers on, the bar steps through all
+their times together and each layer shows its own frame for that moment (or
+nothing, if it has none then). The bar gives way while a ship card, a replay
+or the area editor is open. Which layers are on and how see-through they are is
+remembered by each browser or phone on its own. A layer whose source can't be
+reached says so under its switch and in Settings, and tries again a few
+minutes later.
 
 ## Harbours
 
@@ -388,7 +403,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 64 MB. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
+(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 64 MB. Weather layers are only fetched for the layers switched on while the panel is open; their tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
 
 ## If a ship never shows up
 

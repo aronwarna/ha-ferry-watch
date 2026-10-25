@@ -396,3 +396,26 @@ body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
   .ah-chips button[aria-pressed="true"] { background: var(--text); color: #111318; }
 }
 #version { overflow-wrap: anywhere; }
+
+/* --- weather layers: the shared time bar above the ship chips, and opacity sliders ---- */
+
+.timebar {
+  position: fixed;
+  z-index: 1000;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px);
+  width: min(460px, calc(100vw - 20px));
+  padding: 6px 8px;
+  gap: 4px;
+}
+.timebar .player-main { padding: 0 4px; }
+.timebar .tb-step { width: 34px; height: 34px; }
+.timebar .tb-step:disabled { opacity: 0.3; }
+.timebar .player-info { margin-left: auto; }
+.leaflet-weather-pane .overlay-frame { transition: opacity 0.3s ease-out; }
+.ov-opacity { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.ov-opacity .player-range { flex: 1; }
+@media (max-width: 560px) {
+  .timebar { left: 8px; right: 8px; width: auto; transform: none; }
+}

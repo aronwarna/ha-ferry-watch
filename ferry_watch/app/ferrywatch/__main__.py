@@ -27,6 +27,7 @@ from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
 from .ice import IceWatch
 from .notify import Notifier, sun_place
+from .overlays import Overlays
 from .passages import Detector
 from .photos import PhotoCache
 from .predict import Predictor
@@ -78,6 +79,7 @@ class FerryWatch:
         self.enc: dict[str, str] = dict(ENC_DEFAULT)
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
+        self.overlays: Overlays | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
         self.air_history = AircraftHistory(self.store.db)
@@ -112,6 +114,12 @@ class FerryWatch:
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
+        if os.environ.get("FW_SIMULATE") == "1":
+            from . import simoverlays
+            self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
+            simoverlays.register(self.overlays)
+        else:
+            self.overlays = Overlays(DATA_DIR / "overlays", self.session)
         fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
@@ -393,6 +401,7 @@ class FerryWatch:
                     _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
             await asyncio.to_thread(self.tiles.prune)
+            await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
                 await self.photos.ensure(ship)

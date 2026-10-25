@@ -47,6 +47,16 @@
   window.ferryMap = map; // handy from the browser console
   map.attributionControl.setPrefix(false);
 
+  // Weather layers (overlays.js): ice, radar and wind over the map, with a shared time bar.
+  // Made here, before anything can ask for the menu's rows or Settings.
+  const overlays = FerryOverlays.create({
+    map, store, switchRow, canvas: sharedCanvas, strip: $("strip"),
+    onChange() {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+      renderSettings();
+    },
+  });
+
   // HA serves the panel with a no-referrer policy; tile servers want to see where requests come from.
   const REFERRER = "strict-origin-when-cross-origin";
   // OpenStreetMap's own tile servers block requests from embedded apps like this one, and
@@ -2473,6 +2483,7 @@
         extra: stationsOn ? windLegend() : null,
         onChange: async (on) => { setStations(on); renderLayers(); },
       }),
+      ...overlays.rows(),
       switchRow({
         title: "Harbours", color: HARBOUR_RED, checked: harboursOn,
         count: harboursOn && harbourCount ? `${harbourCount} in view` : "",
@@ -2513,6 +2524,10 @@
     if (mem?.program != null) parts.push(`program ${Math.round(mem.program)}`);
     const peak = mem?.peak > mb ? `, at most ${Math.round(mem.peak)} MB since it started` : "";
     setText($("memory"), mb ? `Memory in use: ${Math.round(mb)} MB${peak}.${parts.length ? ` In MB: ${parts.join(", ")}.` : ""}` : "");
+    const problems = overlays.problems();
+    $("overlay-status").hidden = !problems.length;
+    setText($("overlay-status"), problems.length
+      ? `Weather layers that couldn't be read just now: ${problems.join("; ")}. They try again in a few minutes.` : "");
   }
 
   // --- wrecks and coastal heritage on the drawn chart ---------------------------------

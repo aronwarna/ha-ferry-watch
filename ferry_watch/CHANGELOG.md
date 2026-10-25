@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.20.0
+
+The groundwork for weather layers over the map (card T2). Nothing new shows on your
+map yet: the sea ice chart, rain radar and wind forecast plug into this next, each
+as a small step.
+
+- Each weather layer gets a switch under Menu › On the map, with an opacity slider
+  once it's on. Both are remembered by each phone or browser on its own.
+- A time bar above the ship chips plays, pauses and steps through a layer's frames,
+  or you drag it to a time. It starts at the newest frame and keeps to the newest as
+  new ones arrive. With several layers on, it steps through all their times and each
+  shows its own frame for that moment. The next frame loads out of sight while one
+  is showing, so playing doesn't flicker; a slow connection makes it wait rather than
+  skip. The bar gives way while a ship card, a replay or the area editor is open.
+- On the NAS, layer pictures are kept in a cache of their own (up to 80 MB, apart
+  from the chart's), each layer for as long as it says: radar frames for hours, not
+  the chart's month, and then removed from the disk. Only the layers switched on are
+  ever fetched, and only while the panel is open.
+- A layer whose source can't be reached is logged once, says so under its switch and
+  in Settings, and is tried again a few minutes later; the rest of the app carries on.
+- Memory in the simulator: unchanged with the layers off (62 MB with the panel open,
+  as before); 3 to 4 MB more with two test layers playing.
+- Settings: switching off the Swedish and Estonian side saves about 5 to 10 MB since
+  0.19.0, not 40 MB; the text says so now.
+
 ## 0.19.1
 
 - Drawn chart: tiles are sharp again, drawn at your screen's full pixel density as
