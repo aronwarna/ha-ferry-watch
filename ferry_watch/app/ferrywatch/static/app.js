@@ -2528,6 +2528,9 @@
     $("overlay-status").hidden = !problems.length;
     setText($("overlay-status"), problems.length
       ? `Weather layers that couldn't be read just now: ${problems.join("; ")}. They try again in a few minutes.` : "");
+    const checks = overlays.checks();
+    $("overlay-checks").hidden = !checks.length;
+    setText($("overlay-checks"), checks.join(" "));
   }
 
   // --- wrecks and coastal heritage on the drawn chart ---------------------------------
@@ -3362,24 +3365,10 @@
   const STATIONS_POLL = 5 * 60000;
   const STATIONS_MIN_ZOOM = 6;
   const FMI_CREDIT = 'Weather stations © <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">FMI</a> (CC BY 4.0)';
-  // Under 4 m/s light; orange from 11 (the small craft warning), red from 14 (gale).
-  const WIND_STEPS = [[0, "#0ea5e9", "0–3"], [4, "#16a34a", "4–7"], [8, "#ca8a04", "8–10"], [11, "#ea580c", "11–13"],
-    [14, "#dc2626", "14–20"], [21, "#7c3aed", "21+"]];
-  const windColor = (ms) => WIND_STEPS.filter(([from]) => Math.round(ms) >= from).pop()[1];
-
-  function windLegend() {
-    const ul = document.createElement("ul");
-    ul.className = "legend small";
-    for (const [, color, label] of WIND_STEPS) {
-      const li = document.createElement("li");
-      const i = document.createElement("i");
-      i.className = "round";
-      i.style.background = color;
-      li.append(i, `${label} m/s`);
-      ul.append(li);
-    }
-    return ul;
-  }
+  // The wind colours (wind.js), the same as the forecast arrows': under 4 m/s light,
+  // orange from 11 (the small craft warning), red from 14 (gale).
+  const windColor = FerryWind.color;
+  const windLegend = FerryWind.legend;
 
   function roundRect(ctx, x, y, w, h, r) {
     ctx.beginPath();

@@ -71,6 +71,9 @@ class Overlay:
     frame_ms: int = 500  # time bar speed while playing
     refresh: float = 600  # s a time list is reused
     season: Callable[[float], bool] | None = None  # listed only while this says so
+    # Points overlays: a line for Settings about the run in use (the wind against the
+    # stations), given the run and the time; None says nothing.
+    check: Callable[[dict[str, Any], float], str | None] | None = None
 
     def tile_url(self, ts: int, z: int, x: int, y: int) -> str:
         values = {"z": z, "x": x, "y": y, "ts": ts, "time": iso(ts), "date": iso(ts)[:10]}
@@ -254,12 +257,19 @@ class Overlays:
         all_times = await asyncio.gather(*(times(o) for o in shown))
         out = []
         for o, times in zip(shown, all_times):
+            check = None
+            run = self._runs.get(o.id) if o.check and times is not None else None
+            if run:
+                try:
+                    check = o.check(run, now)
+                except Exception:  # noqa: BLE001 - a check never stops the listing
+                    _LOGGER.debug("Check of the %s overlay failed", o.title, exc_info=True)
             out.append({
                 "id": o.id, "title": o.title, "kind": o.kind, "note": o.note, "color": o.color,
                 "attribution": o.attribution, "opacity": o.opacity, "min_zoom": o.min_zoom,
                 "max_zoom": o.max_zoom, "tile_size": o.tile_size, "bounds": o.bounds,
                 "valid_for": o.valid_for or step_of(times or []) or 86400, "frame_ms": o.frame_ms,
-                "refresh": o.refresh, "times": times, "error": self.error(o),
+                "refresh": o.refresh, "times": times, "error": self.error(o), "check": check,
             })
         return out
 

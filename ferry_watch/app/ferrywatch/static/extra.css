@@ -416,6 +416,7 @@ body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
 .leaflet-weather-pane .overlay-frame { transition: opacity 0.3s ease-out; }
 .ov-opacity { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .ov-opacity .player-range { flex: 1; }
+.ov-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
 @media (max-width: 560px) {
   .timebar { left: 8px; right: 8px; width: auto; transform: none; }
 }

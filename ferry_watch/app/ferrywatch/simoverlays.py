@@ -3,8 +3,8 @@
 The rain radar runs with its real settings, its frames small PNGs (written here with zlib
 and struct) of rain cells drifting east across the Gulf of Finland.
 It goes through the real tile cache, with a session that draws the tiles instead of
-fetching them. "Test wind" is a points overlay: a 12 x 10 grid with 48 hourly forecast
-times of wind speed, gust and direction.
+fetching them. The wind forecast (a points overlay) is registered with the stations, its
+FMI answers made up in simsea.py.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import zlib
 from typing import Any
 
 from . import radar, seaice
-from .overlays import Overlay, Overlays, every
+from .overlays import Overlays, every
 
 TILE_PX = 64  # drawn small; the panel stretches it over its 256-pixel tile
 # Rain cells: lat, lon at the reference time, radius in degrees of latitude, strength.
@@ -121,28 +121,7 @@ class FakeTileSession:
         return _Response(draw(int(ts), int(z), int(x), int(y)))
 
 
-async def fake_wind_run(session: Any, now: float) -> dict[str, Any]:
-    first = int(now // 3600 + 1) * 3600
-    times = [first + i * 3600 for i in range(48)]
-    points = [[59.2 + j * 0.16, 21.6 + i * 0.75] for j in range(10) for i in range(12)]
-    values = {}
-    for t in times:
-        h = (t - first) / 3600
-        rows = []
-        for lat, lon in points:
-            ms = 6 + 4 * math.sin(h / 7 + lon / 3) + 2 * math.cos(lat * 3 + h / 5)
-            rows.append([round(ms, 1), round(ms * 1.4, 1), round((200 + 40 * math.sin(h / 9 + lon / 4)) % 360)])
-        values[str(t)] = rows
-    return {"times": times, "fields": ["ms", "gust", "dir"], "points": points, "values": values}
-
-
 def register(overlays: Overlays) -> None:
-    overlays.register(Overlay(
-        id="test-wind", title="Wind forecast (test)", kind="points", points=fake_wind_run,
-        max_age=3 * 3600, frame_ms=700, opacity=0.9, color="#0f766e",
-        attribution="Test wind (simulated)",
-        note="A simulated 48-hour wind forecast on a grid of points.",
-    ))
     # The real ice chart's settings, drawn here and shown all year so it can be tried.
     seaice.register(overlays, url="sim://sea-ice/{ts}/{z}/{x}/{y}", times=every(86400, 14, lag=86400),
                     season=None, attribution=seaice.ATTRIBUTION + " (simulated)")

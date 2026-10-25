@@ -151,3 +151,82 @@ def fake_overpass() -> dict[str, Any]:
 
 async def fake_overpass_fetch(query: str) -> dict[str, Any]:
     return fake_overpass()
+
+
+def fake_forecast(params: list[tuple[str, str]]) -> str:
+    """An FMI point forecast answer (multipointcoverage, asked by latlon) for the wind
+    layer: wind at each asked point for each hour, blended from the simulated stations
+    nearby (as their readings will be), with a slow wave on top so the forecast and the
+    stations differ by a little, as real ones do."""
+    q = {}
+    latlons = []
+    for key, value in params:
+        if key == "latlon":
+            lat, lon = (float(v) for v in value.split(","))
+            latlons.append((lat, lon))
+        else:
+            q[key] = value
+    names = q["parameters"].split(",")
+    start = int(datetime.fromisoformat(q["starttime"].replace("Z", "+00:00")).timestamp())
+    end = int(datetime.fromisoformat(q["endtime"].replace("Z", "+00:00")).timestamp())
+    step = int(q.get("timestep", 60)) * 60
+    near = [s for s in SIM_STATIONS if s[2] < 61 and s[3] > 19.5]
+    locations, points, rows, values = [], [], [], []
+    for n, (lat, lon) in enumerate(latlons):
+        geoid = 9000000 + n
+        locations.append(
+            f'<target:member><target:Location gml:id="forloc-geoid-{geoid}-pos">'
+            f'<gml:identifier codeSpace="http://xml.fmi.fi/namespace/stationcode/geoid">{geoid}</gml:identifier>'
+            f'<gml:name codeSpace="http://xml.fmi.fi/namespace/locationcode/name">{lat},{lon}</gml:name>'
+            f'<target:representativePoint xlink:href="#point-{geoid}"/>'
+            "</target:Location></target:member>")
+        points.append(f'<gml:pointMember><gml:Point gml:id="point-{geoid}" srsDimension="2" '
+                      'srsName="http://www.opengis.net/def/crs/EPSG/0/4258">'
+                      f"<gml:pos>{lat:.5f} {lon:.5f} </gml:pos></gml:Point></gml:pointMember>")
+        k = math.cos(math.radians(lat))
+        weights = [(1 / (0.05 + (s[2] - lat) ** 2 + ((s[3] - lon) * k) ** 2), s) for s in near]
+        total = sum(w for w, _ in weights)
+        for ts in range(start, end + 1, step):
+            u = v = ms = gust = 0.0
+            for w, (fmisid, _, slat, _, base) in weights:
+                s_ms = _value("windspeedms", fmisid, base, slat, ts)
+                d = math.radians(_value("winddirection", fmisid, base, slat, ts))
+                ms += w * s_ms
+                gust += w * _value("windgust", fmisid, base, slat, ts)
+                u += w * math.sin(d)
+                v += w * math.cos(d)
+            wave = 1.2 * math.sin(lon * 1.3 + (ts - start) / 20000)
+            ms = max(0.0, ms / total + wave)
+            out = {"WindSpeedMS": ms, "WindGust": gust / total + wave * 1.3,
+                   "WindDirection": math.degrees(math.atan2(u, v)) % 360}
+            rows.append(f"{lat:.5f} {lon:.5f}  {ts} ")
+            values.append(" ".join(f"{out.get(p, math.nan):.1f}" if p in out else "NaN" for p in names) + " ")
+    fields = "".join(f'<swe:field name="{p}" xlink:href="https://opendata.fmi.fi/meta?param={p}"/>' for p in names)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<wfs:FeatureCollection timeStamp="2026-10-25T12:41:12Z" numberMatched="1" numberReturned="1" '
+        'xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:om="http://www.opengis.net/om/2.0" '
+        'xmlns:omso="http://inspire.ec.europa.eu/schemas/omso/3.0" xmlns:sam="http://www.opengis.net/sampling/2.0" '
+        'xmlns:sams="http://www.opengis.net/samplingSpatial/2.0" xmlns:gmlcov="http://www.opengis.net/gmlcov/1.0" '
+        'xmlns:swe="http://www.opengis.net/swe/2.0" xmlns:target="http://xml.fmi.fi/namespace/om/atmosphericfeatures/1.1">'
+        '<wfs:member><omso:GridSeriesObservation gml:id="obs-obs-1-1">'
+        '<om:featureOfInterest><sams:SF_SpatialSamplingFeature gml:id="sampling-feature-1-1-latlon">'
+        '<sam:sampledFeature><target:LocationCollection gml:id="sampled-target-1-1">'
+        + "".join(locations) +
+        '</target:LocationCollection></sam:sampledFeature>'
+        '<sams:shape><gml:MultiPoint gml:id="mp-1-1-latlon">' + "".join(points) + '</gml:MultiPoint></sams:shape>'
+        '</sams:SF_SpatialSamplingFeature></om:featureOfInterest>'
+        '<om:result><gmlcov:MultiPointCoverage gml:id="mpcv-1-1-latlon"><gml:domainSet>'
+        '<gmlcov:SimpleMultiPoint gml:id="mp-1-1-latlon" srsDimension="3" '
+        'srsName="http://xml.fmi.fi/gml/crs/compoundCRS.php?crs=4258&amp;time=unixtime">'
+        '<gmlcov:positions>' + "\n".join(rows) + '</gmlcov:positions></gmlcov:SimpleMultiPoint></gml:domainSet>'
+        '<gml:rangeSet><gml:DataBlock><gml:rangeParameters/><gml:doubleOrNilReasonTupleList>'
+        + "\n".join(values) +
+        '</gml:doubleOrNilReasonTupleList></gml:DataBlock></gml:rangeSet>'
+        '<gmlcov:rangeType><swe:DataRecord>' + fields + '</swe:DataRecord></gmlcov:rangeType>'
+        '</gmlcov:MultiPointCoverage></om:result></omso:GridSeriesObservation></wfs:member></wfs:FeatureCollection>')
+
+
+async def fake_forecast_fetch(params: list[tuple[str, str]]) -> str:
+    return fake_forecast(params)

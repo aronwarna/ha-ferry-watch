@@ -67,10 +67,12 @@
 
   // --- drawing a points overlay -------------------------------------------------------
 
-  // An overlay can bring its own drawing (the wind layer draws arrows):
-  // FerryOverlays.renderers[id] = { draw(group, data, { opacity, canvas, map }) }, where
-  // data is { time, fields, points: [[lat, lon, ...values]] }. Without one, each point is
-  // a dot coloured by its first value.
+  // An overlay can bring its own drawing (the wind layer draws arrows and moving lines):
+  // FerryOverlays.renderers[id] = { draw(group, data, { opacity, canvas, map }), hide(),
+  // extra() }, where data is { time, fields, points: [[lat, lon, ...values]] }; hide()
+  // (optional) takes away what draw() put outside the group, and extra() (optional) gives
+  // controls for under the switch. Without one, each point is a dot coloured by its first
+  // value.
   const renderers = {};
   const SCALE = ["#60a5fa", "#22c55e", "#eab308", "#f97316", "#dc2626"];
   const defaultRenderer = {
@@ -175,7 +177,7 @@
           }
           render();
           // The menu is drawn again only when what it shows changed (not under a dragged slider).
-          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error]));
+          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error, ov.check]));
           if (shown !== menuShows) { menuShows = shown; onChange(); }
           // The first list shows which switches this browser had on; their times come next.
           return [...entries.values()].some((e) => e.on && !e.ov.times);
@@ -263,7 +265,7 @@
         e.group = L.layerGroup().addTo(map);
         map.attributionControl?.addAttribution(e.ov.attribution);
       }
-      if (ft == null) { e.group.clearLayers(); return; }
+      if (ft == null) { e.group.clearLayers(); renderers[e.ov.id]?.hide?.(); return; }
       pointsData(e, ft).then((data) => {
         if (e.current !== ft || !e.on || !e.group) return;
         e.group.clearLayers();
@@ -279,6 +281,7 @@
         e.group.remove();
         e.group = null;
         map.attributionControl?.removeAttribution(e.ov.attribution);
+        renderers[e.ov.id]?.hide?.();
       }
     }
 
@@ -441,6 +444,15 @@
       return label;
     }
 
+    // Under a switch that is on: the opacity, and the overlay's own controls.
+    function extras(e) {
+      const box = document.createElement("div");
+      box.append(opacityControl(e));
+      const own = renderers[e.ov.id]?.extra?.();
+      if (own) box.append(own);
+      return box;
+    }
+
     // One switch row per overlay, for the On the map list.
     function rows() {
       return [...entries.values()].map((e) => switchRow({
@@ -448,7 +460,7 @@
         note: e.on && e.ov.error
           ? `Couldn't reach it just now (${e.ov.error}). It tries again in a few minutes.`
           : e.ov.note,
-        extra: e.on ? opacityControl(e) : null,
+        extra: e.on ? extras(e) : null,
         onChange: async (on) => { await setOn(e.ov.id, on); onChange(); },
       }));
     }
@@ -458,8 +470,13 @@
       return [...entries.values()].filter((e) => e.ov.error).map((e) => `${e.ov.title}: ${e.ov.error}`);
     }
 
+    // What the overlays that are on say about themselves (the wind against the stations), for Settings.
+    function checks() {
+      return [...entries.values()].filter((e) => e.on && e.ov.check).map((e) => e.ov.check);
+    }
+
     load();
-    return { rows, problems, load, setTime, play, pause, get time() { return t; }, entries };
+    return { rows, problems, checks, load, setTime, play, pause, get time() { return t; }, entries };
   }
 
   return { union, frameAt, indexAt, startTime, timeLabel, relative, renderers, create };

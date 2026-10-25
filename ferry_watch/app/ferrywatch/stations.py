@@ -121,31 +121,54 @@ def parse_multipoint(text: str, expected: str = "") -> tuple[dict[int, tuple[str
     series: dict[int, list[tuple[int, list[float | None]]]] = {}
     fields: list[str] = []
     for cov in coverages:
-        positions = values = ""
-        names = []
-        for el in cov.iter():
-            tag = _local(el.tag)
-            if tag == "positions":
-                positions = el.text or ""
-            elif tag == "doubleOrNilReasonTupleList":
-                values = el.text or ""
-            elif tag == "field":
-                names.append(el.get("name", "").lower())
-        if not names:
-            names = [p.strip().lower() for p in expected.split(",") if p.strip()]
-        if not names:
-            continue
-        fields = names
-        pos, vals = positions.split(), values.split()
-        width = len(names)
-        for row in range(min(len(pos) // 3, len(vals) // width)):
-            lat, lon, ts = pos[3 * row: 3 * row + 3]
-            fmisid = by_place.get((round(float(lat), 4), round(float(lon), 4)))
-            if fmisid is None:
-                continue
-            series.setdefault(fmisid, []).append(
-                (int(float(ts)), [_float(v) for v in vals[width * row: width * row + width]]))
+        names, rows = _coverage_rows(cov, expected)
+        if names:
+            fields = names
+        for lat, lon, ts, values in rows:
+            fmisid = by_place.get((round(lat, 4), round(lon, 4)))
+            if fmisid is not None:
+                series.setdefault(fmisid, []).append((ts, values))
     return sites, series, fields
+
+
+def _coverage_rows(cov: ET.Element, expected: str = "") -> tuple[list[str], list[tuple[float, float, int, list[float | None]]]]:
+    """One MultiPointCoverage as (fields, [(lat, lon, unix time, [value per field]), ...]):
+    its "lat lon time" positions and its values, row for row."""
+    positions = values = ""
+    names = []
+    for el in cov.iter():
+        tag = _local(el.tag)
+        if tag == "positions":
+            positions = el.text or ""
+        elif tag == "doubleOrNilReasonTupleList":
+            values = el.text or ""
+        elif tag == "field":
+            names.append(el.get("name", "").lower())
+    if not names:
+        names = [p.strip().lower() for p in expected.split(",") if p.strip()]
+    if not names:
+        return [], []
+    pos, vals = positions.split(), values.split()
+    width = len(names)
+    rows = []
+    for row in range(min(len(pos) // 3, len(vals) // width)):
+        lat, lon, ts = pos[3 * row: 3 * row + 3]
+        rows.append((float(lat), float(lon), int(float(ts)), [_float(v) for v in vals[width * row: width * row + width]]))
+    return names, rows
+
+
+def parse_coverage(text: str, expected: str = "") -> tuple[list[str], list[tuple[float, float, int, list[float | None]]]]:
+    """The values of an FMI multipointcoverage answer without its station list, for point
+    forecasts asked for by coordinates: (fields, [(lat, lon, unix time, [value per
+    field]), ...]), every coverage in it."""
+    fields: list[str] = []
+    rows: list[tuple[float, float, int, list[float | None]]] = []
+    for el in ET.fromstring(text).iter():
+        if _local(el.tag) == "MultiPointCoverage":
+            names, more = _coverage_rows(el, expected)
+            fields = names or fields
+            rows.extend(more)
+    return fields, rows
 
 
 def latest_values(fields: list[str], rows: list[tuple[int, list[float | None]]]) -> dict[str, tuple[float, int]]:

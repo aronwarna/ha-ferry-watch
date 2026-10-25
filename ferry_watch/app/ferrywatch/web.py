@@ -144,7 +144,7 @@ class Web:
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js",
-                     "static/overlays.js"):
+                     "static/overlays.js", "static/wind.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.23.0
+
+The wind forecast over the map (card T5).
+
+- New switch "Wind forecast" under Menu › On the map. It shows FMI's HARMONIE forecast
+  for the Gulf of Finland, from Hanko and the Estonian islands to Vyborg Bay, for the
+  next 48 hours: an arrow every 30 km or so pointing where the wind blows, coloured by
+  speed like the weather stations (the number beside it from zoom 9, the gust in
+  brackets from zoom 10), with fewer arrows when zoomed out.
+- Moving wind lines follow the wind between the arrows, coloured the same way, at 30
+  frames a second. They pause while you pan or zoom and while the page is hidden, and
+  "Moving wind lines" under the switch turns them off. The opacity slider works on both.
+- The time bar steps through the forecast hours; play runs through the two days.
+- One forecast is fetched at most every 3 hours, only while the switch is on, and kept
+  on the NAS as a 100 KB file. Memory: about 3 MB more while it is in use, nothing once
+  the panel closes.
+- When the weather stations have been read, Settings › Troubleshooting says how far the
+  forecast is from their latest readings, so you can see that the arrows agree.
+- If FMI is down it shows with the switch and in Settings, and nothing else is affected.
+- In the simulator the wind switch replaces "Wind forecast (test)", with made-up FMI
+  answers that roughly follow the simulated stations.
+
 ## 0.22.0
 
 The rain radar over the map (card T4).

@@ -18,11 +18,22 @@ import ferrywatch.overlays as ovmod
 import ferrywatch.web as webmod
 from ferrywatch.overlays import (Overlay, Overlays, bbox_3857, every, parse_duration, parse_instant,
                                  parse_time_dimension, step_of, tile_bounds)
-from ferrywatch.simoverlays import FakeTileSession, fake_wind_run, png, rain_tile
+from ferrywatch import wind as windmod
+from ferrywatch.simoverlays import FakeTileSession, png, rain_tile
+from ferrywatch.simsea import fake_forecast_fetch
 from ferrywatch.simoverlays import register as register_test_overlays
 from ferrywatch.tilecache import TileCache
 
 T0 = 1761400800  # 2025-10-25 14:00:00 UTC
+
+
+async def fake_wind_run(session, now):
+    """A points run: a 12 x 10 grid, 48 forecast hours of speed, gust and direction."""
+    first = int(now // 3600 + 1) * 3600
+    times = [first + i * 3600 for i in range(48)]
+    points = [[59.2 + j * 0.16, 21.6 + i * 0.75] for j in range(10) for i in range(12)]
+    values = {str(t): [[6.0 + (t - first) / 3600 % 5, 9.0, 210.0] for _ in points] for t in times}
+    return {"times": times, "fields": ["ms", "gust", "dir"], "points": points, "values": values}
 
 
 # --- times -------------------------------------------------------------------------------
@@ -259,15 +270,17 @@ def test_endpoints(tmp_path, monkeypatch):
     async def main():
         overlays = Overlays(tmp_path / "overlays", None, FakeTileSession())
         register_test_overlays(overlays)
+        windmod.register(overlays, fetch=fake_forecast_fetch)
         client = TestClient(TestServer(webmod.Web(SimpleNamespace(overlays=overlays)).app))
         await client.start_server()
         try:
             listing = await (await client.get("/api/overlays")).json()
-            assert [o["id"] for o in listing["overlays"]] == ["test-wind", "sea-ice", "rain-radar"]
+            assert [o["id"] for o in listing["overlays"]] == ["sea-ice", "rain-radar", "wind"]
             assert all(o["times"] is None for o in listing["overlays"]) and listing["now"] > 0
-            listing = await (await client.get("/api/overlays?times=rain-radar,test-wind")).json()
-            wind, rain = (next(o for o in listing["overlays"] if o["id"] == i) for i in ("test-wind", "rain-radar"))
-            assert len(rain["times"]) == 12 and len(wind["times"]) == 48 and rain["frame_ms"] == 500
+            listing = await (await client.get("/api/overlays?times=rain-radar,wind")).json()
+            wind, rain = (next(o for o in listing["overlays"] if o["id"] == i) for i in ("wind", "rain-radar"))
+            assert len(rain["times"]) == 12 and len(wind["times"]) == 49 and rain["frame_ms"] == 500
+            assert wind["check"] is None  # no station readings to compare with
             r = await client.get(f"/api/overlay/rain-radar/{rain['times'][-1]}/8/145/74.png")
             assert r.status == 200 and r.headers["Content-Type"] == "image/png"
             assert r.headers["Cache-Control"] == f"max-age={6 * 3600}"
@@ -275,8 +288,8 @@ def test_endpoints(tmp_path, monkeypatch):
             assert (await client.get(f"/api/overlay/rain-radar/{rain['times'][-1] + 1}/8/145/74.png")).status == 404
             assert (await client.get("/api/overlay/rain-radar/soon/8/145/74.png")).status == 400
             assert (await client.get("/api/overlay/none/1/8/145/74.png")).status == 404
-            frame = await (await client.get(f"/api/overlay/test-wind/{wind['times'][0]}")).json()
-            assert frame["fields"] == ["ms", "gust", "dir"] and len(frame["points"]) == 120
+            frame = await (await client.get(f"/api/overlay/wind/{wind['times'][0]}")).json()
+            assert frame["fields"] == ["ms", "gust", "dir"] and len(frame["points"]) == 126
             assert (await client.get("/api/overlay/rain-radar/1")).status == 404  # tiles, not points
         finally:
             await client.close()
