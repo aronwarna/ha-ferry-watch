@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.0
+
+The Baltic sea ice chart over the map (card T3).
+
+- New switch "Sea ice" under Menu › On the map, from November to May. It shows FMI's
+  daily ice concentration chart from Copernicus Marine, blue for thin cover to white for
+  solid ice, at 60% opacity to start with. It opens on the newest day; the time bar
+  steps back through the last two weeks.
+- Days are kept on the NAS for 15 days in the overlay cache. If the service is down it
+  shows with the switch and in Settings, and nothing else is affected.
+- In the simulator the ice switch is there all year, with drawn ice.
+
 ## 0.20.0
 
 The groundwork for weather layers over the map (card T2). Nothing new shows on your

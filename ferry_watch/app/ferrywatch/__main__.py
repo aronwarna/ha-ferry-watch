@@ -27,6 +27,7 @@ from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
 from .ice import IceWatch
 from .notify import Notifier, sun_place
+from . import seaice
 from .overlays import Overlays
 from .passages import Detector
 from .photos import PhotoCache
@@ -120,6 +121,7 @@ class FerryWatch:
             simoverlays.register(self.overlays)
         else:
             self.overlays = Overlays(DATA_DIR / "overlays", self.session)
+            seaice.register(self.overlays)
         fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart

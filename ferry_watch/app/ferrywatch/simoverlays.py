@@ -14,6 +14,7 @@ import struct
 import zlib
 from typing import Any
 
+from . import seaice
 from .overlays import Overlay, Overlays, every
 
 TILE_PX = 64  # drawn small; the panel stretches it over its 256-pixel tile
@@ -66,6 +67,34 @@ def rain_tile(ts: int, z: int, x: int, y: int) -> bytes:
     return png(TILE_PX, TILE_PX, bytes(pixels))
 
 
+# Ice like the cmocean "cmap:ice" style: dark blue thin cover through light blue to white.
+ICE_RAMP = [(0.1, (40, 60, 120)), (0.3, (60, 110, 170)), (0.5, (110, 170, 210)), (0.75, (180, 220, 240)),
+            (0.95, (245, 250, 255))]
+
+
+def ice_tile(ts: int, z: int, x: int, y: int) -> bytes:
+    """Ice spreading from the eastern Gulf of Finland and the Bothnian Bay, a little more
+    each day."""
+    grow = (ts // 86400) % 14 / 14
+    n = 2**z
+    pixels = bytearray()
+    for row in range(TILE_PX):
+        merc = math.pi * (1 - 2 * (y + (row + 0.5) / TILE_PX) / n)
+        lat = math.degrees(math.atan(math.sinh(merc)))
+        for col in range(TILE_PX):
+            lon = (x + (col + 0.5) / TILE_PX) / n * 360 - 180
+            v = max((lon - 25.5 + 3 * grow) / 3 if 59.2 < lat < 60.8 else 0, (lat - 63.5 + grow) / 1.5)
+            if v < ICE_RAMP[0][0]:
+                pixels.extend((0, 0, 0, 0))
+                continue
+            rgb = ICE_RAMP[0][1]
+            for edge, c in ICE_RAMP:
+                if v >= edge:
+                    rgb = c
+            pixels.extend((*rgb, 255))
+    return png(TILE_PX, TILE_PX, bytes(pixels))
+
+
 class _Response:
     def __init__(self, body: bytes):
         self.status, self.content_type, self.body = 200, "image/png", body
@@ -88,7 +117,8 @@ class FakeTileSession:
 
     def get(self, url: str, **kw) -> _Response:
         _, _, kind, ts, z, x, y = url.split("/")
-        return _Response(rain_tile(int(ts), int(z), int(x), int(y)))
+        draw = ice_tile if kind == "sea-ice" else rain_tile
+        return _Response(draw(int(ts), int(z), int(x), int(y)))
 
 
 async def fake_wind_run(session: Any, now: float) -> dict[str, Any]:
@@ -120,4 +150,6 @@ def register(overlays: Overlays) -> None:
         attribution="Test wind (simulated)",
         note="A simulated 48-hour wind forecast on a grid of points.",
     ))
-
+    # The real ice chart's settings, drawn here and shown all year so it can be tried.
+    seaice.register(overlays, url="sim://sea-ice/{ts}/{z}/{x}/{y}", times=every(86400, 14, lag=86400),
+                    season=None, attribution=seaice.ATTRIBUTION + " (simulated)")
