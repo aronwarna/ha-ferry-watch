@@ -243,7 +243,10 @@
   // --- formatting -------------------------------------------------------------
 
   const now = () => Date.now() / 1000 + clockSkew;
-  const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  // One formatter for every clock time: toLocaleTimeString builds a new one each call, which
+  // showed up as the panel's busiest function while ships moved on the map.
+  const CLOCK = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const clock = (ts) => CLOCK.format(new Date(ts * 1000));
   const shortName = (name) => name.split(" ").slice(-1)[0];
 
   function ago(ts) {
@@ -1355,11 +1358,30 @@
     }
   }
 
+  // While the panel is hidden (phone locked, another app or tab) the live connection is
+  // closed after a minute, so the NAS stops its panel-only work (weather, the phone's
+  // position, aircraft); it's opened again, catching up, when the panel is seen again.
+  const HIDDEN_CLOSE_MS = 60000;
+  let socket = null, socketPaused = false, hiddenTimer = null;
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(hiddenTimer);
+    if (document.hidden) {
+      hiddenTimer = setTimeout(() => { socketPaused = true; socket?.close(); }, HIDDEN_CLOSE_MS);
+      return;
+    }
+    if (socketPaused) {
+      socketPaused = false;
+      if (!socket || socket.readyState === WebSocket.CLOSED) connectSocket();
+    }
+    refreshState();
+  });
+
   function connectSocket() {
+    if (socketPaused) return;
     const url = new URL("api/ws", location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.hash = "";
-    const ws = new WebSocket(url);
+    const ws = socket = new WebSocket(url);
     ws.onopen = () => {
       socketOpen = true;
       renderStatus();
@@ -1382,13 +1404,15 @@
     };
     ws.onclose = () => {
       socketOpen = false;
+      if (socket === ws) socket = null;
       renderStatus();
-      setTimeout(connectSocket, 3000);
+      if (!socketPaused) setTimeout(connectSocket, 3000);
     };
   }
 
-  // Refresh "x min ago" texts and feed status.
-  setInterval(() => {
+  // Refresh "x min ago" texts and feed status (not while hidden: nobody sees them).
+  setInterval(() => { if (!document.hidden) refreshState(); }, 30000);
+  function refreshState() {
     renderStrip();
     renderCard();
     fetch("api/state").then((r) => r.json()).then((s) => {
@@ -1398,7 +1422,7 @@
       renderPhone();
       renderSettings();
     }).catch(() => {});
-  }, 30000);
+  }
 
   // --- ships dialog -------------------------------------------------------------
 
@@ -1795,7 +1819,7 @@
 
   // While the chart downloads, keep its progress current while the menu is open.
   setInterval(() => {
-    if ($("ships-dialog").open && lastState?.vchart?.keep?.running) loadState().catch(() => {});
+    if (!document.hidden && $("ships-dialog").open && lastState?.vchart?.keep?.running) loadState().catch(() => {});
   }, 5000);
 
   $("notify-test").addEventListener("click", async () => {
@@ -2481,8 +2505,14 @@
   // --- settings -------------------------------------------------------------------
 
   function renderSettings() {
-    const mb = lastState?.memory_mb;
-    setText($("memory"), mb ? `Memory in use: ${Math.round(mb)} MB` : "");
+    const mem = lastState?.memory;
+    const mb = mem?.total ?? lastState?.memory_mb;
+    // Where it goes: the parts holding data, then the program itself (Python, libraries).
+    const NAMES = { chart: "chart", "depth model": "foreign depths", database: "database", ships: "ships", aircraft: "aircraft" };
+    const parts = (mem?.parts || []).filter(([, v]) => v >= 0.1).map(([k, v]) => `${NAMES[k] || k} ${v.toFixed(1)}`);
+    if (mem?.program != null) parts.push(`program ${Math.round(mem.program)}`);
+    const peak = mem?.peak > mb ? `, at most ${Math.round(mem.peak)} MB since it started` : "";
+    setText($("memory"), mb ? `Memory in use: ${Math.round(mb)} MB${peak}.${parts.length ? ` In MB: ${parts.join(", ")}.` : ""}` : "");
   }
 
   // --- wrecks and coastal heritage on the drawn chart ---------------------------------

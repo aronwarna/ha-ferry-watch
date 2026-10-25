@@ -12,7 +12,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from . import __version__
+from . import __version__, memory
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .airhistory import AircraftHistory
@@ -437,7 +437,8 @@ class FerryWatch:
             "retention_days": self.options.retention_days,
             "weather": self.weather_state(),
             "phone": self.phone,
-            "memory_mb": memory_mb(),
+            "memory_mb": memory.rss_mb(),
+            "memory": memory.breakdown(self),
             "aircraft": {
                 "enabled": self.aircraft_enabled,
                 "flights_stored": self.air_history.count(),
@@ -510,18 +511,6 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.feed.sync_subscriptions()
         await self.web.broadcast_ships()
-
-
-def memory_mb() -> float | None:
-    """This process's resident memory (VmRSS), for the panel's settings."""
-    try:
-        with open("/proc/self/status") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    return round(int(line.split()[1]) / 1024, 1)
-    except (OSError, ValueError):
-        pass
-    return None
 
 
 async def main() -> None:

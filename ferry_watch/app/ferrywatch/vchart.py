@@ -38,11 +38,13 @@ import logging
 import math
 import os
 import re
+import shutil
 import sys
 import time
 from array import array
 from collections import OrderedDict
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache, partial
 from itertools import chain
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -108,6 +110,10 @@ IDLE_FORGET = 300
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
 TILE_REV = 16  # bump when tiles change, so browsers don't keep drawing cached old ones
+# Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
+# the blocks they're cut from don't change: a view seen before then needs neither those
+# blocks in RAM nor a cut. The oldest go once the cache passes this size.
+TILE_CACHE_BYTES = 64 * 1024 * 1024
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -313,6 +319,22 @@ LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "f
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
                "xland": MIN_Z, "xdepth": MIN_Z}
 XDEPTH_MIN_RING = 2.0  # tile units: foreign depth rings smaller than this aren't drawn (islets and specks)
+
+
+CHART_THREADS = 2  # worker threads for the chart's parsing, building and cutting
+
+
+_pool: ThreadPoolExecutor | None = None
+
+
+async def in_thread(fn: Callable, /, *args: Any) -> Any:
+    """``asyncio.to_thread`` on the chart's own few threads. Python runs one thread at a
+    time anyway, so more of them only let more blocks be half built at once, each holding
+    its parsed data (and, with glibc, each thread keeps a memory pool of its own)."""
+    global _pool
+    if _pool is None:
+        _pool = ThreadPoolExecutor(CHART_THREADS, thread_name_prefix="chart")
+    return await asyncio.get_running_loop().run_in_executor(_pool, partial(fn, *args))
 
 
 def source_names(key: str) -> list[tuple[str | None, str]]:
@@ -2261,6 +2283,7 @@ class VectorChart:
         self._pending: dict[tuple[int, int, int], asyncio.Task] = {}
         self._fetching: dict[tuple, asyncio.Task] = {}  # part downloads and conversions in flight
         self._wanted: dict[tuple[int, int], float] = {}  # when a block was last asked for
+        self._gen: dict[tuple[int, int], int] = {}  # block -> times a part of it was written
         self._limit = asyncio.Semaphore(1)  # one download at a time: gentle on the services and on RAM
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
@@ -2280,6 +2303,7 @@ class VectorChart:
         self._logged_props: set[str] = set()
         self.errors: dict[str, str] = {}  # layer -> last error, for the panel
         self.blocks_fetched = 0
+        self.tiles_from_disk = 0
         self.keep_status: dict[str, Any] | None = None  # progress of keep(), None while it's off
         self._last_tile = 0.0
         self._idle: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
@@ -2372,6 +2396,12 @@ class VectorChart:
                 "keep": self.keep_status, "mml_key": bool(self.mml_key), "foreign": self.foreign.enabled,
                 "memory_mb": round(self._memory_bytes / 1e6, 1),
                 "layers": self.layer_report(), "rev": self._rev()}
+
+    def memory_bytes(self) -> dict[str, int]:
+        """What the chart holds in RAM: block layers, heritage sites, foreign depth grids."""
+        heritage = sum(L.nbytes() for L in self._regions.values()) + \
+            sum(hit[1].nbytes() for hit in self._coast.values())
+        return {"blocks": self._memory_bytes, "heritage": heritage, "grids": self.foreign.grid_bytes()}
 
     def _rev(self) -> str:
         """Changes whenever tiles would: a new tile format, or parts added or dropped."""
@@ -2496,7 +2526,7 @@ class VectorChart:
             else:
                 body = await self._get_bytes(service, {"service": "WFS", "version": "2.0.0",
                                                        "request": "GetCapabilities"}, "capabilities")
-                names = await asyncio.to_thread(wfs_type_names, body.decode("utf-8", "replace"))
+                names = await in_thread(wfs_type_names, body.decode("utf-8", "replace"))
             if not names:
                 raise ValueError("no layers listed")
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
@@ -2571,9 +2601,16 @@ class VectorChart:
         connections to Home Assistant, and a tile request held open for half a
         minute would stall the rest of the panel (and Home Assistant's own UI).
         """
+        result = await self._cut(z, x, y, wait)
+        return None if result is None else result[:2]
+
+    async def _cut(self, z: int, x: int, y: int,
+                   wait: float | None) -> tuple[dict[str, Any], bool, float] | None:
+        """``tile``, and when the blocks it was cut from were last read."""
         self._touch()
         if z < BLOCK_MIN_Z:
-            return await self._overview_tile(z, x, y, wait)
+            result = await self._overview_tile(z, x, y, wait)
+            return None if result is None else (*result, time.time())
         keys = blocks_for(z, x, y)
         level = level_for(z)
         now = time.monotonic()
@@ -2596,9 +2633,48 @@ class VectorChart:
             if data is not None and z >= LAYER_MIN_Z["heritage"]:
                 data = {**data, "heritage": await self._coastal_sites(key, data)}
             blocks[key] = data
+        read_at = time.time()  # each part written since was dropped from RAM (see _written)
         async with self._cutting:  # one tile cut at a time keeps the web server responsive
-            tile = await asyncio.to_thread(make_tile, z, x, y, blocks)
-        return tile, regions_ok and all(b is not None and b["_complete"] for b in loaded)
+            tile = await in_thread(make_tile, z, x, y, blocks)
+        return tile, regions_ok and all(b is not None and b["_complete"] for b in loaded), read_at
+
+    async def tile_gz(self, z: int, x: int, y: int,
+                      wait: float | None = None) -> tuple[bytes, bool] | None:
+        """The tile as gzipped JSON, and whether it's complete: from the disk cache when the
+        blocks it's cut from haven't changed since, else cut (see ``tile``)."""
+        if z < BLOCK_MIN_Z:
+            result = await self.tile(z, x, y, wait)
+            return None if result is None else (await in_thread(_gzip_json, result[0]), result[1])
+        self._touch()
+        path = self._tile_path(z, x, y)
+        sources = self._tile_sources(z, x, y)
+        body = await in_thread(_fresh_tile, path, sources)
+        if body is not None:
+            self.tiles_from_disk += 1
+            return body, True
+        result = await self._cut(z, x, y, wait)
+        if result is None:
+            return None
+        tile, complete, read_at = result
+        body = await in_thread(_gzip_json, tile)
+        if complete:
+            try:
+                await in_thread(_write_tile, path, body, read_at)
+            except OSError as err:
+                self._log_once("tile cache", "Could not keep a chart tile on disk: %s", err)
+        return body, complete
+
+    def _tile_path(self, z: int, x: int, y: int) -> Path:
+        return self.dir / "tiles" / self._rev() / str(z) / f"{x}_{y}.json.gz"
+
+    def _tile_sources(self, z: int, x: int, y: int) -> list[Path]:
+        """The files a tile is cut from: its blocks' parts, and their heritage regions."""
+        level = level_for(z)
+        keys = blocks_for(z, x, y)
+        paths = [self._path(*key, part) for key in keys for part in self._parts(level)]
+        if z >= LAYER_MIN_Z["heritage"]:
+            paths += [self._heritage_path(*r) for r in {self._region(*key) for key in keys}]
+        return paths
 
     async def sample(self, lon: float, lat: float, zooms: Iterable[int] = DEBUG_ZOOMS) -> dict[str, Any]:
         """What the chart has at a spot, for working out what goes wrong there (the panel's
@@ -2635,7 +2711,7 @@ class VectorChart:
             return block
 
         async with self._reading:
-            out["block"] = await asyncio.to_thread(read)
+            out["block"] = await in_thread(read)
         return out
 
     async def block(self, bx: int, by: int, level: int = len(LEVELS) - 1) -> dict | None:
@@ -2670,13 +2746,15 @@ class VectorChart:
                     return None  # without depths there's no chart to draw
         except _Skipped:
             return None
+        gen = self._gen.get((bx, by), 0)
         async with self._reading:
             if self._stale((bx, by)):
                 return None  # the map moved on while this block waited its turn
-            layers = await asyncio.to_thread(self._read_parts, bx, by, have, level)
+            layers = await in_thread(self._read_parts, bx, by, have, level)
         if layers is None:
             return None
-        layers["_complete"] = len(have) == len(parts)
+        # A part written while this was read: drawn as read, but not kept or cached as complete.
+        layers["_complete"] = len(have) == len(parts) and self._gen.get((bx, by), 0) == gen
         if layers["_complete"]:
             self._remember((bx, by, level), layers)
         return layers
@@ -2704,6 +2782,13 @@ class VectorChart:
                 continue
             layers.update(got)
         return layers
+
+    def _written(self, bx: int, by: int) -> None:
+        """A part of a block was written: the copies of it in RAM are out of date."""
+        self._gen[(bx, by)] = self._gen.get((bx, by), 0) + 1
+        for key in [k for k in self._memory if k[:2] == (bx, by)]:
+            self._memory_bytes -= self._memory.pop(key)[1]
+        self._coast.pop((bx, by), None)
 
     def _remember(self, key: tuple[int, int, int], layers: dict) -> None:
         size = sum(L.nbytes() for k, L in layers.items() if k[0] != "_")
@@ -2755,7 +2840,7 @@ class VectorChart:
         if self._filled.get(path.name) == mtime:
             return False
         try:
-            meta = await asyncio.to_thread(read_meta, path)
+            meta = await in_thread(read_meta, path)
         except (OSError, ValueError, EOFError):
             return False  # unreadable: _read_parts deals with it
         if not meta.get("fill"):
@@ -2774,7 +2859,7 @@ class VectorChart:
         known = self._missing.get(path.name)
         if known is None or known[0] != mtime:
             try:
-                meta = await asyncio.to_thread(read_meta, path)
+                meta = await in_thread(read_meta, path)
             except (OSError, ValueError, EOFError):
                 return True
             known = self._missing[path.name] = (mtime, _fetch_again(meta, path.name), tuple(meta.get("absent") or ()))
@@ -2790,8 +2875,9 @@ class VectorChart:
                     meta, levels = convert_old(old)
                     write_block(path, meta, levels, make_overview(levels[-1]))
 
-                await asyncio.to_thread(convert)
+                await in_thread(convert)
                 os.utime(path, (mtime, mtime))
+                self._written(*map(int, path.name.split(".")[0].split("_")))
         except FileNotFoundError:
             return
         except (OSError, ValueError, EOFError) as err:
@@ -2867,7 +2953,8 @@ class VectorChart:
             meta = {"v": 2, "missing": missing, "absent": absent, "rev": PART_REV.get(part, 0)}
             write_block(path, meta, make_levels(built), make_overview(built))
 
-        await asyncio.to_thread(write)
+        await in_thread(write)
+        self._written(bx, by)
         self._missing[path.name] = (path.stat().st_mtime, bool(missing), tuple(absent))
         self.blocks_fetched += 1
         _LOGGER.info("Chart block %s,%s%s: %s in %.1f s", bx, by, f" ({part})" if part else "",
@@ -2898,7 +2985,7 @@ class VectorChart:
             try:
                 if self.fetch_layer is not None:
                     features = await self.fetch_layer(key if tag is None else f"{key}.{tag}", bbox)
-                    await asyncio.to_thread(add, features)
+                    await in_thread(add, features)
                 elif service_of(name) == MML_API:
                     await self._fetch_mml(key, bbox, lambda feats, add=add: add(feats, lonlat=True), ask)
                 else:
@@ -2968,8 +3055,8 @@ class VectorChart:
                 size += len(chunk)
                 if size > LEAN_MAX:
                     raise _TooBig(f"more than {LEAN_MAX // 1048576} MB of {what} data in one feature")
-                await asyncio.to_thread(lean.feed, chunk)
-        page = await asyncio.to_thread(lean.close)
+                await in_thread(lean.feed, chunk)
+        page = await in_thread(lean.close)
         _LOGGER.info("Chart data %s: one feature of %.1f MB read in parts (%s rings or lines kept, %s outside "
                      "the area dropped)", what, size / 1048576, lean.kept, lean.dropped)
         return page
@@ -2979,7 +3066,7 @@ class VectorChart:
         if not body[:256].lstrip().startswith(b"{"):
             # Some services answer an error with 200 and an XML exception report.
             raise _HTTPError(200, self._scrub(body[:2000].decode("utf-8", "replace").strip()))
-        return await asyncio.to_thread(json.loads, body)  # off the event loop
+        return await in_thread(json.loads, body)  # off the event loop
 
     async def _fetch_wfs(self, key: str, bbox: tuple[float, float, float, float],
                          sink: Callable[[list[dict]], None] | None = None, name: str | None = None) -> list[dict]:
@@ -3029,7 +3116,7 @@ class VectorChart:
             if sink is None:
                 features += got
             else:
-                await asyncio.to_thread(sink, got)
+                await in_thread(sink, got)
             total = page.get("numberMatched", page.get("totalFeatures"))
             del page
             if isinstance(total, int):
@@ -3064,7 +3151,7 @@ class VectorChart:
             nxt = next((link.get("href") for link in page.get("links") or []
                         if link.get("rel") == "next" and link.get("href")), None)
             more = bool(page.get("features"))
-            await asyncio.to_thread(lambda p=page: sink(_mml_features(p)))
+            await in_thread(lambda p=page: sink(_mml_features(p)))
             del page
             if not nxt or not more:
                 break
@@ -3112,11 +3199,11 @@ class VectorChart:
                     files[(bx, by)] = paths
             return files, newest
 
-        files, newest = await asyncio.to_thread(scan)
+        files, newest = await in_thread(scan)
         have = [list(k) for k in files]
         path = self.dir / "overview" / f"{z}_{x}_{y}.json.gz"
         try:
-            cached = await asyncio.to_thread(_read_json, path)
+            cached = await in_thread(_read_json, path)
         except (OSError, ValueError, EOFError):
             cached = None
         if cached is not None and cached.get("rev") == rev:
@@ -3125,10 +3212,10 @@ class VectorChart:
             if fresh or time.time() - cached.get("made", 0) < OVERVIEW_RECUT:
                 return cached["tile"], cached["complete"] and fresh
         # Blocks that may hold Finnish data, and how many of them are there.
-        near = await asyncio.to_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
+        near = await in_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
         got = sum(k in files for k in near)
         async with self._cutting:
-            tile = await asyncio.to_thread(make_tile, z, x, y, overview_blocks(files))
+            tile = await in_thread(make_tile, z, x, y, overview_blocks(files))
         if near:
             tile["cover"] = round(got / len(near), 2)
         complete = got == len(near)
@@ -3139,7 +3226,7 @@ class VectorChart:
         complete = complete and foreign_ok
         if files or foreign:
             try:
-                await asyncio.to_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
+                await in_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
                                                             "made": time.time(), "tile": tile,
                                                             "complete": complete, "foreign": foreign_ok})
             except OSError as err:
@@ -3170,9 +3257,12 @@ class VectorChart:
     async def _ensure_heritage(self, bx: int, by: int) -> bool:
         return await asyncio.shield(self._ensure_heritage_task(*self._region(bx, by)))
 
+    def _heritage_path(self, rx: int, ry: int) -> Path:
+        return self.dir / "heritage" / f"{rx}_{ry}.v2.json.gz"  # v2 adds coastal defences
+
     async def _load_region(self, rx: int, ry: int) -> bool:
         """Heritage sites of a zoom-7 region into memory, fetched once a month."""
-        path = self.dir / "heritage" / f"{rx}_{ry}.v2.json.gz"  # v2 adds coastal defences
+        path = self._heritage_path(rx, ry)
         age = _age(path)
         rows = None
         failed = time.time() - self._failed.get(("heritage", rx, ry), 0) < FAILED_RETRY
@@ -3182,12 +3272,12 @@ class VectorChart:
                 self._failed[("heritage", rx, ry)] = time.time()
             else:
                 try:
-                    await asyncio.to_thread(_write_json, path, {"v": 2, "rows": rows})
+                    await in_thread(_write_json, path, {"v": 2, "rows": rows})
                 except OSError as err:
                     _LOGGER.warning("Could not store heritage sites: %s", err)
         if rows is None and age is not None:
             try:
-                rows = (await asyncio.to_thread(_read_json, path))["rows"]
+                rows = (await in_thread(_read_json, path))["rows"]
             except (OSError, ValueError, KeyError):
                 rows = None
         if rows is None:
@@ -3268,7 +3358,7 @@ class VectorChart:
         if hit is not None and hit[0] is region:
             self._coast.move_to_end(key)
             return hit[1]
-        layer = await asyncio.to_thread(coastal_filter, self._heritage_layer(*key), data.get("depth"))
+        layer = await in_thread(coastal_filter, self._heritage_layer(*key), data.get("depth"))
         self._coast[key] = (region, layer)
         while len(self._coast) > MEMORY_BLOCKS:
             self._coast.popitem(last=False)
@@ -3301,6 +3391,7 @@ class VectorChart:
                         p.unlink()
                 except FileNotFoundError:
                     pass
+        self._prune_tiles()
         # Foreign OpenStreetMap answers are only kept while their blocks are being built.
         from .foreign import OSM_MAX_AGE
         root = self.dir / "foreign"
@@ -3310,6 +3401,33 @@ class VectorChart:
                     p.unlink()
             except FileNotFoundError:
                 pass
+
+
+    def _prune_tiles(self) -> None:
+        """Tiles of other revisions go; then the oldest, down to 3/4 of TILE_CACHE_BYTES."""
+        root = self.dir / "tiles"
+        if not root.exists():
+            return
+        rev = self._rev()
+        for d in root.iterdir():
+            if d.name != rev:
+                shutil.rmtree(d, ignore_errors=True)
+        files = []
+        for p in (root / rev).glob("*/*.json.gz"):
+            try:
+                st = p.stat()
+            except FileNotFoundError:
+                continue
+            files.append((st.st_mtime, st.st_size, p))
+        total = sum(size for _, size, _ in files)
+        if total <= TILE_CACHE_BYTES:
+            return
+        files.sort()
+        for mtime, size, p in files:
+            if total <= TILE_CACHE_BYTES * 3 // 4:
+                break
+            p.unlink(missing_ok=True)
+            total -= size
 
 
 class _TooBig(ValueError):
@@ -3338,6 +3456,39 @@ def _age(path: Path) -> float | None:
         return time.time() - path.stat().st_mtime
     except FileNotFoundError:
         return None
+
+
+def _gzip_json(data: Any) -> bytes:
+    return gzip.compress(json.dumps(data, separators=(",", ":")).encode(), 5)
+
+
+def _fresh_tile(path: Path, sources: list[Path]) -> bytes | None:
+    """A cached tile, if it was cut after every one of its source files last changed."""
+    try:
+        made = path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    if time.time() - made > MAX_AGE:
+        return None
+    for src in sources:
+        try:
+            if src.stat().st_mtime >= made:
+                return None
+        except FileNotFoundError:
+            continue
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _write_tile(path: Path, body: bytes, read_at: float) -> None:
+    """Dated when its blocks were read, so a block part written since makes it stale."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(body)
+    os.utime(tmp, (read_at, read_at))
+    os.replace(tmp, path)
 
 
 def _read_json(path: Path) -> dict:

@@ -9,7 +9,6 @@ import math
 from typing import Awaitable, Callable
 
 import aiohttp
-from PIL import Image, ImageDraw, ImageFont
 
 from .config import USER_AGENT
 
@@ -49,6 +48,9 @@ async def render(points: list[tuple[float, float]], ship: tuple[float, float, fl
                  extra: list[tuple[float, float]] | None = None) -> bytes:
     """PNG of the track (oldest first) ending at the ship. `extra` points (e.g. the phone)
     are kept in view and drawn as a small dot."""
+    # Pillow takes about 4 MB of RAM once loaded, and pictures are only drawn for alerts.
+    from PIL import Image, ImageDraw, ImageFont
+
     view = list(points) + [ship[:2]] + list(extra or [])
     z = choose_zoom(view, width, height, pad=50)
     xs, ys = zip(*(_world_px(lat, lon, z) for lat, lon in view))

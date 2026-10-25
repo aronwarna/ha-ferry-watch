@@ -24,8 +24,8 @@ from array import array
 from typing import Any
 
 from .geo import distance_m
-from .vchart import (BLOCK_Z, HALF, LEVELS, UNITS, block_bounds, clip_line, lonlat_to_mercator,
-                     mercator_to_lonlat, near_finland, simplify)
+from .vchart import (BLOCK_Z, HALF, LEVELS, UNITS, block_bounds, clip_line, in_thread,
+                     lonlat_to_mercator, mercator_to_lonlat, near_finland, simplify)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -365,7 +365,7 @@ class AutoRouter:
         cache, which the panel's tiles use, churned); otherwise through the whole block."""
         read_parts = getattr(self.vchart, "_read_parts", None)
         if read_parts is not None:
-            layers = await asyncio.to_thread(read_parts, bx, by, ["fw"], FULL_LEVEL)
+            layers = await in_thread(read_parts, bx, by, ["fw"], FULL_LEVEL)
         else:
             layers = await asyncio.wait_for(self.vchart.block(bx, by), BLOCK_WAIT)
         return (layers or {}).get("fline")
@@ -387,7 +387,7 @@ class AutoRouter:
             if fline is not None:
                 lines += block_lines(fline, bx, by, draught)
             del fline
-        graph = await asyncio.to_thread(build_graph, lines)
+        graph = await in_thread(build_graph, lines)
         del lines
         # Kept for re-planning in the same area only while small; a big one goes right away.
         self._cache = (cache_key, now, graph) if graph.nbytes() <= CACHE_MAX_BYTES else None
@@ -403,7 +403,7 @@ class AutoRouter:
             self._downloading = asyncio.create_task(self._download(missing))
         async with self._lock:  # one graph built at a time keeps memory down
             graph = await self._graph(ready, draught)
-            result = await asyncio.to_thread(find_route, graph, start, end)
+            result = await in_thread(find_route, graph, start, end)
         result.update({"blocks": len(keys), "downloading": len(missing)})
         if missing and "error" in result:
             result["error"] = (f"Chart data for {len(missing)} of the {len(keys)} areas along the way is "

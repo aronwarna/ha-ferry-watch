@@ -7,6 +7,7 @@ per-session path prefix.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import math
@@ -210,19 +211,19 @@ class Web:
             raise web.HTTPBadRequest() from None
         if not (MIN_Z <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()
-        result = await self.fw.vchart.tile(z, x, y, wait=TILE_WAIT)
+        result = await self.fw.vchart.tile_gz(z, x, y, wait=TILE_WAIT)
         if result is None:
             # Still downloading: answer now and let the panel ask again, so no
             # request sits open long enough to block the browser's other ones.
             return web.json_response({"pending": True}, status=202, headers={"Cache-Control": "no-store"})
-        tile, complete = result
+        body, complete = result
         # A tile missing a block that couldn't be fetched is asked for again next time.
-        cache = "max-age=86400" if complete else "no-store"
-        body = json.dumps(tile, separators=(",", ":")).encode()
-        resp = web.Response(body=body, content_type="application/json", headers={"Cache-Control": cache})
-        if len(body) > 4096:
-            resp.enable_compression()  # zoomed-out tiles shrink to about a quarter
-        return resp
+        headers = {"Cache-Control": "max-age=86400" if complete else "no-store", "Vary": "Accept-Encoding"}
+        if "gzip" in request.headers.get("Accept-Encoding", ""):
+            headers["Content-Encoding"] = "gzip"  # tiles are kept gzipped: sent as they are
+        else:
+            body = await asyncio.to_thread(gzip.decompress, body)
+        return web.Response(body=body, content_type="application/json", headers=headers)
 
     async def photo(self, request: web.Request) -> web.StreamResponse:
         path = self.fw.photos.path(_mmsi(request))

@@ -91,6 +91,7 @@ OVERPASS_TIMEOUT = 120
 OVERPASS_MAX = 48 * 1024 * 1024  # bytes streamed from one answer at most (never held whole)
 LANE_HALF_M = 1500  # ground metres each side of a lane's centre line drawn as the lane
 FAILED_RETRY = 3600
+GRID_KEEP = 30  # s the depth model grids stay in RAM after the last block built from them
 
 # --- the Finnish border ---------------------------------------------------------------
 
@@ -1640,6 +1641,8 @@ class ForeignSource:
         self.available = (fake is None and chart.session is not None) or self.fake_dtm is not None
         self.enabled = self.available
         self._grids: dict[tuple[int, int], Grid | None] = {}  # a few, in RAM while blocks are built
+        self._using = 0  # builds and overview cuts under way that use them
+        self._let_go: asyncio.TimerHandle | None = None
         self._fetching: dict[tuple, asyncio.Task] = {}
         self._failed: dict[Any, float] = {}
         self._last_overpass = 0.0
@@ -1652,6 +1655,22 @@ class ForeignSource:
     def forget(self) -> None:
         """Let go of the depth model grids in RAM (the chart isn't being looked at)."""
         self._grids.clear()
+
+    def _use(self) -> None:
+        self._using += 1
+        if self._let_go:
+            self._let_go.cancel()
+            self._let_go = None
+
+    def _done(self) -> None:
+        """A build or cut finished: the grids are let go once none has started for GRID_KEEP s
+        (blocks next to each other share them, so a run of builds reads each once)."""
+        self._using -= 1
+        if not self._using:
+            self._let_go = asyncio.get_running_loop().call_later(GRID_KEEP, self.forget)
+
+    def grid_bytes(self) -> int:
+        return sum(2 * len(g.values) for g in self._grids.values() if g is not None)
 
     @property
     def dir(self) -> Path:
@@ -1689,7 +1708,7 @@ class ForeignSource:
         age = V._age(path)
         if age is not None and (age < DTM_MAX_AGE or time.time() - self._failed.get(("dtm", x, y), 0) < FAILED_RETRY):
             try:
-                return await asyncio.to_thread(lambda: Grid.from_bytes(gzip.decompress(path.read_bytes())))
+                return await V.in_thread(lambda: Grid.from_bytes(gzip.decompress(path.read_bytes())))
             except (OSError, ValueError, EOFError) as err:
                 _LOGGER.warning("Depth model file %s unreadable, fetched again: %s", path.name, err)
         if time.time() - self._failed.get(("dtm", x, y), 0) < FAILED_RETRY:
@@ -1707,7 +1726,7 @@ class ForeignSource:
                         ("subset", f"Lat({lat0 - pad:.5f},{lat1 + pad:.5f})"),
                         ("subset", f"Long({lon0 - pad:.5f},{lon1 + pad:.5f})"),
                     ], "depth model")
-            grid = await asyncio.to_thread(parse_geotiff, body, (lon0 - pad, lat0 - pad, lon1 + pad, lat1 + pad))
+            grid = await V.in_thread(parse_geotiff, body, (lon0 - pad, lat0 - pad, lon1 + pad, lat1 + pad))
             del body
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, IndexError, struct.error,
                 zlib.error) as err:
@@ -1717,13 +1736,13 @@ class ForeignSource:
             self._log("dtm", "EMODnet depth model for tile %s/%s/%s failed: %s", DTM_Z, x, y, msg)
             if age is not None:  # an old copy beats none
                 try:
-                    return await asyncio.to_thread(lambda: Grid.from_bytes(gzip.decompress(path.read_bytes())))
+                    return await V.in_thread(lambda: Grid.from_bytes(gzip.decompress(path.read_bytes())))
                 except (OSError, ValueError, EOFError):
                     pass
             return None
         self.errors.pop("depth model", None)
         try:
-            await asyncio.to_thread(_write_bytes, path, gzip.compress(grid.to_bytes(), 5))
+            await V.in_thread(_write_bytes, path, gzip.compress(grid.to_bytes(), 5))
         except OSError as err:
             _LOGGER.warning("Could not store the depth model: %s", err)
         return grid
@@ -1772,9 +1791,9 @@ class ForeignSource:
         out = OsmFile(path)
         try:
             await self._overpass(query, out.add, "coast and sea marks", (gx * OSM_GROUP, gy * OSM_GROUP))
-            await asyncio.to_thread(out.close)
+            await V.in_thread(out.close)
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
-            await asyncio.to_thread(out.abort)
+            await V.in_thread(out.abort)
             msg = str(err) or type(err).__name__
             self._failed[("osm", gx, gy)] = time.time()
             self.errors["openstreetmap"] = msg[:300]
@@ -1782,7 +1801,7 @@ class ForeignSource:
                       gx * OSM_GROUP, gy * OSM_GROUP, OSM_GROUP ** 2 - 1, msg[:300])
             return path if age is not None else None
         except BaseException:
-            await asyncio.to_thread(out.abort)
+            await V.in_thread(out.abort)
             raise
         self.errors.pop("openstreetmap", None)
         _LOGGER.info("OpenStreetMap for blocks %s,%s to %s,%s: %s elements in %.1f s", gx * OSM_GROUP, gy * OSM_GROUP,
@@ -1810,7 +1829,7 @@ class ForeignSource:
         if self.fake_osm is not None:
             await self._pause()
             els = await self.fake_osm(query)
-            await asyncio.to_thread(lambda: [sink(el) for el in els])
+            await V.in_thread(lambda: [sink(el) for el in els])
             return
         for attempt in (0, 1):
             await self._pause()
@@ -1830,8 +1849,8 @@ class ForeignSource:
                         size += len(chunk)
                         if size > OVERPASS_MAX:
                             raise ValueError(f"more than {OVERPASS_MAX >> 20} MB of {what}")
-                        await asyncio.to_thread(stream.feed, chunk)
-                await asyncio.to_thread(stream.close)
+                        await V.in_thread(stream.feed, chunk)
+                await V.in_thread(stream.close)
                 if stream.remark and "error" in stream.remark.lower():
                     raise ValueError(stream.remark[:200])  # Overpass ran out of time or memory
                 return
@@ -1855,7 +1874,11 @@ class ForeignSource:
             built: dict[str, V.Layer] = {}
             with_depths = False
         else:
-            built, missing = await self._build(bx, by, bounds)
+            self._use()
+            try:
+                built, missing = await self._build(bx, by, bounds)
+            finally:
+                self._done()
             if built is None:
                 return False
             with_depths = True
@@ -1866,7 +1889,8 @@ class ForeignSource:
             V.write_block(path, {"v": 2, "missing": missing, "absent": [], "rev": V.PART_REV.get(PART, 0)},
                           levels, overview)
 
-        await asyncio.to_thread(write)
+        await V.in_thread(write)
+        chart._written(bx, by)
         chart._missing[path.name] = (path.stat().st_mtime, bool(missing), ())
         if with_depths:
             _LOGGER.info("Chart block %s,%s (outside Finland): %s in %.1f s", bx, by,
@@ -1884,7 +1908,7 @@ class ForeignSource:
         if self.chart._stale((bx, by)):
             raise V._Skipped  # the map moved on while this block waited for its data
         osm = None
-        if await asyncio.to_thread(_wet, sampler, bounds, pad):
+        if await V.in_thread(_wet, sampler, bounds, pad):
             osm = await self.osm(bx, by)
             if osm is None:
                 missing.append("osm")
@@ -1892,7 +1916,7 @@ class ForeignSource:
         try:
             if self.chart._stale((bx, by)):
                 raise V._Skipped  # the map moved on while this block waited its turn
-            return await asyncio.to_thread(self._make, bx, by, sampler, osm, missing)
+            return await V.in_thread(self._make, bx, by, sampler, osm, missing)
         finally:
             self._building.release()
 
@@ -1926,11 +1950,15 @@ class ForeignSource:
         if not wanted(padded):
             return {}, True
         async with self._overviewing:
-            sampler = await self.sampler(padded)
-            if sampler is None:
-                return {}, False
-            rows = await asyncio.to_thread(overview_rows, z, x, y, sampler)
-            del sampler
+            self._use()
+            try:
+                sampler = await self.sampler(padded)
+                if sampler is None:
+                    return {}, False
+                rows = await V.in_thread(overview_rows, z, x, y, sampler)
+                del sampler
+            finally:
+                self._done()
         return rows, True
 
 

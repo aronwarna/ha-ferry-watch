@@ -66,6 +66,33 @@ def test_tiles_from_simulated_data(tmp_path):
     assert chart.status()["blocks"] == 4  # the zoom-10 tile's four blocks (the others share them)
 
 
+def test_cut_tiles_are_kept_on_disk_until_their_blocks_change(tmp_path):
+    import gzip
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    coords = tile_at(60.005, 24.4, 12)
+
+    async def run():
+        first, ok = await chart.tile_gz(*coords)
+        assert ok and chart.tiles_from_disk == 0
+        chart._forget()  # nothing in RAM: the second answer comes from the disk alone
+        again, ok2 = await chart.tile_gz(*coords)
+        assert ok2 and again == first and chart.tiles_from_disk == 1 and not chart._memory
+        assert json.loads(gzip.decompress(again))["depth"]
+        # A block part fetched again (a newer file) makes the tile be cut again.
+        part = chart._path(*blocks_for(*coords)[0], "")
+        later = time.time() + 5
+        os.utime(part, (later, later))
+        await chart.tile_gz(*coords)
+        assert chart.tiles_from_disk == 1
+
+    asyncio.run(run())
+    stale = tmp_path / "tiles" / "old-rev" / "12"
+    stale.mkdir(parents=True)
+    (stale / "1_2.json.gz").write_bytes(b"x")
+    chart.prune()
+    assert not stale.exists() and list((tmp_path / "tiles" / chart._rev()).glob("*/*.json.gz"))
+
+
 def test_failed_fairway_data_still_draws_depths(tmp_path):
     async def flaky(key, bbox):
         if key == "aid":

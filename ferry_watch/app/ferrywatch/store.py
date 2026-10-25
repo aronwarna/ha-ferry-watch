@@ -141,6 +141,11 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
+        # RAM: a 2 MB page cache (SQLite's usual, said outright), sorting and grouping for the
+        # stats on disk rather than in memory, and all of SQLite held under 8 MB.
+        self.db.execute("PRAGMA cache_size=-2000")
+        self.db.execute("PRAGMA temp_store=FILE")
+        self.db.execute("PRAGMA soft_heap_limit=8000000")
         self.db.executescript(SCHEMA)
         for table, column, kind in ADDED_COLUMNS:
             have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}

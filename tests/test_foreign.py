@@ -305,6 +305,22 @@ def test_one_overpass_request_per_group_of_blocks(tmp_path):
     assert first == 1 and after == 2
 
 
+def test_depth_grids_are_let_go_after_the_builds(tmp_path, monkeypatch):
+    monkeypatch.setattr(F, "GRID_KEEP", 0.05)
+    chart = V.VectorChart(tmp_path, None, fake_chart_layer)
+    _, bx, by = tile_at(59.58, 24.62, 11)
+
+    async def run():
+        chart._wanted[(bx, by)] = __import__("time").monotonic()
+        assert await chart.foreign.fetch_part(bx, by)
+        held = chart.foreign.grid_bytes()
+        await asyncio.sleep(0.2)
+        return held, chart.foreign.grid_bytes()
+
+    held, after = asyncio.run(run())
+    assert held > 0 and after == 0
+
+
 def test_blocks_nearest_the_view_are_built_first():
     import time as _time
 

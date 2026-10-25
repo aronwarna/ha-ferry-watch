@@ -1,3 +1,3 @@
 """Ferry Watch: live AIS tracking of selected ships for Home Assistant."""
 
-__version__ = "0.18.1"
+__version__ = "0.19.0"

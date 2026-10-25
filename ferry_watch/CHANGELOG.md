@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.19.0
+
+Performance and memory (card T11). Measured in the simulator with the Swedish and
+Estonian side on, going through Porkkala at zooms 8 to 15, Tallinn, Åland, Stats and
+the aircraft history:
+
+| | Before | After |
+| --- | --- | --- |
+| Most memory while a new area fills in | 126 MB | 91 MB |
+| Memory after those views, area seen before | 89 MB | 66 MB |
+| Panning on a phone-sized screen | 54 frames/s, 18 stutters | 60 frames/s, none |
+| Chart pictures held by the phone's browser | 70 MB | 37 MB |
+
+- Settings now says where the memory goes: the chart, the foreign depth model, the
+  database, ships, aircraft, and the program itself (Python and its libraries, most
+  of it), and the most it has used since it started.
+- The chart's parsing, building and cutting now share two worker threads instead of
+  up to six. Python only runs one at a time anyway, so it's as fast, but fewer areas
+  are half built at once, and their memory peaks no longer stack.
+- Drawn chart tiles you've seen are kept on the NAS (up to 64 MB), so a view seen
+  before is sent straight from disk, already compressed, without reading its chart
+  areas into memory or drawing the tile again. A tile is drawn again once an area
+  under it is downloaded again.
+- The depth model for the Swedish and Estonian side is only kept in memory while
+  areas are built from it (and half a minute after).
+- The picture library (Pillow, about 4 MB) is only loaded when an alert picture is
+  drawn. The database is held to 2 MB of cache and 8 MB in all, sorting on disk.
+- Panel: chart tiles are drawn at twice the screen's pixel size at most (your S22's
+  screen is three times): under half the pixels to draw and keep, barely softer. The
+  chart's lettering is only placed again when a pan has ended. While the panel is
+  hidden (phone locked, another app) it stops asking for updates, and after a minute
+  closes its live connection, so the NAS stops fetching weather, your phone's
+  position and aircraft for it; it catches up as soon as you look again.
+- Clock times in the panel are formatted with one shared formatter (making a new one
+  for every time shown was the panel's busiest function while ships moved).
+
+These are simulator numbers on a PC (glibc). Home Assistant's add-ons run on Alpine
+(musl), which hands freed memory back more readily, so the NAS starts lower: there
+the gain is smaller (about 5 MB at the peak in a musl-like test run, 7 MB after the
+views). The new line in Settings shows the real split on your NAS.
+
 ## 0.18.1
 
 Fixes from the NAS log of 23 to 25 October:

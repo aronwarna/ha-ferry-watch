@@ -2097,6 +2097,11 @@
     }
   }
 
+  // Canvases are drawn at most at twice the CSS pixels: a phone's 3x screen gets 2x tiles,
+  // under half the pixels to draw and keep (the eye barely tells them apart on a chart).
+  const MAX_DPR = 2;
+  const pixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DPR);
+
   const PANE = "fwChartLabels";
   const MAX_LABELS = 1200; // candidates looked at per redraw
 
@@ -2149,6 +2154,8 @@
       this._timer = setTimeout(() => {
         this._timer = null;
         if (!this._map || this._map._animatingZoom) return; // zoomend redraws
+        // Mid-pan (a finger on the map, or the glide after it): moveend redraws, once.
+        if (this._map.dragging?.moving() || this._map._panAnim?._inProgress) return;
         cancelAnimationFrame(this._frame);
         this._frame = requestAnimationFrame(() => (this._stale ? this._reset() : this._draw()));
       }, 90);
@@ -2179,7 +2186,7 @@
       this._center = map.getCenter();
       this._zoom = map.getZoom();
       L.DomUtil.setPosition(this._canvas, min);
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const dpr = pixelRatio();
       const w = this._bounds.max.x - min.x, h = this._bounds.max.y - min.y;
       if (this._canvas.width !== Math.round(w * dpr) || this._canvas.height !== Math.round(h * dpr)) {
         this._canvas.width = Math.round(w * dpr);
@@ -2270,7 +2277,7 @@
     options: { minZoom: 8, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
 
     createTile(coords, done) {
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const dpr = pixelRatio();
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = 256 * dpr;
       const controller = new AbortController();
