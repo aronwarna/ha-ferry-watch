@@ -130,16 +130,17 @@
     }
     if (chartStyle === "drawn") {
       const overview = info?.layers?.find((l) => /250k/i.test(l.title || l.layer || ""));
+      // The drawn chart first, so its credit leads the line at the bottom.
       return L.layerGroup([
+        FerryChart.layer({
+          attribution: "Chart © Traficom, Väylävirasto, Maanmittauslaitos · abroad: depths © EMODnet Bathymetry, "
+            + "coast and sea marks © OpenStreetMap contributors · not for navigation",
+          zIndex: 3,
+        }),
         oceanBase(),
         ...(overview ? [FerryChart.rasterLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
           minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 9, zIndex: 2,
         })] : []),
-        FerryChart.layer({
-          attribution: "Depths © Traficom · Fairways © Väylävirasto · abroad: depths © EMODnet Bathymetry, "
-            + "coast and sea marks © OpenStreetMap contributors · not for navigation",
-          zIndex: 3,
-        }),
         // No OpenSeaMap tiles here: the drawn chart draws the sea marks abroad itself.
         oceanLabels(6),
       ]);
@@ -1548,6 +1549,7 @@
     const saved = store.get("fw-tab") === "fleets" ? "layers" : store.get("fw-tab");
     setTab(["stats", "layers", "settings"].includes(saved) ? saved : "ships");
     $("ships-dialog").showModal();
+    $("ships-dialog").focus(); // not the first tab, which would show a focus ring
   });
 
 
@@ -1682,6 +1684,7 @@
     $("areas").hidden = !on;
     $("strip").hidden = on || Boolean(focused);
     $("areas-button").setAttribute("aria-pressed", String(on));
+    $("areas-button").hidden = !on;
     zonesKey = "";
     renderZones(lastState?.zones || []);
     // Longer tracks while editing, so lines can be placed on real routes.
@@ -1752,6 +1755,12 @@
     });
   });
   $("areas-button").addEventListener("click", () => setEditing(!editing));
+  // The areas are set up once, so they're edited from Settings rather than the top bar;
+  // the bar's button shows only while editing, to finish.
+  $("areas-open").addEventListener("click", () => {
+    $("ships-dialog").close();
+    setEditing(true);
+  });
   $("areas-done").addEventListener("click", () => setEditing(false));
 
   // --- notifications and passages ---------------------------------------------
@@ -1780,8 +1789,20 @@
       text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
     }
     $("chart-keep-status").textContent = text;
-    $("mml-key").placeholder = vc?.mml_key ? "Key saved · paste a new one to replace it" : "Paste your API key";
+    // With a key saved the form folds away behind "Change".
+    const saved = Boolean(vc?.mml_key);
+    $("mml-saved").hidden = !saved;
+    $("mml-change").hidden = !saved || mmlEditing;
+    $("mml-form").hidden = saved && !mmlEditing;
+    $("mml-key").placeholder = saved ? "Paste a new key to replace the saved one" : "Paste your API key";
   }
+
+  let mmlEditing = false;
+  $("mml-change").addEventListener("click", () => {
+    mmlEditing = true;
+    renderChartKeep();
+    $("mml-key").focus();
+  });
 
   $("mml-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1792,6 +1813,7 @@
       const res = await api("api/vchart/key", { method: "POST", body: { key } });
       if (res.ok) {
         $("mml-key").value = "";
+        mmlEditing = false;
         $("mml-result").textContent = "Key works. Rocks, wrecks and names are added as each area is downloaded.";
         await loadState();
       } else {
@@ -2024,6 +2046,11 @@
     if (name === "settings") renderSettings();
   }
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  // Tap a folded explanation to read it whole (a link in it still opens).
+  $("ships-dialog").addEventListener("click", (e) => {
+    const note = e.target.closest?.("p.note");
+    if (note && !e.target.closest("a")) note.classList.toggle("open");
+  });
 
   async function loadStats() {
     const [data] = await Promise.all([api("api/stats"), loadPassages()]);
@@ -2291,7 +2318,7 @@
     });
     head.append(dot, name, count, toggle);
     const note = document.createElement("p");
-    note.className = "small muted";
+    note.className = info.error ? "small warn-text" : "small muted note";
     note.innerHTML = info.error
       ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again shortly.`
       : "FinnHEMS, Border Guard and police helicopters and Border Guard planes. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
@@ -2439,14 +2466,27 @@
     });
     head.append(dot, name, counter, toggle);
     section.append(head);
-    if (note) {
-      const p = document.createElement("p");
-      p.className = "small muted";
-      p.textContent = note;
-      section.append(p);
-    }
+    if (note) section.append(noteText(note));
     if (extra) section.append(extra);
     return section;
+  }
+
+  // A switch's explanation: two lines until tapped, so a list of switches stays short. What
+  // went wrong with a source is always shown whole.
+  function noteText(text) {
+    const p = document.createElement("p");
+    const problem = /^Couldn't/.test(text);
+    p.className = problem ? "small warn-text" : "small muted note";
+    p.textContent = text;
+    return p;
+  }
+
+  // Headings between groups of switches.
+  function groupHead(text) {
+    const h = document.createElement("h3");
+    h.className = "group-head";
+    h.textContent = text;
+    return h;
   }
 
   function trafficLegend() {
@@ -2467,6 +2507,7 @@
     const weatherOn = w.enabled !== false;
     const faultCount = faultsData?.faults?.length;
     $("layers-list").replaceChildren(
+      groupHead("Weather"),
       switchRow({
         title: "Sea conditions", color: "#0ea5e9", checked: weatherOn,
         note: weatherOn && w.error
@@ -2484,19 +2525,13 @@
         onChange: async (on) => { setStations(on); renderLayers(); },
       }),
       ...overlays.rows(),
+      groupHead("On the chart"),
       switchRow({
         title: "Harbours", color: HARBOUR_RED, checked: harboursOn,
         count: harboursOn && harbourCount ? `${harbourCount} in view` : "",
         note: harbourNote || "Marinas and harbours from OpenStreetMap with their services, from zoom 11. Tap one for its card. Downloaded once a month.",
         onChange: async (on) => { setHarbours(on); renderLayers(); },
       }),
-      switchRow({
-        title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
-        note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
-        extra: trafficOn ? trafficLegend() : null,
-        onChange: async (on) => { setTraffic(on); renderLayers(); },
-      }),
-      renderAircraftSection(),
       switchRow({
         title: "Faulty lights and buoys", color: "#dc2626", checked: faultsOn,
         count: faultsOn && faultCount != null ? `${faultCount} nearby` : "",
@@ -2508,6 +2543,14 @@
         note: "Wrecks, and bunkers, trenches and gun positions on the shore and islands (from zoom 13), from Museovirasto's registers. Shown on the drawn chart.",
         onChange: async (on) => { heritageOn = on; store.set("fw-heritage", on ? "1" : "0"); applyHeritage(); },
       }),
+      groupHead("Traffic"),
+      switchRow({
+        title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
+        note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
+        extra: trafficOn ? trafficLegend() : null,
+        onChange: async (on) => { setTraffic(on); renderLayers(); },
+      }),
+      renderAircraftSection(),
     );
     renderRoutesList();
     renderFleets();

@@ -24,7 +24,7 @@
     fairway: "#000000",
     fairwayArea: "#eceded",
     builtUp: "#eceded",
-    band: "#80ce51", // under the small-craft trunk route, the key's green
+    band: "#bed389", // under the small-craft trunk route: the paper chart's soft green (Sailmate's)
     magenta: "#9d3289",
     magentaLight: "#c47db5",
     red: "#c63541",
@@ -33,10 +33,12 @@
     black: "#000000",
     brown: "#bea26a",
     fort: "#6b3a4f", // coastal defence sites ashore
-    height: "#c8b07c", // land contours
+    height: "#d6c08f", // land contours, faint as on the paper chart
+    heightMajor: "#c9ae78", // every 20 m
     heightText: "#9c7a45",
     lake: "#d6ebf8",
-    buildArea: "#ddd3b4",
+    building: "#5e554a", // houses, as the paper chart's small dark squares
+    buildingBig: "#cbbd99", // big buildings, outlined in C.building
     tssLane: "rgba(157, 50, 137, 0.07)",
     tssZone: "rgba(157, 50, 137, 0.26)",
     tssSep: "rgba(157, 50, 137, 0.5)",
@@ -55,8 +57,6 @@
   // Symbol and text sizes below are in "chart pixels"; SCALE says how many CSS pixels one
   // is at each zoom. Up to zoom 13 the paper chart's own size (1:50 000 shown at about its
   // printed scale); closer in it grows, as the paper chart does when magnified, but gentler.
-  // Built-up area tints by kind (home and other areas take C.buildArea).
-  const BUILD_AREA = { industry: "#d8d4c8", public: "#d6c9a6", church: "#d6c9a6" };
 
   const SCALE = { 8: 0.42, 9: 0.45, 10: 0.5, 11: 0.54, 12: 0.62, 13: 0.78, 14: 1.0, 15: 1.18, 16: 1.34, 17: 1.46 };
   const scaleAt = (z) => SCALE[z] ?? (z < 8 ? 0.42 : 1.55);
@@ -1064,6 +1064,55 @@
 
   // --- land: topography, roads, buildings, landmarks ------------------------------------
 
+  // Ground metres in one tile unit at a tile's latitude.
+  function tileUnitMetres(coords, e) {
+    const n = 2 ** coords.z;
+    const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (coords.y + 0.5)) / n)));
+    return (40075016.7 * Math.cos(lat)) / n / e;
+  }
+
+  // Buildings at their true size and shape: from zoom 14 by their outlines (the small
+  // ones dark like the paper chart's houses, big ones lighter and outlined), and the rest
+  // as squares of the same area, never under about a pixel and a half so a house still shows.
+  function drawBuildings(ctx, data, zoom, unit, metre) {
+    const BIG = 600; // m² of outline: lighter, with a dark edge
+    const big = [], small = [];
+    for (const [kind, ...rings] of data.buildarea || []) {
+      if (!rings.length || !Array.isArray(rings[0])) continue;
+      const r = rings[0];
+      let a = 0;
+      for (let i = 0, n = r.length; i < n; i += 2) {
+        const j = (i + 2) % n;
+        a += r[i] * r[j + 1] - r[j] * r[i + 1];
+      }
+      (Math.abs(a) / 2 / (metre * metre) >= BIG || kind === "industry" || kind === "public" ? big : small).push(rings);
+    }
+    if (big.length) {
+      ctx.beginPath();
+      for (const rings of big) for (const ring of rings) path(ctx, ring, true);
+      ctx.fillStyle = C.buildingBig;
+      ctx.fill("evenodd");
+      ctx.strokeStyle = C.building;
+      ctx.lineWidth = (zoom >= 15 ? 0.8 : 0.6) * unit;
+      ctx.stroke();
+    }
+    if (small.length) {
+      ctx.beginPath();
+      for (const rings of small) for (const ring of rings) path(ctx, ring, true);
+      ctx.fillStyle = C.building;
+      ctx.fill("evenodd");
+    }
+    if (data.building?.length) {
+      ctx.fillStyle = C.building;
+      const least = (zoom <= 14 ? 2.2 : 1.5) * unit; // zoomed out a house still reads as the chart's dot
+      for (const [x, y, size, metres] of data.building) {
+        // Files from before 0.24 have only a size class: about 10 m or 20 m across.
+        const side = Math.max(least, (metres || (size === 2 ? 20 : 10)) * metre);
+        ctx.fillRect(x - side / 2, y - side / 2, side, side);
+      }
+    }
+  }
+
   function drawRoads(ctx, roads, rails, zoom, unit) {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -1590,7 +1639,7 @@
     // and fairway lines (which differ from tile to tile): both tiles then keep (or both
     // leave out) each one, and none is drawn cut in half.
     const edgeSoundings = [], soundings = [];
-    if (zoom >= 12) {
+    if (zoom >= 11) {
       const sorted = (data.sounding || []).slice().sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
       for (const row of sorted) {
         const b = soundingBox(row[0], row[1], row[2], s);
@@ -1616,11 +1665,8 @@
       ctx.fillStyle = C.land;
       ctx.fill(); // nonzero: the pieces of neighbouring blocks overlap a little
     }
-    // Built-up areas, under the water so the shore stays crisp; industry greyer, public
-    // buildings and churches a shade darker.
-    for (const [kind, ...rings] of data.buildarea || []) {
-      if (rings.length && Array.isArray(rings[0])) fillRings(ctx, rings, BUILD_AREA[kind] || C.buildArea);
-    }
+    // Ground metres in a tile unit, for buildings at their true size.
+    const metre = 1 / tileUnitMetres(coords, e);
 
     // Lakes, height contours, roads and railways, buildings: all under the water, so
     // none of it shows over the depth areas.
@@ -1641,16 +1687,10 @@
         }) || null;
         if (gap) heightsLabelled.add(metres);
       }
-      strokeLine(ctx, line, C.height, (major ? 0.9 : 0.6) * unit, null, gap);
+      strokeLine(ctx, line, major ? C.heightMajor : C.height, (major ? 0.8 : 0.5) * unit, null, gap);
     }
     if (data.road || data.rail) drawRoads(ctx, data.road || [], data.rail || [], zoom, unit);
-    if (data.building?.length) {
-      ctx.fillStyle = C.black;
-      for (const [x, y, size] of data.building) {
-        const side = (size === 2 ? 9 : 6.5) * s; // 1 small, 2 large
-        ctx.fillRect(x - side / 2, y - side / 2, side, side);
-      }
-    }
+    drawBuildings(ctx, data, zoom, unit, metre);
 
 
     // 2. Water on its own canvas, then a crisp coastline: the water grown by a pixel,
@@ -2039,7 +2079,7 @@
     }
 
     // 16. Soundings where no label or symbol is; then the labels along lines.
-    if (zoom >= 12) {
+    if (zoom >= 11) {
       // The overlay puts a label in its first spot clear of symbols with the least clutter
       // round it: keep soundings off that spot too, as far as the tile can tell.
       cands.forEach((cand, i) => {

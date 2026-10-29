@@ -446,7 +446,7 @@ def test_block_file_levels_round_trip(tmp_path):
         sizes.append(len(got["depth"].co))
     # Zoomed-out levels are simplified copies: fewer vertices, never more.
     assert sizes[0] < sizes[1] <= sizes[2] == len(full["depth"].co)
-    assert "sounding" not in levels[0] and "sounding" in levels[1]
+    assert "sounding" in levels[0] and "sounding" in levels[1]  # soundings from zoom 11
     # About 8 bytes a vertex in memory.
     vertices = len(full["depth"].co) // 2 + len(full["contour"].co) // 2
     assert full["depth"].nbytes() + full["contour"].nbytes() < 12 * vertices
@@ -894,11 +894,15 @@ def test_dense_land_block_stays_small(tmp_path):
     levels = vchart.make_levels(built)
     path = tmp_path / f"{bx}_{by}.land.fwc"
     vchart.write_block(path, {"v": 2, "missing": []}, levels, vchart.make_overview(built))
-    assert path.stat().st_size < 8 * (kept + 6000)  # compressed: under the arrays' 8 bytes a vertex
+    outline = len(built["buildarea"].co) // 2  # every building's corners, for zoom 14 and closer
+    assert built["buildarea"].n > 5900 and outline <= 5 * built["buildarea"].n
+    assert path.stat().st_size < 8 * (kept + 6000 + outline)  # compressed: under the arrays' 8 bytes a vertex
     assert levels[0] == {}  # nothing of it zoomed out (zoom 11 and below)
+    # Zoom 13 keeps only the biggest outlines; the rest are squares there.
+    assert 0 < levels[1]["buildarea"].n < built["buildarea"].n / 4
     assert all(vchart._multiple(p[0], 10) for p in levels[1]["height"].props)
     assert len(levels[1]["height"].co) < len(built["height"].co)
-    assert sum(L.nbytes() for L in built.values()) < 10 * (kept + 6000) + 50_000
+    assert sum(L.nbytes() for L in built.values()) < 10 * (kept + 6000) + 14 * outline + 50_000
     assert vchart.read_overview(path) == {}
 
 
@@ -1312,3 +1316,37 @@ def test_tinted_lanes_are_cut_at_their_block_edge():
     # Outlined areas keep their margin (drawing a line twice doesn't darken it).
     tile = vchart.make_tile(10, 0, 0, {(0, 0): block(30000, u + m, "prec"), (1, 0): block(-m, 30000, "prec")})
     assert max(max(r[2][::2]) for r in tile["tss"] if min(r[2][::2]) < 200) > 256
+
+
+def test_land_heights_in_millimetres():
+    # The Land Survey's contour heights are millimetres; metres stay as they are.
+    assert vchart._height_m(5000) == 5 and vchart._height_m(2500) == 2.5 and vchart._height_m(20) == 20
+    tile = {}
+    vchart._format(tile, {"height": [[(20000,), [0, 0, 5, 5]], [(2500,), [0, 0, 5, 5]]]}, 15, {})
+    assert [m for m, _ in tile["height"]] == [20, 2.5]
+
+
+def test_buildings_true_size():
+    _, bx, by = tile_at(60.1, 24.4, 11)
+    x0, y0, x1, y1 = block_bounds(bx, by)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    house = {"geometry": {"type": "Polygon", "coordinates": [[[cx, cy], [cx + 24, cy], [cx + 24, cy + 20],
+                                                              [cx, cy + 20], [cx, cy]]]},
+             "properties": {"kohdeluokka": 42211}}
+    shed = {"geometry": {"type": "Polygon", "coordinates": [[[cx + 50, cy], [cx + 56, cy], [cx + 56, cy + 6],
+                                                             [cx + 50, cy + 6], [cx + 50, cy]]]},
+            "properties": {"kohdeluokka": 42211}}
+    points, outlines = vchart.LayerBuilder("point"), vchart.LayerBuilder("area")
+    vchart.build_into(points, bx, by, "building", [house, shed], extra=outlines)
+    # About 12 x 10 m on the ground at 60°N: a 11 m square's area, and its outline; the shed has no outline.
+    assert [p[2] for p in points.layer.props] == [11, 3] and outlines.layer.n == 1
+    rows = {"building": [[10, 10, points.layer.props[0]], [30, 10, points.layer.props[1]]]}
+    z14, z13 = {}, {}
+    vchart._format(z14, rows, 14, {})
+    vchart._format(z13, rows, 13, {})
+    assert z14["building"] == [[30, 10, 1, 3]]  # the house by its outline
+    assert z13["building"] == [[10, 10, 1, 11], [30, 10, 1, 3]]
+    # Files from before 0.24 have no side: drawn by size class.
+    old = {}
+    vchart._format(old, {"building": [[1, 2, (42211, 1)]]}, 14, {})
+    assert old["building"] == [[1, 2, 1, None]]

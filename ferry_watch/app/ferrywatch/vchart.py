@@ -109,7 +109,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 17  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 18  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -124,7 +124,7 @@ LEVELS = ((11, 24, 64), (13, 8, 16), (99, 0, 0))
 OVERVIEW_LEVEL = (9, 192, 512)
 # Land Survey data is digitised to a metre or so; simplifying the full detail by about half a
 # metre is invisible on the chart and halves the size of contours and roads.
-FULL_TOL = {"height": 6, "road": 4, "rail": 4, "lake": 4, "buildarea": 2}
+FULL_TOL = {"height": 6, "road": 4, "rail": 4, "lake": 4, "buildarea": 3}
 
 # What to fetch: layer key -> (service, type names, kind, properties to keep). A layer drawn
 # from several types (the parts of a traffic separation scheme, kinds of landmark) maps a
@@ -189,8 +189,9 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
     "height": (MML_API, "korkeuskayra", "line", ("korkeusarvo",)),
     "road": (MML_API, "tieviiva", "line", ("kohdeluokka",)),
     "rail": (MML_API, "rautatie", "line", ("kohdeluokka",)),
-    # Buildings as points with a size (see build_into); big ones also as areas, in "buildarea".
-    "building": (MML_API, "rakennus", "point", ("kohdeluokka", "_size")),
+    # Buildings as points with a size class and side (see build_into); their outlines also
+    # as areas, in "buildarea".
+    "building": (MML_API, "rakennus", "point", ("kohdeluokka", "_size", "_side")),
     "buildarea": (MML_API, {}, "area", ("kohdeluokka",)),
     "landmark": (MML_API, {
         "mast": ("masto",), "chimney": ("savupiippu",), "wind": ("tuulivoimala",),
@@ -226,8 +227,8 @@ PARTS: dict[str, tuple[str, ...]] = {
 FOREIGN_PART = "fx"
 # A part's file is fetched again when its revision here is newer than the one it was written
 # with (tss 1: dredged areas' least depth, and dredged and unsurveyed areas in the overview;
-# fx 1: smoothed, nested depths).
-PART_REV = {"tss": 1, "fx": 1}
+# fx 1: smoothed, nested depths; mark 1: every building's outline and true size).
+PART_REV = {"tss": 1, "fx": 1, "mark": 1}
 
 MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
 # Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
@@ -276,7 +277,16 @@ ROAD_CLASSES = {12111: 1, 12112: 1, 12121: 1, 12122: 1, 12131: 2, 12132: 2, 1214
 BUILDING_KINDS = {4221: "home", 4222: "public", 4223: "home", 4224: "industry", 4225: "public", 4226: "other"}
 CHURCH = 42270
 SMALL_BUILDING = 300  # m² of footprint: smaller is size 1, bigger size 2...
-BUILDING_AREA = 3000  # ...and this big is drawn by its outline (size 3, in "buildarea")
+BUILDING_AREA = 3000  # ...and this big is drawn by its outline from zoom 13 (size 3)
+OUTLINE_MIN = 40  # m²: from zoom 14 every building this big is drawn by its outline, the rest as squares
+# The Land Survey gives contour heights in millimetres (5000 is 5 m); no contour in Finland
+# is this many metres high, so a bigger value is millimetres.
+HEIGHT_MM_FROM = 2000
+# Land contours shown at each zoom, every so many metres (all of them from zoom 15).
+HEIGHT_STEP = {12: 20, 13: 10, 14: 5}
+# Block units² of a building's bounding box (about BUILDING_AREA m² on the Finnish coast):
+# smaller ones are left out of the zoom-13 level, where they're squares.
+BIG_BUILDING_BOX = 133_000
 HEIGHT_REACH = UNITS // 64  # block units (about 150 m): a height label further than this from a mast isn't its own
 # Water traffic signs (vlmlajityyppi). Only 11 = speed limit is known for sure; the rest are
 # also told by the sign's type text and name. Types sent to the panel: speed (value km/h),
@@ -316,7 +326,7 @@ HERITAGE_REGIONS = 6  # regions kept in RAM
 # Zoom from which each layer is drawn.
 DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
-LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 12, "farea": 11, "fline": MIN_Z,
+LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 11, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
                "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
@@ -665,6 +675,14 @@ def _point_shown(key: str, props: tuple, max_z: int) -> bool:
     return True
 
 
+def _height_m(value: Any) -> float | int | None:
+    """A land contour's height in metres (see HEIGHT_MM_FROM)."""
+    v = _num(value)
+    if v is not None and abs(v) >= HEIGHT_MM_FROM:
+        v /= 1000
+    return int(v) if v is not None and v == int(v) else v
+
+
 def _multiple(value: Any, step: float) -> bool:
     v = _num(value)
     return v is not None and abs(v / step - round(v / step)) < 1e-6
@@ -676,7 +694,7 @@ def _shown(key: str, props: tuple, max_z: int, classes: dict[int, int]) -> bool:
         d = _num(props[0])
         return d in CONTOURS and not (max_z < 12 and d < 10) and not (max_z <= 9 and d not in OVERVIEW_CONTOURS)
     if key == "height":
-        return max_z > 13 or _multiple(props[0], 10)  # zoom 12 shows every 20 m, 13 every 10 m
+        return max_z > 13 or _multiple(_height_m(props[0]), 10)  # zoom 12 shows every 20 m, 13 every 10 m
     if max_z <= OVERVIEW_LEVEL[0]:
         if key == "tss":
             return props[0] in OVERVIEW_TSS or props[0] in WATER_TSS
@@ -703,6 +721,8 @@ def _reduce(key: str, layer: Layer, max_z: int, tol: float, smallest: int,
         if x1 - x0 < smallest and y1 - y0 < smallest:
             continue
         if not _shown(key, props, max_z, classes):
+            continue
+        if key == "buildarea" and max_z < 14 and (x1 - x0) * (y1 - y0) < BIG_BUILDING_BOX:
             continue
         if key == "fline" and max_z <= OVERVIEW_LEVEL[0]:
             # Overviews have no routes to look the fairway class up in: it goes with the line.
@@ -1104,7 +1124,8 @@ def build_into(b: LayerBuilder, bx: int, by: int, key: str, features: Iterable[d
                 pts = [((x0 + x1) / 2, (y0 + y1) / 2)]
                 m2 = _ring_area(outer) * unit_m * unit_m
                 raw["_size"] = 3 if m2 >= BUILDING_AREA else 2 if m2 >= SMALL_BUILDING else 1
-                if extra is not None and raw["_size"] == 3:
+                raw["_side"] = max(1, round(math.sqrt(m2)))  # metres, for its square when zoomed out
+                if extra is not None and m2 >= OUTLINE_MIN:
                     clipped = clip_ring(simplify(outer, FULL_TOL.get("buildarea", 0)), lo, lo, hi, hi)
                     if len(clipped) >= 3:
                         extra.area([_scalar(raw.get(p)) for p in SOURCES[DERIVED_BY[key]][3]], [clipped])
@@ -1601,6 +1622,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 if (fx1 - fx0) * k < 0.6 and (fy1 - fy0) * k < 0.6:
                     continue  # too small to see at this zoom
                 p = props[pi[i]]
+                if key == "buildarea" and z < 14 and (fx1 - fx0) * (fy1 - fy0) < BIG_BUILDING_BOX:
+                    continue  # small buildings are squares up to zoom 13
                 if layer.kind == "area":
                     rings = []
                     cut = own if key == "tss" and p[0] in TINTED_TSS else (lo, lo, hi, hi)
@@ -1637,8 +1660,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                         continue
                 if key == "fline" and z < 11 and p[0] is None:
                     continue  # boat routes only once zoomed in
-                if key == "height" and z < 14 and not _multiple(p[0], 20 if z < 13 else 10):
-                    continue
+                if key == "height" and z < 15 and not _multiple(_height_m(p[0]), HEIGHT_STEP.get(z, 20)):
+                    continue  # fewer land contours zoomed out, so the land stays light
                 if key == "road" and (ROAD_CLASSES.get(_int(p[0]), 2) == 0
                                       or (z < 13 and ROAD_CLASSES.get(_int(p[0]), 2) > 2)):
                     continue  # paths only from zoom 13; no ferry lines or ice roads
@@ -1738,11 +1761,13 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     - pilot: [x, y] pilot boarding place; call: [x, y, name, channel, orient] calling-in point
     - sign: [x, y, type, value, name] water traffic sign, type speed (value km/h), nowake,
       noanchor, nomoor, nopass, height (value m) or other
-    - height: [metres, line] land contours: every 20 m at zoom 12, 10 m at 13, all from 14
+    - height: [metres, line] land contours: every 20 m at zoom 12, 10 m at 13, 5 m at 14, all from 15
     - lake: [...rings] lakes and rivers (drawn on land, under the depth areas)
     - road: [class, line] 1 major, 2 minor, 3 track or path (from zoom 13); rail: [line]
-    - building: [x, y, size] size 1 small, 2 large; buildings big enough to draw their
-      outline are in buildarea: [kind, ...rings] kind home, public, industry, church or other
+    - building: [x, y, size, side] size 1 small, 2 large, side the square metres' side in
+      metres (null in files from before 0.24); buildings drawn by their outline (from zoom 14
+      all but the smallest, at 13 the biggest) are in buildarea: [kind, ...rings] kind home,
+      public, industry, church or other
     - landmark: [x, y, kind, height, name] kind mast, chimney, wind, tower or church;
       height in metres or null
     - cover (overview tiles, zooms 8-9): the share of the tile's blocks the overview has, 0..1;
@@ -1797,7 +1822,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     if "sign" in rows:
         tile["sign"] = [[px, py, *_sign(p), _pad(p, 4)[3]] for px, py, p in rows["sign"]]
     if "height" in rows:
-        tile["height"] = [[_metres(p[0]), line] for p, line in rows["height"]]
+        tile["height"] = [[_height_m(p[0]), line] for p, line in rows["height"]]
     if "lake" in rows:
         tile["lake"] = [rings for _, *rings in rows["lake"]]
     if "road" in rows:
@@ -1810,11 +1835,13 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     if "building" in rows:
         buildings = []
         for px, py, p in rows["building"]:
-            code, size = _pad(p, 2)[:2]
+            code, size, side = _pad(p, 3)[:3]
             if _int(code) == CHURCH:
                 landmarks.append([px, py, "church", None, None])  # a church symbol, not a square
-            elif size != 3:  # big ones are drawn by their outline
-                buildings.append([px, py, 2 if size == 2 else 1])
+            elif size == 3 or (z >= 14 and side is not None and side * side >= OUTLINE_MIN):
+                continue  # drawn by its outline
+            else:
+                buildings.append([px, py, 2 if size == 2 else 1, side])
         tile["building"] = buildings
     if landmarks:
         tile["landmark"] = landmarks
@@ -1864,7 +1891,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                          and (major is None or (round(px) >> 2, round(py) >> 2) in major)]
     if "sounding" in rows:
         tile["sounding"] = _thin_soundings([[px, py, p[0]] for px, py, p in rows["sounding"]],
-                                           64 if z == 13 else 128)  # sparse at zoom 12, as on charts
+                                           64 if z == 13 else 128)  # sparse at zooms 11 and 12, as on charts
     if "rock" in rows:
         tile["rock"] = [[px, py, ROCK_TYPES.get(_int(p[0]), 1)] for px, py, p in rows["rock"]]
     if "wreck" in rows:

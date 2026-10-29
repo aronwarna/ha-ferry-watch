@@ -209,7 +209,7 @@ chart. Tap one to see what it is.
 
 ## Measure and plan a route
 
-The ruler button (top, next to the areas button) turns on route mode. Tap the
+The ruler button (top, next to the menu button) turns on route mode. Tap the
 map to add points; each leg shows its distance in nautical miles and its true
 bearing, and the panel shows the total and the time and ETA at the speed you
 enter (25 kn to start with). Drag a point to move it, tap it to remove it;
@@ -336,7 +336,7 @@ Switching a fleet off stops following it entirely.
 
 ## Areas
 
-Open the area editor with the shape button at the top right. The first start
+Open the area editor from Menu › Settings › Alerts › Edit alert areas (while you edit, a button at the top right finishes too). The first start
 copies two shapes from the old YAML setup: the inner-route box and your
 coastal area. You can keep, change or delete them.
 

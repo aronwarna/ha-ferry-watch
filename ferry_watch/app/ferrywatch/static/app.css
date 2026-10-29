@@ -216,7 +216,7 @@ button { font: inherit; color: inherit; }
 .swatch { width: 14px; height: 4px; border-radius: 2px; flex: 0 0 auto; }
 .swatch.polygon { height: 12px; opacity: 0.8; }
 .add-zone { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
-button.primary, .add-zone button, .drawing button, #notify-test, .zone-actions button {
+button.primary, .add-zone button, .drawing button, #notify-test, #areas-open, .zone-actions button {
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: 8px;
@@ -591,7 +591,7 @@ body.attribution-open .strip { visibility: hidden; }
   .icon-button.plain { width: 36px; height: 36px; }
   .card-actions { flex-wrap: wrap; row-gap: 0; }
   .card-actions button, .card-actions .link-button { min-height: 36px; display: inline-flex; align-items: center; }
-  .ships-list button, .zone-actions button, button.primary, .add-zone button, .drawing button, #notify-test,
+  .ships-list button, .zone-actions button, button.primary, .add-zone button, .drawing button, #notify-test, #areas-open,
   .key-form button, .key-form input, #ship-search, .popup-action { min-height: 36px; }
   .fleet-head { min-height: 36px; }
   .air-badge, .conditions { min-height: 36px; }

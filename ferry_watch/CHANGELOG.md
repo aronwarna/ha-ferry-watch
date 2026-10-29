@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.24.0
+
+The drawn chart's land, the green boat route and a tidier menu, from your phone screenshots.
+
+- Buildings are drawn at their true size and shape: from zoom 14 by their outline (houses
+  dark like the paper chart's, big buildings lighter with a dark edge), at zoom 13 as small
+  squares of the same area. Before, every house was a black square of the same few pixels
+  at every zoom, which turned towns black. The Land Survey part with the buildings is
+  downloaded again once after the update; until it arrives the old squares are drawn to
+  scale.
+- Land contours: the Land Survey gives their heights in millimetres, so the chart never
+  noticed that 5000 was 5 m and drew every contour at every zoom, labelled "5000". Now
+  zoom 12 shows every 20 m, 13 every 10 m, 14 every 5 m and closer in all of them, in a
+  fainter brown, with labels in metres. The land is light again.
+- The small-craft trunk route's green band is Sailmate's softer green instead of the
+  bright one.
+- Soundings from zoom 11, one every 60 pixels or so, like Sailmate (card T8).
+- Menu › On the map is grouped into Weather, On the chart and Traffic, and each switch's
+  explanation folds to two lines (tap it to read it all). A source that can't be reached
+  still shows its whole message.
+- Settings is in four boxes: Alerts, Drawn chart, Troubleshooting and About. A saved Land
+  Survey key folds away behind "Change", and the data sources fold under About.
+- Alert areas are edited from Settings › Alerts › Edit alert areas; the button for them
+  left the top bar (it shows there only while you edit, to finish).
+- The menu's tabs stay at the top while you scroll it.
+- The credit line at the bottom starts with the drawn chart's own sources.
+- The chart tiles are cut again once after the update (tile version 18).
+
 ## 0.23.1
 
 Even traffic lanes when zoomed out (card T7).

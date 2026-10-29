@@ -26,7 +26,7 @@
       <button type="button" id="route-button" class="panel icon-button" aria-label="Measure and plan a route" title="Measure and plan a route" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 16.5L16.5 3.5l4 4-13 13z"/><path d="M7.5 12.5l2 2M10 10l2.5 2.5M12.5 7.5l2 2"/></svg>
       </button>
-      <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit areas" title="Edit areas">
+      <button type="button" id="areas-button" class="panel icon-button" aria-label="Edit alert areas" title="Edit alert areas" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l3-12 8-2 3 9-9 6z"/><circle cx="5" cy="19" r="1.6"/><circle cx="8" cy="7" r="1.6"/><circle cx="16" cy="5" r="1.6"/><circle cx="19" cy="14" r="1.6"/></svg>
       </button>
       <button type="button" id="ships-button" class="panel icon-button" aria-label="Menu: ships, map layers, stats and settings" title="Menu">
@@ -205,7 +205,7 @@
     </div>
   </section>
 
-  <dialog id="ships-dialog">
+  <dialog id="ships-dialog" tabindex="-1">
     <div class="dialog-head">
       <div class="segmented tabs" role="tablist" aria-label="Menu">
         <button type="button" role="tab" data-tab="ships">Ships</button>
@@ -235,51 +235,76 @@
       <div id="fleets-list"></div>
     </div>
     <div data-pane="settings" role="tabpanel" hidden>
-      <h3>Notifications</h3>
-      <p class="small muted" id="notify-status"></p>
-      <button type="button" id="notify-test">Send a test notification</button>
-      <p class="small" id="notify-result" role="status"></p>
-      <h3>Chart storage</h3>
-      <label class="fleet-head">
-        <span class="grow strong">Keep chart on the NAS</span>
-        <input type="checkbox" class="switch" id="chart-keep">
-      </label>
-      <p class="small muted" id="chart-keep-status"></p>
-      <label class="fleet-head">
-        <span class="grow strong">Swedish and Estonian side</span>
-        <input type="checkbox" class="switch" id="chart-foreign">
-      </label>
-      <p class="small muted">Draws the drawn chart outside Finnish waters too, from EMODnet depths and OpenStreetMap sea marks (less detail than the Finnish side). Turn it off to save about 5 to 10 MB of memory.</p>
-      <label class="small strong" for="mml-key">Land Survey API key</label>
-      <p class="small muted" id="mml-status">Adds rocks, wrecks and place names to the drawn chart. Get a free key from <a href="https://omatili.maanmittauslaitos.fi/user/new/avoimet-rajapintapalvelut" target="_blank" rel="noopener">Maanmittauslaitos</a>.</p>
-      <form id="mml-form" class="key-form">
-        <input id="mml-key" type="password" autocomplete="off" placeholder="Paste your API key" spellcheck="false">
-        <button type="submit">Save</button>
-      </form>
-      <p class="small" id="mml-result" role="status"></p>
-      <h3>Troubleshooting</h3>
-      <p class="small" id="overlay-status" role="status" hidden></p>
-      <p class="small muted" id="overlay-checks" hidden></p>
-      <label class="fleet-head">
-        <span class="grow strong">Save chart tile on long press</span>
-        <input type="checkbox" class="switch" id="chart-sample">
-      </label>
-      <p class="small muted">Long press the drawn chart where it looks wrong: what the chart has there (tiles at zoom 8 to 12 and the depth areas) is saved to Home Assistant's Media folder, under ferry_watch › chart-samples, with a download link. Send the file in so it can be fixed.</p>
-      <h3>Data sources</h3>
-      <ul class="credits small muted">
-        <li>Ship positions: <a href="https://www.digitraffic.fi/en/marine-traffic/" target="_blank" rel="noopener">Digitraffic</a> (Fintraffic, CC BY 4.0)</li>
-        <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
-        <li>Sea conditions and sea ice observations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
-        <li>Ice chart: <a href="https://marine.copernicus.eu" target="_blank" rel="noopener">E.U. Copernicus Marine Service Information</a> (Baltic sea ice concentration)</li>
-        <li>Charts: Traficom, Väylävirasto, Maanmittauslaitos; wrecks and coastal heritage: Museovirasto</li>
-        <li>Weather stations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
-        <li>Harbours: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL), via the Overpass API</li>
-        <li>Maps: Esri, OpenSeaMap; rescue aircraft: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a></li>
-        <li>Sunrise and sunset are worked out on the NAS. Not for navigation.</li>
-      </ul>
-      <h3>About</h3>
-      <p class="small" id="memory"></p>
-      <p class="muted small" id="version"></p>
+      <section class="group">
+        <h3>Alerts</h3>
+        <p class="small muted" id="notify-status"></p>
+        <div class="row-buttons">
+          <button type="button" id="areas-open">Edit alert areas</button>
+          <button type="button" id="notify-test">Send a test notification</button>
+        </div>
+        <p class="small" id="notify-result" role="status"></p>
+      </section>
+      <section class="group">
+        <h3>Drawn chart</h3>
+        <div class="fleet">
+          <label class="fleet-head">
+            <span class="grow strong">Keep chart on the NAS</span>
+            <input type="checkbox" class="switch" id="chart-keep">
+          </label>
+          <p class="small muted note" id="chart-keep-status"></p>
+        </div>
+        <div class="fleet">
+          <label class="fleet-head">
+            <span class="grow strong">Swedish and Estonian side</span>
+            <input type="checkbox" class="switch" id="chart-foreign">
+          </label>
+          <p class="small muted note">Draws the chart outside Finnish waters too, from EMODnet depths and OpenStreetMap sea marks (less detail than the Finnish side). Off saves about 5 to 10 MB of memory.</p>
+        </div>
+        <div class="fleet">
+          <div class="fleet-head">
+            <span class="grow strong">Land Survey API key</span>
+            <span class="small muted" id="mml-saved" hidden>Saved</span>
+            <button type="button" class="link-button" id="mml-change" hidden>Change</button>
+          </div>
+          <p class="small muted note" id="mml-status">Adds rocks, wrecks, place names, heights, roads and buildings to the chart. Get a free key from <a href="https://omatili.maanmittauslaitos.fi/user/new/avoimet-rajapintapalvelut" target="_blank" rel="noopener">Maanmittauslaitos</a>.</p>
+          <form id="mml-form" class="key-form">
+            <input id="mml-key" type="password" autocomplete="off" placeholder="Paste your API key" spellcheck="false" aria-label="Land Survey API key">
+            <button type="submit">Save</button>
+          </form>
+          <p class="small" id="mml-result" role="status"></p>
+        </div>
+      </section>
+      <section class="group">
+        <h3>Troubleshooting</h3>
+        <p class="small" id="overlay-status" role="status" hidden></p>
+        <p class="small muted" id="overlay-checks" hidden></p>
+        <div class="fleet">
+          <label class="fleet-head">
+            <span class="grow strong">Save chart tile on long press</span>
+            <input type="checkbox" class="switch" id="chart-sample">
+          </label>
+          <p class="small muted note">Long press the drawn chart where it looks wrong: what the chart has there (tiles at zoom 8 to 12 and the depth areas) is saved to Home Assistant's Media folder, under ferry_watch › chart-samples, with a download link. Send the file in so it can be fixed.</p>
+        </div>
+      </section>
+      <section class="group">
+        <h3>About</h3>
+        <p class="small" id="memory"></p>
+        <p class="muted small" id="version"></p>
+        <details class="sources">
+          <summary class="small strong">Data sources</summary>
+          <ul class="credits small muted">
+            <li>Ship positions: <a href="https://www.digitraffic.fi/en/marine-traffic/" target="_blank" rel="noopener">Digitraffic</a> (Fintraffic, CC BY 4.0)</li>
+            <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
+            <li>Sea conditions and sea ice observations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+            <li>Ice chart: <a href="https://marine.copernicus.eu" target="_blank" rel="noopener">E.U. Copernicus Marine Service Information</a> (Baltic sea ice concentration)</li>
+            <li>Charts: Traficom, Väylävirasto, Maanmittauslaitos; wrecks and coastal heritage: Museovirasto</li>
+            <li>Weather stations: <a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">Finnish Meteorological Institute</a> (CC BY 4.0)</li>
+            <li>Harbours: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL), via the Overpass API</li>
+            <li>Maps: Esri, OpenSeaMap; rescue aircraft: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a></li>
+            <li>Sunrise and sunset are worked out on the NAS. Not for navigation.</li>
+          </ul>
+        </details>
+      </section>
     </div>
     <div data-pane="stats" role="tabpanel" hidden>
       <div class="stats-head">

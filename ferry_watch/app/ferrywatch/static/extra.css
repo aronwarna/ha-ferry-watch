@@ -420,3 +420,53 @@ body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
 @media (max-width: 560px) {
   .timebar { left: 8px; right: 8px; width: auto; transform: none; }
 }
+
+/* --- Menu: grouped, short lists (0.24) ------------------------------------------------- */
+.dialog-head {
+  position: sticky;
+  top: -14px;
+  z-index: 2;
+  margin: -14px -16px 0;
+  padding: 10px 16px 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+@media (max-width: 560px) {
+  .dialog-head { top: -12px; margin: -12px -12px 0; padding: 8px 12px; }
+}
+/* Explanations fold to two lines; tap to unfold. */
+p.note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  cursor: pointer;
+}
+p.note.open { display: block; -webkit-line-clamp: unset; }
+.warn-text { color: var(--warn); margin: 2px 0 0; }
+.group-head {
+  margin: 20px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.group-head:first-child { margin-top: 10px; }
+.group-head + .fleet { margin-top: 6px; }
+.group {
+  margin-top: 12px;
+  padding: 0 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.group > h3 { margin: 12px 0 4px; }
+.group .fleet { margin-top: 12px; }
+.group .key-form { margin-top: 8px; }
+details.sources summary { cursor: pointer; padding: 6px 0; }
+details.sources ul { margin-top: 4px; }
+.key-form[hidden] { display: none; }
+.row-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.icon-button[hidden] { display: none; }
+.group p:empty { margin: 0; }
+#ships-dialog:focus { outline: none; }

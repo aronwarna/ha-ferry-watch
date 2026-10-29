@@ -269,6 +269,20 @@ def _km_line(points):
     return [list(merc(*_lonlat(x, y))) for x, y in points]
 
 
+def _house(x, y, rnd) -> list[list[float]]:
+    """A building's outline round (x, y) in web-mercator metres: a turned rectangle of a
+    house's size, now and then an L-shaped or a big one, as the Land Survey has them."""
+    big = rnd.random() < 0.06
+    w, h = (rnd.uniform(40, 110), rnd.uniform(24, 60)) if big else (rnd.uniform(14, 30), rnd.uniform(12, 22))
+    if big or rnd.random() < 0.2:
+        pts = [(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, 0), (0, 0), (0, h / 2), (-w / 2, h / 2)]
+    else:
+        pts = [(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)]
+    a = rnd.uniform(0, math.pi)
+    ring = [[x + px * math.cos(a) - py * math.sin(a), y + px * math.sin(a) + py * math.cos(a)] for px, py in pts]
+    return ring + ring[:1]
+
+
 def _km_point(x, y, **props):
     return _point(*merc(*_lonlat(x, y)), **props)
 
@@ -325,11 +339,11 @@ def scene() -> dict[str, list[dict]]:
             houses.append(_km_point(kx, ky, kohdeluokka=42211))
     out["sounding"] = soundings
     out["rock"] = rocks
-    out["building"] = [_poly([[[x - 10, y - 8], [x + 10, y - 8], [x + 10, y + 8], [x - 10, y + 8], [x - 10, y - 8]]],
-                             **feat["properties"])
+    out["building"] = [_poly([_house(x, y, rnd)], **feat["properties"])
                        for feat in houses for x, y in [feat["geometry"]["coordinates"]]]
     out["rockarea"] = [_poly([_km_line([(9.3, 6.9), (9.7, 7.1), (9.8, 6.7), (9.4, 6.5), (9.3, 6.9)])], kohdeluokka=38512)]
-    out["height"] = [_line(line, korkeusarvo=lv) for lv in range(5, 75, 5) for loop in _loops(f, lv)
+    # The Land Survey gives contour heights in millimetres.
+    out["height"] = [_line(line, korkeusarvo=lv * 1000) for lv in range(5, 75, 5) for loop in _loops(f, lv)
                      for line in _open_lines([_to_merc(p) for p in loop])]
     out["road"] = [
         _line(_km_line([(0.0, 14.2), (3.0, 14.0), (5.5, 13.6), (6.6, 13.2), (9.5, 13.7), (13.4, 14.1)]), kohdeluokka=12121),
