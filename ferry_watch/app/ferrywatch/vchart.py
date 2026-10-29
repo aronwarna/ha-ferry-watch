@@ -109,7 +109,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 16  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 17  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -261,6 +261,10 @@ OVERVIEW_TSS = ("lane", "zone", "prec", "deep", "twoway")  # routeing drawn on o
 # there. They are painted as water (see _format), from the overview zooms on.
 WATER_TSS = ("dredged", "unsurveyed")
 WATER_TSS_LIMITS_Z = 10  # their limits (dashed outline, hatching) only from this zoom
+# Routeing areas filled with a see-through tint. Each block keeps its areas a margin past its
+# edges, so where a tile is cut from several blocks (zooms 8-10) these are cut at their own
+# block's edge: two copies overlapping in the margin would show as a darker strip.
+TINTED_TSS = ("lane", "zone")
 OVERVIEW_TSSLINE = ("sep", "bnd")
 OVERVIEW_FAIRWAYS = (1, 2)  # merchant fairways (VL1-VL2)
 
@@ -1531,6 +1535,14 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         def conv(pts):
             return [((px - ox) * k, (py - oy) * k) for px, py in pts]
 
+        # The block's own part of the tile (with the buffer where its edge is the tile's).
+        if z < BLOCK_Z:
+            ex0, ey0, ex1, ey1 = -ox * k, -oy * k, (UNITS - ox) * k, (UNITS - oy) * k
+            own = (lo if ex0 <= 0 else ex0, lo if ey0 <= 0 else ey0,
+                   hi if ex1 >= EXTENT else ex1, hi if ey1 >= EXTENT else ey1)
+        else:
+            own = (lo, lo, hi, hi)
+
         depth = data.get("depth")
         islands = None
         if depth is not None and depth.n:
@@ -1591,9 +1603,10 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 p = props[pi[i]]
                 if layer.kind == "area":
                     rings = []
+                    cut = own if key == "tss" and p[0] in TINTED_TSS else (lo, lo, hi, hi)
                     for j, r in enumerate(layer.rings(i)):
                         pts = _run_pts(layer, layer.vo[r], layer.vo[r + 1], bx0, by0, bx1, by1)
-                        part = simplify(clip_ring(conv(pts), lo, lo, hi, hi), tol)
+                        part = simplify(clip_ring(conv(pts), *cut), tol)
                         if key == "xdepth" and len(part) >= 3:
                             rx0, ry0, rx1, ry1 = _bbox(part)
                             if rx1 - rx0 < XDEPTH_MIN_RING and ry1 - ry0 < XDEPTH_MIN_RING:

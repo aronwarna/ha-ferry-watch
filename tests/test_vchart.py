@@ -1285,3 +1285,30 @@ def test_busy_answer_is_asked_again(tmp_path, monkeypatch):
     chart = VectorChart(tmp_path, None)
     assert asyncio.run(chart._get_bytes("https://example.org", None, "sign")) == bytearray(b"{}")
     assert len(calls) == 2
+
+
+def test_tinted_lanes_are_cut_at_their_block_edge():
+    # A lane over two blocks: each block keeps it a margin past its edge. Zoomed out, where
+    # one tile holds both blocks, the two copies must meet at the edge and not overlap.
+    m = vchart.UNITS * vchart.TILE_BUFFER // vchart.EXTENT
+    u = vchart.UNITS
+
+    def block(x0, x1, kind):
+        ring = [[x0, 20000], [x1, 20000], [x1, 40000], [x0, 40000]]
+        return vchart.layers_from_rows({"tss": [[[kind, 90], [x0, 20000, x1, 40000], [ring]]]})
+
+    def area(flat):
+        pts = list(zip(flat[::2], flat[1::2]))
+        return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))) / 2
+
+    for kind in ("lane", "zone"):
+        tile = vchart.make_tile(10, 0, 0, {(0, 0): block(30000, u + m, kind), (1, 0): block(-m, 30000, kind)})
+        rows = [r for r in tile["tss"] if r[0] == kind]
+        assert len(rows) == 2
+        xs = sorted(round(min(r[2][::2]), 1) for r in rows) + sorted(round(max(r[2][::2]), 1) for r in rows)
+        assert 256.0 in xs[:2] and 256.0 in xs[2:]  # one piece ends, the other starts, at the edge
+        k = vchart.EXTENT / (2 * u)
+        assert abs(sum(area(r[2]) for r in rows) - u * k * 20000 * k) < 50  # an overlap would add ~1900
+    # Outlined areas keep their margin (drawing a line twice doesn't darken it).
+    tile = vchart.make_tile(10, 0, 0, {(0, 0): block(30000, u + m, "prec"), (1, 0): block(-m, 30000, "prec")})
+    assert max(max(r[2][::2]) for r in tile["tss"] if min(r[2][::2]) < 200) > 256

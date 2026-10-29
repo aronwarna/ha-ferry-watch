@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.1
+
+Even traffic lanes when zoomed out (card T7).
+
+- At zooms 8 to 10 the traffic separation lanes and zones had darker vertical and
+  horizontal strips where two chart blocks meet: each block keeps a
+  lane a little past its own edge, and both copies were tinted on top of each other. Each
+  block's copy is now cut at the block's edge, so the tint is even all along the lane.
+- The lane arrows are placed over the whole lane, not once per block, so one can sit
+  across a block edge and none is drawn twice.
+- The chart tiles are cut again once after the update (tile version 17).
+
 ## 0.23.0
 
 The wind forecast over the map (card T5).

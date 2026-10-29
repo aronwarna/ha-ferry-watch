@@ -1020,11 +1020,18 @@
 
   // Routeing measures: [kind, orient, ...rings]. The arrows' boxes go into `boxes`.
   function drawTss(ctx, rows, e, s, unit, boxes) {
+    // Zoomed out, a lane reaching over several chart blocks comes in one piece per block,
+    // cut at the block edges: its arrows are placed over all the pieces together, so an
+    // arrow can sit across an edge and isn't drawn once per piece.
+    const lanes = new Map();
     for (const [kind, orient, ...rings] of rows) {
       if (!rings.length) continue;
       if (kind === "lane") {
         fillRings(ctx, rings, C.tssLane);
-        if (orient != null) areaArrows(ctx, rings, orient, e, s, unit, false, boxes);
+        if (orient != null) {
+          if (!lanes.has(orient)) lanes.set(orient, []);
+          lanes.get(orient).push(...rings);
+        }
       } else if (kind === "zone") {
         fillRings(ctx, rings, C.tssZone);
       } else if (kind === "prec" || kind === "deep" || kind === "twoway") {
@@ -1041,6 +1048,7 @@
         strokeRings(ctx, rings, C.magenta, unit);
       }
     }
+    for (const [orient, rings] of lanes) areaArrows(ctx, rings, orient, e, s, unit, false, boxes);
   }
 
   function drawTssLines(ctx, rows, unit) {
