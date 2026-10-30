@@ -73,7 +73,20 @@ ATTRIBUTION = ("Chart data: Traficom (depths, routeing, harbour structures), Vä
                "CC BY 4.0). Outside Finland: depths EMODnet Bathymetry (CC BY 4.0); coast, sea marks, routeing "
                "and names © OpenStreetMap contributors (ODbL), OpenSeaMap. Not for navigation.")
 # Type names by prefix: anything without one is a Land Survey collection.
-SERVICES = {"rajoitettu": TRAFICOM_WFS, "avoin": TRAFICOM_OPEN_WFS, "vesivaylatiedot": VAYLA_WFS}
+OSM_OVERPASS = "https://overpass-api.de/api/interpreter"  # foreign.OVERPASS
+SERVICES = {"rajoitettu": TRAFICOM_WFS, "avoin": TRAFICOM_OPEN_WFS, "vesivaylatiedot": VAYLA_WFS, "osm": OSM_OVERPASS}
+# OpenStreetMap stand-ins ("osm:" names, through Overpass), used only for a kind of feature
+# none of the official services has (see _fetch_into).
+OSM_QUERIES = {
+    "osm:cable": ('way["seamark:type"="cable_submarine"]{b};'
+                  'way["power"="cable"]["location"~"^(underwater|submarine)$"]{b};'
+                  'way["communication"="line"]["location"~"^(underwater|submarine)$"]{b};'
+                  'way["telecom"="line"]["location"~"^(underwater|submarine)$"]{b};'),
+    "osm:pipe": ('way["seamark:type"="pipeline_submarine"]{b};'
+                 'way["man_made"="pipeline"]["location"~"^(underwater|submarine)$"]{b};'),
+    "osm:reserve": ('nwr["leisure"="nature_reserve"]{b};'
+                    'nwr["boundary"="protected_area"]["protect_class"~"^[1-5]$"]{b};'),
+}
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
 BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks' levels, below it from their overview levels
@@ -113,7 +126,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 25  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 27  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -143,7 +156,9 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
     "farea": (VAYLA_WFS, "vesivaylatiedot:vaylaalueet_uusi", "area", ("tyyppikoodi", "mitoitussyvays", "jnro")),
     "fline": (VAYLA_WFS, "vesivaylatiedot:navigointilinjat_uusi", "line", ("mitoitussyvays", "jnro")),
     "lead": (VAYLA_WFS, "vesivaylatiedot:taululinjat_uusi", "line", ("suunta",)),
-    "route": (VAYLA_WFS, "vesivaylatiedot:vaylat_uusi", "line", ("vaylaluokkakoodi", "jnro")),
+    # kulkusyvyys1: the fairway's navigable depth, the number the paper chart prints along it
+    # ("(1,8)"); fairway lines carry the design draught (mitoitussyvays), which can be more.
+    "route": (VAYLA_WFS, "vesivaylatiedot:vaylat_uusi", "line", ("vaylaluokkakoodi", "jnro", "kulkusyvyys1")),
     "restrict": (VAYLA_WFS, "vesivaylatiedot:rajoitusalue_a_uusi", "area", ("rajoitustyypit", "suuruus")),
     "aid": (VAYLA_WFS, "vesivaylatiedot:turvalaitteet_uusi", "point",
             ("turvalaitetyyppifi", "navigointilajikoodi", "valaistu", "nimifi")),
@@ -175,10 +190,11 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
     # Submarine cables and pipelines (the paper chart's magenta wavy and dashed lines). On the
     # NAS (Oct 2026) neither service lists these: Traficom's open data entry for them
     # ("Merikartan johtotiedot", avoin WFS) says "not available for now". The names stay, so
-    # they're picked up from the daily capabilities read once Traficom publishes them.
+    # they're picked up from the daily capabilities read once Traficom publishes them; until
+    # then OpenStreetMap's underwater cables and pipelines stand in.
     "cable": (TRAFICOM_WFS, {
-        "cable": ("rajoitettu:CableSubmarine_L", "avoin:CableSubmarine_L"),
-        "pipe": ("rajoitettu:PipelineSubmarineOnBelow_L", "avoin:PipelineSubmarineOnBelow_L"),
+        "cable": ("rajoitettu:CableSubmarine_L", "avoin:CableSubmarine_L", "osm:cable"),
+        "pipe": ("rajoitettu:PipelineSubmarineOnBelow_L", "avoin:PipelineSubmarineOnBelow_L", "osm:pipe"),
     }, "line", ("_src",)),
     # The chart's own rocks (S-57 UWTROC; WATLEV 2 always dry, 3 always under water, 4 and 5
     # awash). The Land Survey's rocks ("rock") miss some that the paper chart has, mostly
@@ -186,6 +202,9 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
     # a guess in Traficom's pattern, used only if the service lists it.
     "trock": (TRAFICOM_WFS, {"rock": ("rajoitettu:UnderwaterAwashRock_P", "rajoitettu:UnderwaterRock_P")},
               "point", ("_src", "watlev", "valsou")),
+    # Nature reserves' borders (the paper chart's green dashed line), from OpenStreetMap: the
+    # official list (SYKE's) isn't among the services this reads.
+    "reserve": (OSM_OVERPASS, "osm:reserve", "line", ()),
     "call": (TRAFICOM_OPEN_WFS, "avoin:Rdocal_P", "point", ("objnam", "comcha", "orient")),
     "pier": (TRAFICOM_OPEN_WFS, {
         "pontoon": ("avoin:Pontoon_L", "avoin:Pontoon_A"), "berth": ("avoin:Berths_L",),
@@ -226,6 +245,7 @@ PARTS: dict[str, tuple[str, ...]] = {
     "tss": ("tss", "tssline", "pilot", "call", "pier", "sign"),
     "cbl": ("cable",),
     "trk": ("trock",),
+    "nr": ("reserve",),
     "lake": ("lake",),
     "land": ("height", "road", "rail"),
     "mark": ("building", "buildarea", "landmark", "markh"),
@@ -238,13 +258,14 @@ PARTS: dict[str, tuple[str, ...]] = {
 FOREIGN_PART = "fx"
 # A part's file is fetched again when its revision here is newer than the one it was written
 # with (tss 1: dredged areas' least depth, and dredged and unsurveyed areas in the overview;
-# fx 1: smoothed, nested depths; mark 1: every building's outline and true size).
-PART_REV = {"tss": 1, "fx": 1, "mark": 1}
+# fx 1: smoothed, nested depths; mark 1: every building's outline and true size; fw 1: the
+# routes' navigable depth; cbl 1: OpenStreetMap's cables).
+PART_REV = {"tss": 1, "fx": 1, "mark": 1, "fw": 1, "cbl": 1}
 
 MML_PARTS = ("mml", "lake", "land", "mark")  # only with a Land Survey key
 # Parts only needed from some zoom: the dense land detail isn't downloaded for blocks only
 # ever seen zoomed out.
-PART_MIN_Z = {"land": 12, "mark": 12}
+PART_MIN_Z = {"land": 12, "mark": 12, "nr": 11}
 
 # Navigation aid types, as one letter for the panel. Traficom's key draws a beacon tower
 # (tunnusmajakka, "båk") and a radar mark (tutkamerkki) with their own symbols.
@@ -341,7 +362,7 @@ DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 11, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
-               "rock": 12, "rockarea": 12, "rockctr": 12, "trock": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
+               "rock": 12, "rockarea": 12, "rockctr": 12, "trock": 12, "reserve": 11, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
                "xland": MIN_Z, "xdepth": MIN_Z}
@@ -1766,6 +1787,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     sea_blocks: list[tuple[tuple[float, float, float, float], list]] = []
     seen_points: set = set()
     classes: dict[int, int] = {}  # fairway number -> class (1 main merchant fairway ... 6), from the routes
+    depths: dict[int, float] = {}  # fairway number -> navigable depth, from the routes
     for (bx, by), data in blocks.items() if isinstance(blocks, dict) else blocks:
         if not data:
             continue
@@ -1774,6 +1796,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             jnro, vl = _int(props[1]), _int(props[0])
             if jnro is not None and vl is not None:
                 classes[jnro] = vl
+            depth = _num(_pad(props, 3)[2])
+            if jnro is not None and depth:
+                depths[jnro] = depth
         # Block units -> tile units, and the tile (with buffer) in block units for quick skips.
         if z >= BLOCK_Z:
             n = 2 ** (z - BLOCK_Z)
@@ -1954,7 +1979,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if z <= ROCK_MERGE_MAX_Z:
         merge_rocks(rows, z, x, y)
     rows.pop("rockctr", None)
-    _format(tile, rows, z, classes)
+    _format(tile, rows, z, classes, depths)
     return {k: v for k, v in tile.items() if v != []}
 
 
@@ -2054,7 +2079,8 @@ def _sign(props: tuple) -> tuple[str, float | int | None]:
     return sign, v if v else None  # 0 is how the data says "no value"
 
 
-def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) -> None:
+def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
+            depths: dict[int, float] | None = None) -> None:
     """Turn collected rows into what the panel reads (see static/vchart.js).
 
     Tile coordinates are 0..512 (``e``) with a buffer past each edge; rings and lines are
@@ -2084,6 +2110,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
     - tssline: [kind, line] kind sep (separation line), bnd (scheme boundary), vts (VTS area
       limit) or call (radio calling-in line)
     - cable: [kind, line] kind cable (submarine cable) or pipe (submarine pipeline)
+    - reserve: [line] a nature reserve's border
     - pilot: [x, y] pilot boarding place; call: [x, y, name, channel, orient] calling-in point
     - sign: [x, y, type, value, name] water traffic sign, type speed (value km/h), nowake,
       noanchor, nomoor, nopass, height (value m) or other
@@ -2121,7 +2148,10 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                          for p, *rings in rows["farea"] for code, draught, jnro in [_pad(p, 3)[:3]]]
     if "fline" in rows:
         # Overview lines carry their class (there are no routes to look it up in).
-        tile["fline"] = [[_num(draught), vl(jnro) if vl(jnro) is not None else _int(own), line]
+        # The number along a line is the route's navigable depth where Väylä gives it, as on
+        # the paper chart; otherwise the line's design draught.
+        depths = depths or {}
+        tile["fline"] = [[depths.get(_int(jnro)) or _num(draught), vl(jnro) if vl(jnro) is not None else _int(own), line]
                          for p, line in rows["fline"] for draught, jnro, own in [_pad(p, 3)[:3]]]
     if "lead" in rows:
         # With the front mark's point and the seaward way when a mark is on the line.
@@ -2138,6 +2168,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
                        if p[0] not in WATER_TSS or z >= WATER_TSS_LIMITS_Z]
     if "tssline" in rows:
         tile["tssline"] = [[p[0], line] for p, line in rows["tssline"]]
+    if "reserve" in rows:
+        tile["reserve"] = [line for _, line in rows["reserve"]]
     if "cable" in rows:
         tile["cable"] = [[p[0] or "cable", line] for p, line in rows["cable"]]
     if "pilot" in rows:
@@ -2830,7 +2862,9 @@ class VectorChart:
                 absent.append(name)
             else:
                 targets.append((tag, name, got))
-        return targets, absent
+        # OpenStreetMap only for what no official service has.
+        official = {tag for tag, name, _ in targets if service_of(name) != OSM_OVERPASS}
+        return [t for t in targets if service_of(t[1]) != OSM_OVERPASS or t[0] not in official], absent
 
     def _caps_path(self) -> Path:
         return self.dir / "layers.json"
@@ -2880,6 +2914,8 @@ class VectorChart:
     async def _discover(self, service: str) -> None:
         """Read which layers a service has (WFS capabilities, or the Land Survey's collection
         list) once a day, kept on disk so a restart needn't ask again."""
+        if service == OSM_OVERPASS:
+            return  # no list to read: the queries are ours
         if self.fetch_layer is not None:
             catalog = getattr(self.fetch_layer, "catalog", None)
             if catalog is not None and service not in self._caps:
@@ -3390,6 +3426,8 @@ class VectorChart:
                 if self.fetch_layer is not None:
                     features = await self.fetch_layer(key if tag is None else f"{key}.{tag}", bbox)
                     await in_thread(add, features)
+                elif service_of(name) == OSM_OVERPASS:
+                    await in_thread(add, await self._fetch_osm(name, bbox, (bx, by)), tag, True)
                 elif service_of(name) == MML_API:
                     await self._fetch_mml(key, bbox, lambda feats, add=add: add(feats, lonlat=True), ask)
                 else:
@@ -3531,6 +3569,29 @@ class VectorChart:
             start += len(got)
             del got
             count = min(PAGE, count * 2)  # back up to full pages after a dense stretch
+
+    async def _fetch_osm(self, name: str, bbox: tuple[float, float, float, float],
+                         near: tuple[int, int]) -> list[dict]:
+        """OpenStreetMap ways for an "osm:" name in a bbox (EPSG:3857), as lon/lat features."""
+        (w, s), (e, n) = mercator_to_lonlat(bbox[0], bbox[1]), mercator_to_lonlat(bbox[2], bbox[3])
+        b = f"({s:.5f},{w:.5f},{n:.5f},{e:.5f})"
+        # Geometry cut to the box: a national park's outline can run on for a hundred km.
+        query = f"[out:xml][timeout:60];({OSM_QUERIES[name].format(b=b)});out geom{b} qt;"
+        feats: list[dict] = []
+
+        def line(pts: list) -> None:
+            if len(pts) >= 2:
+                feats.append({"geometry": {"type": "LineString", "coordinates": [list(p) for p in pts]},
+                              "properties": {}})
+
+        def sink(el: dict) -> None:
+            if el.get("type") == "way":
+                line(el.get("geometry") or [])
+            for m in el.get("members") or ():
+                line(m.get("geometry") or [])
+
+        await self.foreign._overpass(query, sink, name, near)
+        return feats
 
     async def _fetch_mml(self, key: str, bbox: tuple[float, float, float, float],
                          sink: Callable[[Iterable[dict]], None], name: str | None = None) -> None:

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.4
+
+- Boat routes are a thin solid line, as on the paper chart (they were dashed).
+- The number along a fairway is its navigable depth where Väylä gives one ("(1,8)" as on
+  the paper chart), otherwise the design draught as before. The fairway data is fetched
+  again once for this.
+- Submarine cables and pipelines from OpenStreetMap, while Traficom hasn't published its
+  own. When Traficom does, the app switches to theirs by itself.
+- Nature reserves' borders as a green dashed line, from OpenStreetMap.
+- Both come through the same OpenStreetMap service as the Swedish and Estonian side, a
+  request per area the first time it's looked at, kept for a month.
+
 ## 0.26.3
 
 - Masts and chimneys show their height as the paper chart does: the top above the sea.

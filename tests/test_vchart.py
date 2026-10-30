@@ -239,7 +239,12 @@ def test_keep_downloads_every_block_once(tmp_path, monkeypatch):
             {"total": 2, "done": 2, "running": False, "failed": 0}
         assert chart.keep_status["last_ok"]
         # No key: no Land Survey parts. Each source once a block; heritage sites once for the region.
-        per_block = sum(len(vchart.source_names(key)) for part in chart._parts() for key in vchart.PARTS[part])
+        # OpenStreetMap stand-ins only where no official source has that kind.
+        def asks(key):
+            names = vchart.source_names(key)
+            official = {tag for tag, name in names if not name.startswith("osm:")}
+            return sum(1 for tag, name in names if not name.startswith("osm:") or tag not in official)
+        per_block = sum(asks(key) for part in chart._parts() for key in vchart.PARTS[part])
         # A stand-in without foreign stand-ins (see foreign.py): no foreign part either.
         assert {p for p in vchart.PARTS if p not in vchart.MML_PARTS and p != vchart.FOREIGN_PART} == \
             set(chart._parts())
@@ -1470,3 +1475,25 @@ def test_landmark_top_is_its_height_over_the_ground():
     assert landmark_top({}, ("mast", 61000, None), 50, 200) == ("mast", 61, None)  # no contours: its own height
     assert landmark_top({}, ("chimney", 45, None), 0, 0) == ("chimney", 45, None)  # already metres
     assert landmark_top({}, ("church", None, None), 0, 0) == ("church", None, None)
+
+
+def test_openstreetmap_stands_in_for_cables_and_reserves(tmp_path):
+    chart = VectorChart(tmp_path, None, None)
+    queries = []
+
+    async def overpass(query, sink, what, near):
+        queries.append(query)
+        sink({"type": "way", "tags": {}, "geometry": [(24.40, 60.00), (24.45, 60.01)]})
+        sink({"type": "relation", "tags": {}, "members": [{"role": "outer", "geometry": [(24.0, 60.0), (24.1, 60.0), (24.1, 60.1)]},
+                                                          {"role": "outer", "geometry": [(24.2, 60.0)]}]})
+
+    chart.foreign._overpass = overpass
+    bbox = (*vchart.lonlat_to_mercator(24.3, 59.9), *vchart.lonlat_to_mercator(24.5, 60.1))
+    feats = asyncio.run(chart._fetch_osm("osm:reserve", bbox, (0, 0)))
+    assert [len(f["geometry"]["coordinates"]) for f in feats] == [2, 3]  # a one-point member is no line
+    assert '"leisure"="nature_reserve"' in queries[0] and "out geom(59.90000,24.30000,60.10000,24.50000)" in queries[0]
+    # Cables come from OpenStreetMap only while Traficom has none.
+    chart._caps[vchart.TRAFICOM_WFS] = {"rajoitettu:CableSubmarine_L"}
+    chart._caps[vchart.TRAFICOM_OPEN_WFS] = set()
+    targets, _ = chart._targets("cable")
+    assert [n for _, n, _ in targets] == ["rajoitettu:CableSubmarine_L", "osm:pipe"]

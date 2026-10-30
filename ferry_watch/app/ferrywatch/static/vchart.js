@@ -29,6 +29,7 @@
     magentaLight: "#c47db5",
     red: "#c63541",
     green: "#5fa86c",
+    reserve: "#4f9a5a", // nature reserve borders
     yellow: "#f2d100",
     black: "#000000",
     brown: "#bea26a",
@@ -1800,6 +1801,8 @@
 
     // 8. Restricted areas: magenta T-dashed limits.
     if (!overview) for (const [, , ...rings] of data.restrict || []) if (rings.length) restrictedLimit(ctx, rings, unit);
+    // Nature reserves' borders: a green dashed line, as on the paper chart.
+    if (!overview) for (const line of data.reserve || []) strokeLine(ctx, line, C.reserve, 1.5 * unit, [9 * unit, 5 * unit]);
     // Submarine cables and pipelines.
     if (data.cable) drawCables(ctx, data.cable, s, unit);
 
@@ -1876,7 +1879,7 @@
     for (const [line] of data.shore || []) strokeLine(ctx, line, C.black, 2 * unit);
 
     // 11. Fairway lines, with their draught "⟨9,0⟩" set into the line once per tile;
-    // boat routes dashed, their advisory draught in italics.
+    // boat routes a thinner solid line (as on the paper chart), their depth in italics.
     const draughts = new Set();
     for (const row of data.fline || []) {
       let [draught, vl, line] = row;
@@ -1892,7 +1895,7 @@
           if (gap) draughts.add(o.text);
         }
       }
-      if (boat) strokeLine(ctx, line, C.fairway, (zoom >= 12 ? 1.6 : 1.2) * unit, [14 * unit, 8 * unit], gap);
+      if (boat) strokeLine(ctx, line, C.fairway, (zoom >= 12 ? 1.4 : 1.1) * unit, null, gap);
       else strokeLine(ctx, line, C.fairway, (zoom >= 13 ? 2.2 : 1.6) * unit, null, gap);
     }
 

@@ -342,6 +342,8 @@ def scene() -> dict[str, list[dict]]:
     out["rock"] = rocks
     out["building"] = [_poly([_house(x, y, rnd)], **feat["properties"])
                        for feat in houses for x, y in [feat["geometry"]["coordinates"]]]
+    # A nature reserve's border round the islets south of Rönnbåda (OpenStreetMap's, in the app).
+    out["reserve"] = [_line(_km_line([(8.2, 1.2), (9.6, 1.0), (9.9, 2.0), (8.6, 2.3), (8.2, 1.2)]))]
     # Traficom's own rocks, out in open water where the Land Survey has none.
     out["trock.rock"] = [_km_point(10.4, 2.4, watlev=4, valsou=0.3), _km_point(8.6, 2.0, watlev=3, valsou=1.6)]
     out["rockarea"] = [_poly([_km_line([(9.3, 6.9), (9.7, 7.1), (9.8, 6.7), (9.4, 6.5), (9.3, 6.9)])], kohdeluokka=38512)]
@@ -361,7 +363,7 @@ def scene() -> dict[str, list[dict]]:
     # Rönnbåda's narrow white sector leads along the second leg, out to its turn 1.6 km off.
     out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207),
                     _line(_km_line(RONNBADA_LEG), mitoitussyvays=3.0, jnro=4208)]
-    out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207)]
+    out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207, kulkusyvyys1=2.1)]
     # The leg's fairway area, 120 m wide.
     (ax, ay), (bx, by) = RONNBADA_LEG[:2]
     norm = math.hypot(bx - ax, by - ay)
