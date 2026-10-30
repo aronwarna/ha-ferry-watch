@@ -109,7 +109,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 19  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 20  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -1383,33 +1383,35 @@ def lead_marks(data: dict) -> tuple[dict[int, list], dict[tuple[int, int], float
     return solids, bearings
 
 
-# A sector light's narrow white sector is drawn as a yellow wedge reaching as far as the
-# fairway it guides along (the panel's NARROW and lightPlan say which sectors are wedges).
+# A sector light's narrow white sector is drawn as a yellow wedge out along the fairway it
+# leads ships along, as far as it is any use: until it grows wider than the fairway's area
+# (its edges reach the buoys), or the fairway turns out of it, whichever comes first (the
+# panel's NARROW and lightPlan say which sectors are wedges).
 WEDGE_SPAN = 8  # degrees: a white sector this narrow is a wedge
 WEDGE_MIN_Z = 13  # drawn from this zoom (the panel draws sector arcs from 14)
-WEDGE_REACH = UNITS // 10  # block units (about 1 km): a wedge with no fairway running in it
-WEDGE_MIN = UNITS // 20  # (about 500 m)
-# (About 2 km.) Well within the points kept past each block's edge, so every block a wedge
+WEDGE_REACH = UNITS // 12  # block units (about 800 m): with no fairway area to go by
+WEDGE_MIN = UNITS // 25  # (about 400 m)
+# (About 1.6 km.) Well within the points kept past each block's edge, so every block a wedge
 # reaches has its light.
-WEDGE_MAX = UNITS // 5
+WEDGE_MAX = UNITS // 6
+WEDGE_STEP = 270  # block units (about 40 m) between the widths measured along a wedge
 WEDGE_SLACK = 100  # block units (about 15 m): a fairway's line this far outside still runs in it
 WEDGE_ALONG = math.cos(math.radians(20))  # a fairway's line within 20° of the wedge runs along it
 _wedge_cache: OrderedDict = OrderedDict()
 
 
 def sector_wedges(data: dict) -> dict[int, int]:
-    """How far each sector light's narrow white sector reaches: {sector row: block units}.
-    Out to the farthest point of a fairway's line running along inside it (on charts the
-    white sector covers the leg it leads ships along), else WEDGE_REACH. A light that is all
-    narrow sectors is a directional light's beam, drawn otherwise, and has none."""
-    sector, fline = data.get("sector"), data.get("fline") or data.get("route")
+    """How far each sector light's narrow white sector reaches: {sector row: block units}
+    (see WEDGE_SPAN above). A light that is all narrow sectors is a directional light's beam,
+    drawn otherwise, and has none."""
+    sector, fline, farea = data.get("sector"), data.get("fline") or data.get("route"), data.get("farea")
     if sector is None or not sector.n:
         return {}
-    key = (id(sector), id(fline))
+    key = (id(sector), id(fline), id(farea))
     hit = _wedge_cache.get(key)
-    if hit is not None and hit[0] is sector and hit[1] is fline:
+    if hit is not None and hit[0] is sector and hit[1] is fline and hit[2] is farea:
         _wedge_cache.move_to_end(key)
-        return hit[2]
+        return hit[3]
     lights: dict[tuple[int, int], list] = {}
     for i in range(sector.n):
         a, b, colour = _pad(sector.props[sector.pi[i]], 3)
@@ -1431,21 +1433,57 @@ def sector_wedges(data: dict) -> dict[int, int]:
         if sum(span for _, _, span, _ in rows) <= 30 or any(
                 abs(lx - dx) <= LEAD_REACH and abs(ly - dy) <= LEAD_REACH for dx, dy in directional):
             continue
-        near = [s for s in segs if min(s[0], s[2]) <= lx + WEDGE_MAX and max(s[0], s[2]) >= lx - WEDGE_MAX
-                and min(s[1], s[3]) <= ly + WEDGE_MAX and max(s[1], s[3]) >= ly - WEDGE_MAX]
-        for i, a, span, colour in rows:
-            if str(colour or "").lower() != "v" or span > WEDGE_SPAN:
+        if not any(str(c or "").lower() == "v" and span <= WEDGE_SPAN for _, _, span, c in rows):
+            continue
+        box = (lx - WEDGE_MAX, ly - WEDGE_MAX, lx + WEDGE_MAX, ly + WEDGE_MAX)
+        near = [s for s in segs if min(s[0], s[2]) <= box[2] and max(s[0], s[2]) >= box[0]
+                and min(s[1], s[3]) <= box[3] and max(s[1], s[3]) >= box[1]]
+        areas = []  # each fairway area round the light, as its edges
+        for j in range(farea.n if farea is not None else 0):
+            x0, y0, x1, y1 = farea.bbox(j)
+            if x1 < box[0] or x0 > box[2] or y1 < box[1] or y0 > box[3]:
                 continue
-            out[i] = _wedge_reach(lx, ly, a, span, near)
-    _wedge_cache[key] = (sector, fline, out)
+            edges = []
+            for r in farea.rings(j):
+                ring = farea.pts(farea.vo[r], farea.vo[r + 1])
+                edges.extend((*p, *q) for p, q in zip(ring, ring[1:] + ring[:1]) if p != q)
+            areas.append(edges)
+        for i, a, span, colour in rows:
+            if str(colour or "").lower() == "v" and span <= WEDGE_SPAN:
+                out[i] = _wedge_reach(lx, ly, a, span, near, areas)
+    _wedge_cache[key] = (sector, fline, farea, out)
     while len(_wedge_cache) > 32:
         _wedge_cache.popitem(last=False)
     return out
 
 
-def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list) -> int:
-    """A narrow white sector's reach (see sector_wedges). ``start`` and ``span`` are its
-    bearings towards the light, as Väylä gives them; it lies on the opposite side."""
+def _across(px: float, py: float, nx: float, ny: float, edges: list) -> tuple[float, float] | None:
+    """How far an area reaches either way from a point inside it, along (nx, ny) and back;
+    None when the point is outside."""
+    ahead, back, crossings = math.inf, math.inf, 0
+    for ax, ay, bx, by in edges:
+        ex, ey = bx - ax, by - ay
+        den = nx * ey - ny * ex
+        if den == 0:
+            continue
+        # The point + s (nx, ny) meets the edge at a + u (ex, ey).
+        wx, wy = ax - px, ay - py
+        u = (wx * ny - wy * nx) / den
+        if not 0 <= u < 1:
+            continue
+        s_ = (wx * ey - wy * ex) / den
+        if s_ > 0:
+            crossings += 1
+            ahead = min(ahead, s_)
+        else:
+            back = min(back, -s_)
+    return (ahead, back) if crossings % 2 else None
+
+
+def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list, areas: list = ()) -> int:
+    """A narrow white sector's reach (see WEDGE_SPAN above). ``start`` and ``span`` are its
+    bearings towards the light, as Väylä gives them; it lies on the opposite side. ``segs``
+    are the fairways' lines round it, ``areas`` the fairway areas' edges."""
     mid = math.radians(start + span / 2 + 180)
     ux, uy = math.sin(mid), -math.cos(mid)  # out along the wedge, y down
     tan = math.tan(math.radians(span / 2))
@@ -1476,9 +1514,27 @@ def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list) ->
         if lo <= hi:
             t = max(t0 + lo * (t1 - t0), t0 + hi * (t1 - t0))
             far = t if far is None else max(far, t)
-    if far is None:
-        return WEDGE_REACH
-    return round(min(WEDGE_MAX, max(WEDGE_MIN, far + 2 * WEDGE_SLACK)))
+    # Out to where the fairway turns out of it (or not far, with no fairway line in it)...
+    reach = WEDGE_REACH if far is None else min(WEDGE_MAX, far + 2 * WEDGE_SLACK)
+    # ...but only while it fits in the fairway's area: once it's wider, being in the white
+    # no longer keeps a ship between the marks. Without areas to go by, not far.
+    inside = False
+    d = WEDGE_STEP
+    while d < reach:
+        px, py = lx + ux * d, ly + uy * d
+        widths = [w for w in (_across(px, py, -uy, ux, edges) for edges in areas) if w]
+        if widths:
+            inside = True
+            if 2 * d * tan >= max(sum(w) for w in widths):
+                reach = d
+                break
+        elif inside:
+            reach = d  # out of the fairway's area
+            break
+        d += WEDGE_STEP
+    if not inside:
+        reach = min(reach, WEDGE_REACH)
+    return round(min(WEDGE_MAX, max(WEDGE_MIN, reach)))
 
 
 def heritage_props(feature: dict) -> tuple | None:

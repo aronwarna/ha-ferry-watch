@@ -360,6 +360,13 @@ def scene() -> dict[str, list[dict]]:
     out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207),
                     _line(_km_line(RONNBADA_LEG), mitoitussyvays=3.0, jnro=4208)]
     out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207)]
+    # The leg's fairway area, 120 m wide: Rönnbåda's white sector outgrows it about 1 km out.
+    (ax, ay), (bx, by) = RONNBADA_LEG[:2]
+    norm = math.hypot(bx - ax, by - ay)
+    nx, ny = (ay - by) / norm * 0.06, (bx - ax) / norm * 0.06
+    out["farea"] = [_poly([_km_line([(ax + nx, ay + ny), (bx + nx, by + ny), (bx - nx, by - ny),
+                                     (ax - nx, ay - ny), (ax + nx, ay + ny)])],
+                          tyyppikoodi=1, mitoitussyvays=3.0, jnro=4208)]
     out["lead"] = [_line(_km_line(LEAD), suunta=round(math.degrees(math.atan2(
         LEAD[1][0] - LEAD[2][0], LEAD[1][1] - LEAD[2][1])) % 360, 1))]
     out["cable.cable"] = [_line(_km_line(CABLE))]

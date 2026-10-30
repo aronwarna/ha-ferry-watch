@@ -1352,30 +1352,38 @@ def test_buildings_true_size():
     assert old["building"] == [[1, 2, 1, None]]
 
 
-def test_narrow_white_sector_reaches_along_its_fairway(tmp_path):
-    # The simulator's Rönnbåda has a narrow white sector over a boat route leg that turns
-    # 1.6 km out; a tile further along the leg than sectors are sent for gets the wedge alone.
+def test_narrow_white_sector_reaches_until_wider_than_its_fairway(tmp_path):
+    # The simulator's Rönnbåda has a 7° white sector over a boat route leg 1.6 km long, in a
+    # fairway area 120 m wide: the sector is that wide about 1 km out, and ends there. A tile
+    # further along than sectors are sent for gets the wedge alone.
     from ferrywatch.simscene import _lonlat
     async def run():
         chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
         near, _ = await chart.tile(*tile_at(*reversed(_lonlat(9.6, 3.9)), 15))
-        far, _ = await chart.tile(*tile_at(*reversed(_lonlat(9.85, 2.7)), 16))
+        far, _ = await chart.tile(*tile_at(*reversed(_lonlat(9.75, 3.15)), 16))
         return near, far
 
     near, far = asyncio.run(run())
     rows = [r for r in near["sector"] if r[4] == "v" and len(r) == 6]
     assert len(rows) == 1  # only the narrow white one, not the green or red
     metres_per_unit = 40075016 * math.cos(math.radians(60.0)) / 2 ** 15 / vchart.EXTENT
-    assert 1500 < rows[0][5] * metres_per_unit < 1900
+    assert 880 < rows[0][5] * metres_per_unit < 1080
     assert far.get("wedge") and far["wedge"][0][2:4] == rows[0][2:4]
     # The directional light's narrow beam isn't a wedge.
     assert not any(len(r) == 6 for r in near["sector"] if r[2] in (39, 43, 47))
 
 
-def test_wedge_reach_without_a_fairway_and_across_one():
-    from ferrywatch.vchart import WEDGE_REACH, _wedge_reach
-    # A fairway crossing the wedge 1 km out doesn't count; one along it does.
+def test_wedge_reach_by_fairway_line_and_area():
+    from ferrywatch.vchart import WEDGE_MAX, WEDGE_REACH, _wedge_reach
+    # The wedge points south (y down), 8° wide: 2 * d * tan 4° = 0.14 d.
     across = [(-3000, 7000, 3000, 7000)]
-    along = [(0, 2000, 0, 9000)]
-    assert _wedge_reach(0, 0, 356, 8, across) == WEDGE_REACH  # wedge points south (y down)
-    assert 9000 <= _wedge_reach(0, 0, 356, 8, along) <= 9300
+    along = [(0, 2000, 0, 30000)]
+    assert _wedge_reach(0, 0, 356, 8, across) == WEDGE_REACH  # a fairway crossing it doesn't count
+    assert _wedge_reach(0, 0, 356, 8, along) == WEDGE_REACH  # a long leg, but no area to go by
+    # In an area 1000 units wide it's that wide at about 7150 units.
+    area = [[(-500, 1000, -500, 30000), (-500, 30000, 500, 30000), (500, 30000, 500, 1000), (500, 1000, -500, 1000)]]
+    assert 7000 <= _wedge_reach(0, 0, 356, 8, along, area) <= 7450
+    # A wide area: the leg's end, capped.
+    wide = [[(-9000, 1000, -9000, 30000), (-9000, 30000, 9000, 30000), (9000, 30000, 9000, 1000), (9000, 1000, -9000, 1000)]]
+    assert _wedge_reach(0, 0, 356, 8, along, wide) == WEDGE_MAX
+    assert 5000 <= _wedge_reach(0, 0, 356, 8, [(0, 2000, 0, 5000)], wide) <= 5300

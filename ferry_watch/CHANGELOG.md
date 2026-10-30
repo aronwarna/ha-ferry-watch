@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24.2
+
+White sector wedges end where they stop being useful, not at the end of the fairway leg.
+
+- A wedge now ends where it gets wider than the fairway's area, which is where its edges
+  reach the buoys and staying in the white no longer keeps you between the marks. It also
+  ends sooner if the fairway turns out of it or leaves its area.
+- Where there's no fairway area to go by it stays short (about 800 m), and it's never
+  longer than about 1.6 km or shorter than about 400 m.
+- The chart's tiles are drawn again once after the update.
+
 ## 0.24.1
 
 Sector lights and all-round lights drawn more like Sailmate's paper chart, from your
