@@ -27,6 +27,7 @@
     band: "#bed389", // under the small-craft trunk route: the paper chart's soft green (Sailmate's)
     magenta: "#9d3289",
     magentaLight: "#c47db5",
+    cable: "#bb5a8c", // submarine cables: the paper chart's lighter, pinker magenta (Sailmate's)
     red: "#c63541",
     green: "#5fa86c",
     reserve: "#4f9a5a", // nature reserve borders
@@ -916,21 +917,47 @@
     ctx.stroke();
   }
 
-  // A submarine cable (INT L30.1): a magenta wavy line, its waves `wave` long and `amp` high.
-  function wavyLine(ctx, flat, wave, amp) {
+  // A submarine cable (INT L30.1): a magenta wavy line, its waves about `wave` long and `amp`
+  // high. Where the line crosses the tile's edge (0 or `e`), it is between two waves, and the
+  // waves in between are stretched a little to fit, so the line meets its own continuation in
+  // the next tile.
+  function wavyLine(ctx, flat, wave, amp, e) {
+    const at = [0]; // distance along the line at each point
+    for (let i = 2; i < flat.length; i += 2) at.push(at[at.length - 1] + Math.hypot(flat[i] - flat[i - 2], flat[i + 1] - flat[i - 1]));
+    const anchors = [];
+    for (let i = 2; i < flat.length; i += 2) {
+      const len = at[i / 2] - at[i / 2 - 1];
+      for (const [a, b] of [[flat[i - 2], flat[i]], [flat[i - 1], flat[i + 1]]]) {
+        for (const edge of [0, e]) {
+          if ((a - edge) * (b - edge) < 0) anchors.push(at[i / 2 - 1] + (len * (edge - a)) / (b - a));
+        }
+      }
+    }
+    anchors.sort((a, b) => a - b);
+    // The wave's phase (in waves) at distance d along the line.
+    const phase = (d) => {
+      if (!anchors.length) return d / wave;
+      if (d <= anchors[0]) return (d - anchors[0]) / wave;
+      for (let j = 1; j < anchors.length; j++) {
+        if (d <= anchors[j]) {
+          const gap = anchors[j] - anchors[j - 1];
+          return ((d - anchors[j - 1]) / gap) * Math.max(1, Math.round(gap / wave));
+        }
+      }
+      return (d - anchors[anchors.length - 1]) / wave;
+    };
     ctx.beginPath();
-    let phase = 0;
-    ctx.moveTo(flat[0], flat[1]);
+    const step = wave / 16;
     for (let i = 2; i < flat.length; i += 2) {
       const x0 = flat[i - 2], y0 = flat[i - 1], x1 = flat[i], y1 = flat[i + 1];
-      const len = Math.hypot(x1 - x0, y1 - y0);
+      const len = at[i / 2] - at[i / 2 - 1];
       if (!len) continue;
-      const ux = (x1 - x0) / len, uy = (y1 - y0) / len, step = wave / 8;
-      for (let d = step; d <= len; d += step) {
-        const off = amp * Math.sin(((phase + d) / wave) * 2 * Math.PI);
-        ctx.lineTo(x0 + ux * d - uy * off, y0 + uy * d + ux * off);
+      const ux = (x1 - x0) / len, uy = (y1 - y0) / len, d0 = at[i / 2 - 1];
+      const n = Math.ceil(len / step);
+      for (let j = i === 2 ? 0 : 1; j <= n; j++) {
+        const d = (len * j) / n, off = amp * Math.sin(phase(d0 + d) * 2 * Math.PI);
+        ctx[j ? "lineTo" : "moveTo"](x0 + ux * d - uy * off, y0 + uy * d + ux * off);
       }
-      phase += len;
     }
   }
 
@@ -946,7 +973,7 @@
     }
   }
 
-  function drawCables(ctx, rows, s, unit) {
+  function drawCables(ctx, rows, s, unit, e) {
     for (const [kind, line] of rows) {
       if (!Array.isArray(line)) continue;
       if (kind === "pipe") {
@@ -958,9 +985,11 @@
         ctx.fill();
         continue;
       }
-      wavyLine(ctx, line, Math.max(7 * unit, 13 * s), Math.max(1.4 * unit, 2.6 * s));
-      ctx.strokeStyle = C.magenta;
-      ctx.lineWidth = 1.15 * unit;
+      // As on Sailmate's chart: thin, smooth, round waves, each a quarter longer than a
+      // sounding is high and a third as high.
+      wavyLine(ctx, line, Math.max(10 * unit, 19 * s), Math.max(1.6 * unit, 3 * s), e);
+      ctx.strokeStyle = C.cable;
+      ctx.lineWidth = 1.2 * unit;
       ctx.lineJoin = "round";
       ctx.stroke();
     }
@@ -1804,7 +1833,7 @@
     // Nature reserves' borders: a green dashed line, as on the paper chart.
     if (!overview) for (const line of data.reserve || []) strokeLine(ctx, line, C.reserve, 1.5 * unit, [9 * unit, 5 * unit]);
     // Submarine cables and pipelines.
-    if (data.cable) drawCables(ctx, data.cable, s, unit);
+    if (data.cable) drawCables(ctx, data.cable, s, unit, e);
 
     // 8b. Narrow white sectors of sector lights: yellow wedges out along the fairway each
     // leads along, under the lines and marks as on the paper chart. Each wedge's reach comes

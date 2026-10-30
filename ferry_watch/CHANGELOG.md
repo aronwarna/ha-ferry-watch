@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.5
+
+- Submarine cables are drawn as on the paper chart (Sailmate): a thinner, pinker magenta
+  line with longer, smoother waves, each a little longer than a depth figure is high.
+- A cable no longer breaks or jumps where it crosses from one map tile to the next.
+
 ## 0.26.4
 
 - Boat routes are a thin solid line, as on the paper chart (they were dashed).
