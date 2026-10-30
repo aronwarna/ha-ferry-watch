@@ -96,3 +96,23 @@ def test_autoroute_endpoint(tmp_path):
             assert (await client.get(f"/api/autoroute?{bad}")).status == 400, bad
 
     run_with_client(tmp_path, body)
+
+
+def test_passages_filtered_paged_and_as_csv(tmp_path):
+    async def body(client, fw):
+        for i, (mmsi, direction) in enumerate([(1, "east"), (2, "west"), (1, "west"), (2, "east"), (1, "east")]):
+            fw.store.add_passage({"mmsi": mmsi, "ts": 1000 + i * 100, "route": "inner", "direction": direction,
+                                  "zone_id": None, "lat": 60.0, "lon": 24.4, "sog": 18.0})
+
+        async def ids(query):
+            return [(p["mmsi"], p["ts"]) for p in await (await client.get(f"/api/passages?{query}")).json()]
+
+        assert await ids("mmsi=1") == [(1, 1400), (1, 1200), (1, 1000)]
+        assert await ids("mmsi=1,2&direction=east") == [(1, 1400), (2, 1300), (1, 1000)]
+        assert await ids("since=1100&until=1400") == [(2, 1300), (1, 1200), (2, 1100)]
+        assert await ids("limit=2&offset=2") == [(1, 1200), (2, 1100)]
+        assert (await client.get("/api/passages?mmsi=x")).status == 400
+        csv = await (await client.get("/api/passages.csv?mmsi=2")).text()
+        assert len(csv.strip().splitlines()) == 3  # the header and ship 2's two
+
+    run_with_client(tmp_path, body)

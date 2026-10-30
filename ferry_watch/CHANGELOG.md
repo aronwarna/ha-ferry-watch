@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.25.0
+
+The menu and the Stats tab rebuilt (items 1 to 18 and 31 of the UI review).
+
+- On a computer the menu is a panel down the right side and the map stays usable beside
+  it. On the phone it's a sheet of fixed height from the bottom: drag it down by the
+  handle or tabs, or tap the map above it, to close it.
+- The tabs are Ships, Stats, Layers and Settings, with icons. Each tab keeps its own
+  scroll position.
+- Weather has its own button on the map, next to the ruler. It opens a panel with big
+  switches for sea conditions, weather stations, sea ice, rain radar and wind forecast,
+  each with its opacity slider. The button lights up while weather is drawn on the map.
+  Weather is no longer in Layers.
+- Stats:
+  - Four tiles at the top: this week, this month, this year and the inner share of the
+    last 30 days, each compared with the same stretch of the period before.
+  - Ship chips double as the colour key; tap one to leave that ship out. Below them you
+    can pick both ways, to Helsinki or to Stockholm. These filters apply to everything in
+    the tab and are remembered.
+  - A switch between inner passages and inner share (the percentage of passages that
+    took the inner route).
+  - Year, Month, Week, Weekday and Time views on one row. Year only shows once there are
+    two years of data.
+  - The Time view replaces Hours. It has a strip for each direction in 10-minute steps,
+    zoomed to the hours the ferries actually pass, with the usual time marked.
+  - The chart is taller, with bigger labels and grid lines with numbers. On a computer,
+    hovering a bar shows the split by ship. On a computer, Stats widens the panel to two
+    columns.
+  - Ship rows are two lines (inner count and share, then usual times). Tap a row to count
+    only that ship, and tap it again for all of them.
+  - The passage list follows what you've picked (bar, day, ships, direction). It's
+    grouped under day headings with one line per passage: time, ship, Inner/Outer,
+    direction, wind, and a bell if an alert went out. "Show more" adds 20 at a time.
+  - The weather comparison is folded under "Does the weather matter?". It only shows
+    when the selection has at least 20 passages.
+  - The month calendar has arrows to the months either side.
+  - Aircraft history now sits at the bottom of Stats.
+  - CSV download of this selection or of everything.
+- Dates read "Thu 30 Oct" with 24-hour times.
+
 ## 0.24.2
 
 White sector wedges end where they stop being useful, not at the end of the fairway leg.

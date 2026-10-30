@@ -52,7 +52,7 @@
   const overlays = FerryOverlays.create({
     map, store, switchRow, canvas: sharedCanvas, strip: $("strip"),
     onChange() {
-      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+      renderWeather();
       renderSettings();
     },
   });
@@ -1350,6 +1350,7 @@
     renderChartKeep();
     FerryChart.setRev(state.vchart?.rev, state.vchart?.min_zoom);
     if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    renderWeather();
     renderConditions();
     renderPhone();
     renderSettings();
@@ -1543,14 +1544,95 @@
     list.replaceChildren(...rows);
   }
 
-  $("ships-button").addEventListener("click", () => {
+  // --- the menu -------------------------------------------------------------------
+  // Wide screens: a panel down the right that leaves the map usable (Stats widens it for its
+  // two columns). Narrower ones: a sheet of fixed height from the bottom, dragged down or
+  // tapped beside to close. Each tab keeps its own scroll.
+
+  const menu = $("ships-dialog");
+  const SIDE = matchMedia("(min-width: 900px)");
+  const menuModal = () => menu.open && menu.matches(":modal");
+  const tabScroll = new Map();
+
+  function setTab(name) {
+    const current = menu.querySelector("[data-pane]:not([hidden])");
+    if (current) tabScroll.set(current.dataset.pane, current.scrollTop);
+    document.querySelectorAll("[data-tab]").forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.tab === name));
+      b.setAttribute("aria-selected", String(b.dataset.tab === name));
+    });
+    document.querySelectorAll("[data-pane]").forEach((pane) => { pane.hidden = pane.dataset.pane !== name; });
+    document.body.classList.toggle("menu-wide", name === "stats");
+    const pane = menu.querySelector(`[data-pane="${name}"]`);
+    pane.scrollTop = tabScroll.get(name) || 0;
+    store.set("fw-tab", name);
+    if (name === "stats") loadStats().then(() => { pane.scrollTop = tabScroll.get(name) || 0; }).catch(console.error);
+    if (name === "layers") renderLayers();
+    if (name === "settings") renderSettings();
+  }
+  document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  // Tap a folded explanation to read it whole (a link in it still opens).
+  menu.addEventListener("click", (e) => {
+    const note = e.target.closest?.("p.note");
+    if (note && !e.target.closest("a")) note.classList.toggle("open");
+    if (e.target === menu && menuModal()) menu.close(); // a tap beside the sheet
+  });
+
+  function openMenu(tab) {
     renderShipsList();
     $("notify-result").textContent = "";
     const saved = store.get("fw-tab") === "fleets" ? "layers" : store.get("fw-tab");
-    setTab(["stats", "layers", "settings"].includes(saved) ? saved : "ships");
-    $("ships-dialog").showModal();
-    $("ships-dialog").focus(); // not the first tab, which would show a focus ring
+    if (SIDE.matches) {
+      document.body.classList.add("menu-open");
+      menu.show();
+    } else {
+      menu.showModal();
+    }
+    setTab(tab || (["stats", "layers", "settings"].includes(saved) ? saved : "ships"));
+    menu.focus(); // not the first tab, which would show a focus ring
+  }
+  menu.addEventListener("close", () => {
+    document.body.classList.remove("menu-open", "menu-wide");
+    menu.style.transform = "";
   });
+  $("ships-button").addEventListener("click", () => {
+    if (menu.open) menu.close();
+    else openMenu();
+  });
+  // Crossing the width where the menu changes shape: open it again in the new shape.
+  SIDE.addEventListener("change", () => {
+    if (!menu.open) return;
+    const tab = store.get("fw-tab");
+    menu.close();
+    openMenu(tab);
+  });
+
+  // Drag the sheet down by its handle or tabs to close it.
+  {
+    let start = null;
+    const grab = (e) => {
+      if (SIDE.matches || (e.target.closest("button") && !e.target.closest("#menu-grab"))) return;
+      start = { y: e.clientY, id: e.pointerId, dy: 0 };
+      menu.classList.add("dragging");
+    };
+    $("menu-grab").addEventListener("pointerdown", grab);
+    menu.querySelector(".dialog-head").addEventListener("pointerdown", grab);
+    window.addEventListener("pointermove", (e) => {
+      if (!start || e.pointerId !== start.id) return;
+      start.dy = Math.max(0, e.clientY - start.y);
+      menu.style.transform = `translateY(${start.dy}px)`;
+    });
+    const drop = (e) => {
+      if (!start || e.pointerId !== start.id) return;
+      const far = start.dy > Math.min(140, menu.offsetHeight * 0.25);
+      start = null;
+      menu.classList.remove("dragging");
+      menu.style.transform = "";
+      if (far) menu.close();
+    };
+    window.addEventListener("pointerup", drop);
+    window.addEventListener("pointercancel", drop);
+  }
 
 
   // --- areas (zones) ------------------------------------------------------------
@@ -1864,46 +1946,6 @@
     }
   });
 
-  async function loadPassages() {
-    const rows = await (await fetch("api/passages?limit=15")).json();
-    const list = $("passages-list");
-    if (!rows.length) {
-      const li = document.createElement("li");
-      li.className = "muted small";
-      li.textContent = "None yet.";
-      list.replaceChildren(li);
-      return;
-    }
-    list.replaceChildren(...rows.map((p) => {
-      const li = document.createElement("li");
-      const grow = document.createElement("div");
-      grow.className = "grow";
-      const top = document.createElement("span");
-      top.textContent = `${p.name}: ${p.route} route, ${DIRECTIONS[p.direction] || p.direction}`;
-      const sub = document.createElement("span");
-      sub.className = "muted small";
-      const when = new Date(p.ts * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short", hour12: false });
-      sub.textContent = p.notified ? when : `${when} · ${p.note || "not sent"}`;
-      grow.append(top, sub);
-      const wx = FerryWeather.row(p);
-      if (wx) grow.append(wx);
-      li.append(grow);
-      li.classList.add("clickable");
-      li.title = "Show this passage on the map";
-      li.addEventListener("click", () => {
-        $("ships-dialog").close();
-        showPassage(p).catch(console.error);
-      });
-      if (p.notified) {
-        const badge = document.createElement("span");
-        badge.className = "badge sent";
-        badge.textContent = "Alert sent";
-        li.append(badge);
-      }
-      return li;
-    }));
-  }
-
   function focusFromNotification() {
     // Opening the panel from an alert: show that ship (once per alert).
     const n = lastState?.last_notification;
@@ -1997,17 +2039,34 @@
 
   // --- stats --------------------------------------------------------------------
   // Counted here rather than on the server so months and clock times follow this
-  // device's time zone.
+  // device's time zone. The ship and direction filters apply to everything in the tab;
+  // tapping a bar (or a day in a month) narrows the passages, ships and weather to it.
 
   const MONTHS = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "short" }));
   const MONTHS_LONG = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "long" }));
-  let statsData = null;
-  let statsYear = new Date().getFullYear();
-  let statsView = "month"; // year, month, week, weekday or hour
-  let statsPick = null; // the bar tapped in the current view, or null for all
-  let statsDay = null; // a day tapped in the month calendar
   const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const WEEKDAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const INNER_COLOR = "#f97316";
+  const SHORT_DIR = { east: "to Helsinki", west: "to Stockholm" };
+  const PAGE = 20; // passages shown, and added by "Show more"
+  let statsData = null;
+  let statsRowsOf = null, statsRowsAll = []; // statsData's passages as objects, made once
+  let statsYear = new Date().getFullYear();
+  let statsView = "month"; // year, month, week, weekday or time
+  let statsPick = null; // the bar tapped in the current view (in the time view "east:450"), or null
+  let statsDay = null; // a day tapped in the month calendar
+  let statsMode = store.get("fw-stats-mode") === "share" ? "share" : "count";
+  let statsDir = ["east", "west"].includes(store.get("fw-stats-dir")) ? store.get("fw-stats-dir") : "both";
+  const statsHidden = new Set((() => { try { return JSON.parse(store.get("fw-stats-hidden") || "[]"); } catch { return []; } })());
+  let passagesShown = PAGE;
+  let statsBars = []; // the bars drawn, for the hover box and arrow keys
+
+  // One date style everywhere: "Thu 30 Oct", "Thu 30 Oct, 07:34".
+  const fmtDay = (ts) => {
+    const d = new Date(ts * 1000);
+    return `${WEEKDAYS[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  };
+  const fmtWhen = (ts) => `${fmtDay(ts)}, ${clock(ts)}`;
 
   function isoWeek(d) {
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -2015,18 +2074,17 @@
     return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
   }
 
-  // Bars for each view: the keys along the axis, a short label, and a long name.
+  // Bars for each view (not the time view): the keys along the axis, a short label, a long name.
   function statsAxis(view, years) {
     const range = (n) => Array.from({ length: n }, (_, i) => i);
     if (view === "year") return years.map((y) => ({ key: y, label: String(y), name: String(y) }));
-    if (view === "week") return range(53).map((w) => ({ key: w + 1, label: (w + 1) % 4 === 1 ? String(w + 1) : "", name: `week ${w + 1}` }));
+    if (view === "week") return range(53).map((w) => ({ key: w + 1, label: (w + 1) % 4 === 1 ? String(w + 1) : "", name: `Week ${w + 1}` }));
     if (view === "weekday") return range(7).map((d) => ({ key: d, label: WEEKDAYS[d], name: `${WEEKDAYS_LONG[d]}s` }));
-    if (view === "hour") return range(24).map((h) => ({ key: h, label: h % 3 === 0 ? String(h).padStart(2, "0") : "", name: `${hhmm(h * 60)}–${hhmm((h + 1) * 60 % 1440)}` }));
     return range(12).map((m) => ({ key: m, label: MONTHS[m], name: MONTHS_LONG[m] }));
   }
 
   const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-  const hhmm = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  const hhmm = (minutes) => `${String(Math.floor(minutes / 60) % 24).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 
   function median(values) {
     const v = [...values].sort((a, b) => a - b);
@@ -2034,130 +2092,372 @@
     return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2);
   }
 
-  function setTab(name) {
-    document.querySelectorAll("[data-tab]").forEach((b) => {
-      b.setAttribute("aria-pressed", String(b.dataset.tab === name));
-      b.setAttribute("aria-selected", String(b.dataset.tab === name));
-    });
-    document.querySelectorAll("[data-pane]").forEach((pane) => { pane.hidden = pane.dataset.pane !== name; });
-    store.set("fw-tab", name);
-    if (name === "stats") loadStats().catch(console.error);
-    if (name === "layers") renderLayers();
-    if (name === "settings") renderSettings();
-  }
-  document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
-  // Tap a folded explanation to read it whole (a link in it still opens).
-  $("ships-dialog").addEventListener("click", (e) => {
-    const note = e.target.closest?.("p.note");
-    if (note && !e.target.closest("a")) note.classList.toggle("open");
-  });
-
   async function loadStats() {
-    const [data] = await Promise.all([api("api/stats"), loadPassages()]);
-    statsData = data;
+    statsData = await api("api/stats");
     statsLoadedAt = Date.now();
-    const years = new Set(data.passages.map(([ts]) => new Date(ts * 1000).getFullYear()));
+    const years = new Set(statsData.passages.map(([ts]) => new Date(ts * 1000).getFullYear()));
     years.add(new Date().getFullYear());
     const sorted = [...years].sort((a, b) => b - a);
     if (!years.has(statsYear)) { statsYear = sorted[0]; statsPick = null; }
     const select = $("stats-year");
     select.replaceChildren(...sorted.map((y) => new Option(String(y), String(y), false, y === statsYear)));
-    select.hidden = sorted.length < 2;
     renderStats();
   }
 
   $("stats-year").addEventListener("change", (ev) => {
     statsYear = Number(ev.target.value);
     statsPick = null;
+    statsDay = null;
     renderStats();
   });
-
   document.querySelectorAll("[data-stats-view]").forEach((b) => b.addEventListener("click", () => {
     statsView = b.dataset.statsView;
     statsPick = null;
+    statsDay = null;
     store.set("fw-stats-view", statsView);
     renderStats();
   }));
   statsView = store.get("fw-stats-view") || "month";
+  if (statsView === "hour") statsView = "time";
+  document.querySelectorAll("#stats-mode [data-mode]").forEach((b) => b.addEventListener("click", () => {
+    statsMode = b.dataset.mode;
+    store.set("fw-stats-mode", statsMode);
+    renderStats();
+  }));
+  document.querySelectorAll("#stats-dir [data-dir]").forEach((b) => b.addEventListener("click", () => {
+    statsDir = b.dataset.dir;
+    store.set("fw-stats-dir", statsDir);
+    if (statsView === "time") statsPick = null;
+    renderStats();
+  }));
+
+  function setHidden(mmsis) {
+    statsHidden.clear();
+    for (const m of mmsis) statsHidden.add(m);
+    store.set("fw-stats-hidden", JSON.stringify([...statsHidden]));
+    passagesShown = PAGE;
+    renderStats();
+  }
+
+  // The ships Stats has anything for: today's, and removed ones with passages.
+  const statsShips = () => statsData.ships;
+
+  function statsRows() {
+    if (statsRowsOf !== statsData) {
+      statsRowsOf = statsData;
+      statsRowsAll = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified]) => {
+        const d = new Date(ts * 1000);
+        return {
+          ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified,
+          year: d.getFullYear(), month: d.getMonth(), date: d.getDate(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
+          minute: d.getHours() * 60 + d.getMinutes(),
+        };
+      });
+    }
+    return statsRowsAll;
+  }
+
+  // Time view bins: 10 minutes; a pick is "east:450" (the bin starting 07:30 towards Helsinki).
+  const BIN = 10;
+  const timePick = () => (statsView === "time" && statsPick ? statsPick.split(":") : null);
+  function inPick(p) {
+    if (statsPick == null) return true;
+    if (statsView === "time") {
+      const [dir, bin] = timePick();
+      return p.direction === dir && p.minute >= Number(bin) && p.minute < Number(bin) + BIN;
+    }
+    return p[statsView] === statsPick;
+  }
 
   function renderStats() {
-    const all = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice]) => {
-      const d = new Date(ts * 1000);
-      return {
-        mmsi, route, direction, ts, wind_ms, wind_dir, ice,
-        year: d.getFullYear(), month: d.getMonth(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
-        hour: d.getHours(), minute: d.getHours() * 60 + d.getMinutes(),
-      };
-    });
-    const years = [...new Set([...all.map((p) => p.year), new Date().getFullYear()])].sort((a, b) => a - b);
-    // The Years view covers everything; the others cover the chosen year.
-    const rows = statsView === "year" ? all : all.filter((p) => p.year === statsYear);
-    const inner = rows.filter((p) => p.route === "inner");
-    const axis = statsAxis(statsView, years);
-    const today = new Date();
+    if (!statsData) return;
+    const all = statsRows();
+    const shipOk = (p) => !statsHidden.has(p.mmsi);
+    const dirOk = (p) => statsDir === "both" || p.direction === statsDir;
+    const filtered = all.filter((p) => shipOk(p) && dirOk(p));
+    const yearsWithData = [...new Set(all.map((p) => p.year))];
+    const years = [...new Set([...yearsWithData, new Date().getFullYear()])].sort((a, b) => a - b);
+    if (statsView === "year" && yearsWithData.length < 2) statsView = "month";
 
     document.querySelectorAll("[data-stats-view]").forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.statsView === statsView));
+      if (b.dataset.statsView === "year") b.hidden = yearsWithData.length < 2;
     });
+    document.querySelectorAll("#stats-mode [data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === statsMode)));
+    document.querySelectorAll("#stats-dir [data-dir]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.dir === statsDir)));
     $("stats-year").hidden = statsView === "year" || years.length < 2;
 
-    if (!statsData.passages.length) {
-      $("stats-summary").textContent = "None yet. Passages are counted from when an inner-route line is in place.";
-    } else if (statsView === "year") {
-      $("stats-summary").textContent = `${inner.length} since ${new Date(all[0].ts * 1000).toLocaleDateString([], { dateStyle: "medium" })}`;
+    renderStatsTiles(filtered, all);
+    renderStatsChips(all);
+
+    // The year view covers everything; the others the chosen year.
+    const rows = statsView === "year" ? filtered : filtered.filter((p) => p.year === statsYear);
+    let picked = null;
+    if (statsView === "time") {
+      picked = renderTimeChart(rows);
     } else {
-      const parts = [`${inner.length} in ${statsYear}`];
-      if (statsYear === today.getFullYear()) {
-        parts.push(`${inner.filter((p) => p.month === today.getMonth()).length} in ${MONTHS_LONG[today.getMonth()]}`);
-        parts.push(`${inner.filter((p) => p.week === isoWeek(today)).length} this week`);
-      }
-      $("stats-summary").textContent = parts.join(" · ");
+      const axis = statsAxis(statsView, years);
+      picked = axis.find((a) => a.key === statsPick) || null;
+      if (!picked) statsPick = null;
+      renderBarChart(axis, rows);
     }
-
-    const counts = new Map(axis.map((a) => [a.key, new Map()]));
-    for (const p of inner) {
-      const bucket = counts.get(p[statsView]);
-      if (bucket) bucket.set(p.mmsi, (bucket.get(p.mmsi) || 0) + 1);
-    }
-    const totals = axis.map((a) => [...counts.get(a.key).values()].reduce((x, y) => x + y, 0));
-    renderStatsChart(axis, counts, totals);
-
-    const best = Math.max(0, ...totals);
-    const busiest = axis.filter((a, i) => totals[i] === best && best > 0).map((a) => a.name);
-    const busyText = busiest.length && busiest.length < axis.length / 2 ? `Busiest: ${busiest.join(", ")} (${best}). ` : "";
-    const picked = axis.find((a) => a.key === statsPick);
     const inMonth = statsView === "month" && picked;
     if (!inMonth) statsDay = null;
-    renderCalendar(inMonth ? inner.filter((p) => p.month === statsPick) : null);
-    let scope = picked ? rows.filter((p) => p[statsView] === statsPick) : rows;
-    if (statsDay) {
-      scope = scope.filter((p) => new Date(p.ts * 1000).getDate() === statsDay);
-      $("stats-scope").textContent = `${statsDay} ${picked.name} ${statsYear}. Tap the day again for the whole month.`;
-    } else {
-      $("stats-scope").textContent = picked
-        ? `${picked.name}${statsView === "year" ? "" : `, ${statsYear}`}. ${inMonth ? "Tap a day to see it on its own, or the month again for all." : "Tap it again for all."}`
-        : (inner.length ? `${busyText}Tap a bar to see it on its own.` : "");
-    }
-    renderStatsShips(scope);
-    if (statsDay) {
-      const day = new Date(statsYear, statsPick, statsDay);
-      const next = new Date(statsYear, statsPick, statsDay + 1);
-      FerryWeather.dayList($("stats-day"), day / 1000, next / 1000, {
-        api, esc, clock, DIRECTIONS,
-        open(p) {
-          $("ships-dialog").close();
-          showPassage(p).catch(console.error);
-        },
-      });
-    } else {
-      FerryWeather.hideDay($("stats-day"));
-    }
-    const scopeName = statsDay ? `${statsDay} ${picked.name}` : picked ? `${picked.name}${statsView === "year" ? "" : ` ${statsYear}`}`
+    renderCalendar(inMonth ? rows.filter((p) => p.month === statsPick && p.route === "inner") : null);
+
+    let scope = rows.filter(inPick);
+    if (statsDay) scope = scope.filter((p) => p.date === statsDay);
+    const scopeName = statsDay ? `${statsDay} ${MONTHS_LONG[statsPick]} ${statsYear}`
+      : picked ? `${picked.name}${statsView === "year" ? "" : ` ${statsYear}`}`
       : statsView === "year" ? "all years" : String(statsYear);
-    FerryWeather.breakdown($("stats-weather"), scope, scopeName);
+    const innerN = scope.filter((p) => p.route === "inner").length;
+    if (!statsData.passages.length) {
+      $("stats-scope").textContent = "None yet. Passages are counted from when an inner-route line is in place.";
+    } else {
+      const hint = statsDay ? "Tap the day again for the whole month."
+        : inMonth ? "Tap a day, or the month again for all of it."
+        : picked ? "Tap it again for all." : "Tap a bar to look at it on its own.";
+      $("stats-scope").textContent = `${scopeName}: ${innerN} inner of ${scope.length} passages. ${hint}`;
+    }
+
+    // Ship rows count every ship (the hidden ones dimmed), so tapping one can bring it back.
+    const shipScope = (statsView === "year" ? all : all.filter((p) => p.year === statsYear))
+      .filter((p) => dirOk(p) && inPick(p) && (!statsDay || p.date === statsDay));
+    renderStatsShips(shipScope);
+    renderPassageList(scope, scopeName);
+    renderStatsWeather(scope, scopeName);
+    renderStatsCsv(picked, scopeName);
+    renderStatsAircraft();
   }
 
-  // A month as a calendar: each day shows a dot per inner passage in the ship's colour.
+  // Four tiles: this week, this month, this year, and the inner share of the last 30 days,
+  // each against the same stretch of the period before (only once there's data for it).
+  function renderStatsTiles(rows, all) {
+    const box = $("stats-tiles");
+    if (!all.length) { box.replaceChildren(); return; }
+    const t = Date.now() / 1000;
+    const d = new Date();
+    const first = all[0].ts;
+    const between = (a, b) => rows.filter((p) => p.route === "inner" && p.ts >= a && p.ts < b).length;
+    const sec = (date) => date.getTime() / 1000;
+    const weekStart = sec(new Date(d.getFullYear(), d.getMonth(), d.getDate() - (d.getDay() + 6) % 7));
+    const monthStart = sec(new Date(d.getFullYear(), d.getMonth(), 1));
+    const prevMonth = sec(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+    const yearStart = sec(new Date(d.getFullYear(), 0, 1));
+    const prevYear = sec(new Date(d.getFullYear() - 1, 0, 1));
+    const tile = (value, label, now, before, prevStart, unit, versus) => {
+      const el = document.createElement("div");
+      el.className = "tile";
+      let diff = "";
+      if (before != null && prevStart >= first) {
+        const delta = now - before;
+        diff = delta === 0 ? `<em>same as ${versus}</em>`
+          : `<em class="${delta > 0 ? "up" : "down"}">${delta > 0 ? "▲" : "▼"} ${Math.abs(delta)}${unit} vs ${versus}</em>`;
+      }
+      el.innerHTML = `<strong>${value}</strong><span>${label}</span>${diff}`;
+      return el;
+    };
+    const week = between(weekStart, t), weekBefore = between(weekStart - 7 * 86400, t - 7 * 86400);
+    const month = between(monthStart, t), monthBefore = between(prevMonth, Math.min(monthStart, prevMonth + (t - monthStart)));
+    const year = between(yearStart, t), yearBefore = between(prevYear, Math.min(yearStart, prevYear + (t - yearStart)));
+    const share = (a, b) => {
+      const these = rows.filter((p) => p.ts >= a && p.ts < b);
+      return these.length ? Math.round((100 * these.filter((p) => p.route === "inner").length) / these.length) : null;
+    };
+    const s30 = share(t - 30 * 86400, t), s60 = share(t - 60 * 86400, t - 30 * 86400);
+    box.replaceChildren(
+      tile(week, "this week", week, weekBefore, weekStart - 7 * 86400, "", "last week"),
+      tile(month, MONTHS_LONG[d.getMonth()], month, monthBefore, prevMonth, "", MONTHS[(d.getMonth() + 11) % 12]),
+      tile(year, String(d.getFullYear()), year, yearBefore, prevYear, "", d.getFullYear() - 1),
+      tile(s30 == null ? "–" : `${s30}%`, "inner, 30 days", s30, s30 == null ? null : s60, t - 60 * 86400, " pts", "before"),
+    );
+  }
+
+  // Ship chips: the colour key, and which ships are counted (tap to leave one out).
+  function renderStatsChips(all) {
+    const withPassages = new Set(all.map((p) => p.mmsi));
+    const ships = statsShips().filter((s) => s.current || withPassages.has(s.mmsi));
+    $("stats-ship-chips").replaceChildren(...ships.map((ship) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "stat-chip";
+      b.setAttribute("aria-pressed", String(!statsHidden.has(ship.mmsi)));
+      b.title = statsHidden.has(ship.mmsi) ? `Count ${ship.name}` : `Leave ${ship.name} out`;
+      b.innerHTML = `<i class="dot" style="background:${esc(ship.color)}"></i>${esc(shortName(ship.name))}`;
+      b.addEventListener("click", () => {
+        const next = new Set(statsHidden);
+        if (next.has(ship.mmsi)) next.delete(ship.mmsi); else next.add(ship.mmsi);
+        setHidden(ships.every((s) => next.has(s.mmsi)) ? [] : next);
+      });
+      return b;
+    }));
+  }
+
+  // A tidy step for grid lines: 1, 2 or 5 times a power of ten.
+  function niceStep(max, lines = 3) {
+    const raw = Math.max(1, max) / lines;
+    const pow = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw);
+  }
+
+  // Bars: each { key, label, name, total, stacks: [{ color, n, title }], sub }, drawn at the
+  // chart's real width, with grid lines and their numbers on the left.
+  function barsSvg(bars, { W, H, max, share, label, mark }) {
+    const LEFT = 26, TOP = 14, BOTTOM = 20;
+    const col = (W - LEFT) / bars.length;
+    const w = Math.min(44, Math.max(1, col - Math.min(6, col * 0.25)));
+    const unit = (H - TOP - BOTTOM) / Math.max(1, max);
+    const step = share ? 25 : niceStep(max);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(label)}">`;
+    for (let v = step; v <= (share ? 100 : max); v += step) {
+      const y = H - BOTTOM - v * unit;
+      svg += `<line class="grid" x1="${LEFT}" x2="${W}" y1="${y}" y2="${y}"/><text class="tick" x="${LEFT - 4}" y="${y + 4}">${v}${share ? "%" : ""}</text>`;
+    }
+    const showCounts = bars.length <= 12;
+    bars.forEach((b, i) => {
+      const x = LEFT + i * col + (col - w) / 2, cx = x + w / 2;
+      const cls = ["bar", statsPick === b.key ? "selected" : "", statsPick != null && statsPick !== b.key ? "dim" : ""].join(" ");
+      let y = H - BOTTOM;
+      svg += `<g class="${cls}" data-i="${i}"><rect class="hit" x="${LEFT + i * col}" y="0" width="${col}" height="${H}"/>`;
+      for (const s of b.stacks) {
+        if (!s.n) continue;
+        y -= s.n * unit;
+        svg += `<rect x="${x}" y="${y}" width="${w}" height="${s.n * unit}" fill="${esc(s.color)}"/>`;
+      }
+      if (showCounts && b.text) svg += `<text class="count" x="${cx}" y="${y - 4}">${esc(b.text)}</text>`;
+      if (b.label) svg += `<text class="label" x="${cx}" y="${H - 5}">${esc(b.label)}</text>`;
+      svg += "</g>";
+    });
+    if (mark != null) {
+      const mx = LEFT + mark * col;
+      svg += `<line class="usual" x1="${mx}" x2="${mx}" y1="${TOP - 6}" y2="${H - BOTTOM}"/>`;
+    }
+    svg += `<line class="axis" x1="${LEFT}" x2="${W}" y1="${H - BOTTOM}" y2="${H - BOTTOM}"/></svg>`;
+    return svg;
+  }
+
+  // A bucket's bar: inner passages by ship, or the share of all its passages that were inner.
+  function makeBar(key, label, name, list) {
+    const inner = list.filter((p) => p.route === "inner");
+    if (statsMode === "share") {
+      const pct = list.length ? Math.round((100 * inner.length) / list.length) : 0;
+      return {
+        key, label, name, value: pct, total: list.length, inner: inner.length,
+        text: list.length ? `${pct}%` : "", stacks: [{ color: INNER_COLOR, n: pct }],
+        lines: list.length ? [`${pct}% inner (${inner.length} of ${list.length})`] : ["No passages"],
+      };
+    }
+    const stacks = statsShips().map((s) => {
+      const n = inner.filter((p) => p.mmsi === s.mmsi).length;
+      return { color: s.color, n, title: `${s.name}: ${n}` };
+    });
+    return {
+      key, label, name, value: inner.length, total: list.length, inner: inner.length, text: inner.length ? String(inner.length) : "",
+      stacks, lines: inner.length ? stacks.filter((s) => s.n).map((s) => s.title) : ["No inner passages"],
+    };
+  }
+
+  const chartWidth = () => Math.max(260, Math.round($("stats-chart").clientWidth || 340));
+
+  function renderBarChart(axis, rows) {
+    const byKey = new Map(axis.map((a) => [a.key, []]));
+    for (const p of rows) byKey.get(p[statsView])?.push(p);
+    const bars = axis.map((a) => makeBar(a.key, a.label, a.name, byKey.get(a.key)));
+    const max = statsMode === "share" ? 100 : Math.max(1, ...bars.map((b) => b.value));
+    statsBars = [bars];
+    $("stats-chart").innerHTML = barsSvg(bars, {
+      W: chartWidth(), H: 180, max, share: statsMode === "share",
+      label: statsMode === "share" ? "Share of passages on the inner route" : "Inner route passages",
+    });
+  }
+
+  // The time view: a strip per direction in 10-minute bins, each zoomed to the hours its
+  // passages fall in (the odd late one aside), the usual time marked.
+  function renderTimeChart(rows) {
+    const dirs = statsDir === "both" ? ["east", "west"] : [statsDir];
+    const box = $("stats-chart");
+    const parts = [];
+    statsBars = [];
+    let picked = null;
+    for (const dir of dirs) {
+      const these = rows.filter((p) => p.direction === dir);
+      const inner = these.filter((p) => p.route === "inner");
+      const head = document.createElement("div");
+      head.className = "time-head small";
+      if (!these.length) {
+        head.innerHTML = `<span class="strong">${SHORT_DIR[dir][0].toUpperCase()}${SHORT_DIR[dir].slice(1)}</span> <span class="muted">· no passages</span>`;
+        parts.push(head);
+        continue;
+      }
+      const mins = these.map((p) => p.minute).sort((a, b) => a - b);
+      const lo = mins[Math.floor(mins.length * 0.02)], hi = mins[Math.min(mins.length - 1, Math.floor(mins.length * 0.98))];
+      let start = Math.floor(lo / 60) * 60, end = Math.ceil((hi + 1) / 60) * 60;
+      while (end - start < 120) { start = Math.max(0, start - 30); end = Math.min(1440, end + 30); }
+      const outside = these.filter((p) => p.minute < start || p.minute >= end).length;
+      const bars = [];
+      for (let m = start; m < end; m += BIN) {
+        const key = `${dir}:${m}`;
+        const bar = makeBar(key, m % (end - start <= 240 ? 30 : 60) === 0 ? hhmm(m) : "", `${hhmm(m)}–${hhmm(m + BIN)} ${SHORT_DIR[dir]}`,
+          these.filter((p) => p.minute >= m && p.minute < m + BIN));
+        bar.text = "";
+        bars.push(bar);
+        if (statsPick === key) picked = { name: bar.name };
+      }
+      const usual = inner.length >= 3 ? median(inner.map((p) => p.minute)) : null;
+      head.innerHTML = `<span class="strong">${SHORT_DIR[dir][0].toUpperCase()}${SHORT_DIR[dir].slice(1)}</span>`
+        + (usual != null ? ` <span class="muted">· usually ${hhmm(usual)} on the inner route</span>` : "")
+        + (outside ? ` <span class="muted">· ${outside} outside these hours</span>` : "");
+      const max = statsMode === "share" ? 100 : Math.max(1, ...bars.map((b) => b.value));
+      const strip = document.createElement("div");
+      strip.className = "time-strip";
+      strip.dataset.strip = String(statsBars.length);
+      strip.innerHTML = barsSvg(bars, {
+        W: chartWidth(), H: 120, max, share: statsMode === "share", label: `Passages ${SHORT_DIR[dir]} by time of day`,
+        mark: usual != null && usual >= start && usual < end ? (usual - start) / BIN : null,
+      });
+      statsBars.push(bars);
+      parts.push(head, strip);
+    }
+    if (statsPick && !picked) statsPick = null;
+    box.replaceChildren(...parts);
+    return picked;
+  }
+
+  // Tap a bar to look at it on its own; hover one (with a mouse) for its numbers by ship.
+  function barAt(target) {
+    const g = target.closest?.("[data-i]");
+    if (!g) return null;
+    const strip = g.closest("[data-strip]");
+    return statsBars[strip ? Number(strip.dataset.strip) : 0]?.[Number(g.dataset.i)] || null;
+  }
+  $("stats-chart").addEventListener("click", (ev) => {
+    const bar = barAt(ev.target);
+    if (!bar) return;
+    statsPick = statsPick === bar.key ? null : bar.key;
+    statsDay = null;
+    passagesShown = PAGE;
+    renderStats();
+  });
+  $("stats-chart").addEventListener("mousemove", (ev) => {
+    const tip = $("stats-tip");
+    const bar = barAt(ev.target);
+    if (!bar || !matchMedia("(pointer: fine)").matches) { tip.hidden = true; return; }
+    tip.innerHTML = `<strong>${esc(bar.name)}</strong>${bar.lines.map((l) => `<span>${esc(l)}</span>`).join("")}`;
+    tip.hidden = false;
+    const wrap = $("stats-chart").parentElement.getBoundingClientRect();
+    const x = ev.clientX - wrap.left, y = ev.clientY - wrap.top;
+    tip.style.left = `${Math.min(wrap.width - tip.offsetWidth - 4, Math.max(4, x + 12))}px`;
+    tip.style.top = `${Math.max(4, y - tip.offsetHeight - 10)}px`;
+  });
+  $("stats-chart").addEventListener("mouseleave", () => { $("stats-tip").hidden = true; });
+  let chartW = 0;
+  new ResizeObserver(() => {
+    const w = $("stats-chart").clientWidth;
+    if (statsData && w && Math.abs(w - chartW) > 8) { chartW = w; renderStats(); }
+  }).observe($("stats-chart"));
+
+  // A month as a calendar, with arrows to the months either side: each day shows a dot per
+  // inner passage in the ship's colour.
   function renderCalendar(inner) {
     const box = $("stats-calendar");
     box.hidden = !inner;
@@ -2166,17 +2466,46 @@
     const days = new Date(statsYear, statsPick + 1, 0).getDate();
     const byDay = new Map();
     for (const p of inner) {
-      const d = new Date(p.ts * 1000).getDate();
-      if (!byDay.has(d)) byDay.set(d, []);
-      byDay.get(d).push(p);
+      if (!byDay.has(p.date)) byDay.set(p.date, []);
+      byDay.get(p.date).push(p);
     }
-    const colors = new Map(statsData.ships.map((s) => [s.mmsi, s.color]));
+    const colors = new Map(statsShips().map((s) => [s.mmsi, s.color]));
     const today = new Date();
+    const years = [...$("stats-year").options].map((o) => Number(o.value));
+    const head = document.createElement("div");
+    head.className = "cal-nav";
+    const step = (delta) => {
+      let m = statsPick + delta, y = statsYear;
+      if (m < 0) { m = 11; y -= 1; }
+      if (m > 11) { m = 0; y += 1; }
+      return years.includes(y) ? [y, m] : null;
+    };
+    const arrow = (delta, label, path) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "icon-button plain";
+      b.setAttribute("aria-label", label);
+      b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
+      const to = step(delta);
+      b.disabled = !to;
+      b.addEventListener("click", () => {
+        [statsYear, statsPick] = to;
+        $("stats-year").value = String(statsYear);
+        statsDay = null;
+        passagesShown = PAGE;
+        renderStats();
+      });
+      return b;
+    };
+    const title = document.createElement("span");
+    title.className = "strong";
+    title.textContent = `${MONTHS_LONG[statsPick]} ${statsYear}`;
+    head.append(arrow(-1, "Month before", "M15 6l-6 6 6 6"), title, arrow(1, "Month after", "M9 6l6 6-6 6"));
     const cells = WEEKDAYS.map((w) => {
-      const head = document.createElement("span");
-      head.className = "cal-head";
-      head.textContent = w[0];
-      return head;
+      const h = document.createElement("span");
+      h.className = "cal-head";
+      h.textContent = w[0];
+      return h;
     });
     for (let i = 0; i < (first.getDay() + 6) % 7; i++) cells.push(document.createElement("span"));
     for (let d = 1; d <= days; d++) {
@@ -2184,6 +2513,7 @@
       const cell = document.createElement("button");
       cell.type = "button";
       cell.className = "cal-day";
+      cell.dataset.day = String(d);
       if (list.length) cell.classList.add("has");
       if (statsDay === d) cell.classList.add("selected");
       if (today.getFullYear() === statsYear && today.getMonth() === statsPick && today.getDate() === d) cell.classList.add("today");
@@ -2195,54 +2525,25 @@
       for (const p of list.sort((a, b) => a.ts - b.ts).slice(0, 6)) {
         const dot = document.createElement("i");
         dot.style.background = colors.get(p.mmsi) || "#64748b";
-        dot.title = `${hhmm(p.minute)} ${DIRECTIONS[p.direction] || ""}`;
+        dot.title = `${hhmm(p.minute)} ${SHORT_DIR[p.direction] || ""}`;
         dots.append(dot);
       }
       cell.append(num, dots);
       cell.addEventListener("click", () => {
         statsDay = statsDay === d ? null : d;
+        passagesShown = PAGE;
         renderStats();
       });
       cells.push(cell);
     }
-    box.replaceChildren(...cells);
+    const grid = document.createElement("div");
+    grid.className = "stats-calendar";
+    grid.replaceChildren(...cells);
+    box.replaceChildren(head, grid);
   }
 
-  function renderStatsChart(axis, counts, totals) {
-    const W = 360, H = 140, TOP = 16, BOTTOM = 20;
-    const col = W / axis.length;
-    const gap = Math.min(6, col * 0.25);
-    const unit = (H - TOP - BOTTOM) / Math.max(1, ...totals);
-    const showCounts = axis.length <= 12;
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Inner route passages">`;
-    axis.forEach((a, i) => {
-      const x = i * col + gap / 2, w = col - gap, cx = x + w / 2;
-      const cls = ["bar", statsPick === a.key ? "selected" : "", statsPick !== null && statsPick !== a.key ? "dim" : ""].join(" ");
-      let y = H - BOTTOM;
-      svg += `<g class="${cls}" data-key="${a.key}"><rect class="hit" x="${i * col}" y="0" width="${col}" height="${H}"><title>${esc(a.name)}: ${totals[i]}</title></rect>`;
-      for (const ship of statsData.ships) {
-        const n = counts.get(a.key).get(ship.mmsi);
-        if (!n) continue;
-        y -= n * unit;
-        svg += `<rect x="${x}" y="${y}" width="${w}" height="${n * unit}" fill="${esc(ship.color)}"><title>${esc(ship.name)}: ${n}</title></rect>`;
-      }
-      if (showCounts && totals[i]) svg += `<text class="count" x="${cx}" y="${y - 4}">${totals[i]}</text>`;
-      if (a.label) svg += `<text class="label" x="${cx}" y="${H - 6}">${esc(a.label)}</text>`;
-      svg += "</g>";
-    });
-    svg += `<line class="axis" x1="0" x2="${W}" y1="${H - BOTTOM}" y2="${H - BOTTOM}"/></svg>`;
-    $("stats-chart").innerHTML = svg;
-  }
-
-  $("stats-chart").addEventListener("click", (ev) => {
-    const bar = ev.target.closest("[data-key]");
-    if (!bar) return;
-    const key = Number(bar.dataset.key);
-    statsPick = statsPick === key ? null : key;
-    statsDay = null;
-    renderStats();
-  });
-
+  // One row per ship: its inner passages and share; then its usual times. Tap a row to
+  // count only that ship (again for all).
   function renderStatsShips(rows) {
     const byShip = new Map();
     for (const p of rows) {
@@ -2250,40 +2551,134 @@
       byShip.get(p.mmsi).push(p);
     }
     const innerOf = (mmsi) => (byShip.get(mmsi) || []).filter((p) => p.route === "inner");
-    const shown = statsData.ships.filter((s) => s.current || byShip.has(s.mmsi))
+    const ships = statsShips();
+    const shown = ships.filter((s) => s.current || byShip.has(s.mmsi))
       .sort((a, b) => innerOf(b.mmsi).length - innerOf(a.mmsi).length || a.name.localeCompare(b.name));
     $("stats-ships").replaceChildren(...shown.map((ship) => {
       const all = byShip.get(ship.mmsi) || [];
       const inner = innerOf(ship.mmsi);
-      const east = inner.filter((p) => p.direction === "east");
-      const west = inner.filter((p) => p.direction === "west");
       const li = document.createElement("li");
-      const dot = document.createElement("span");
-      dot.className = "dot";
-      dot.style.background = ship.color;
-      const grow = document.createElement("div");
-      grow.className = "grow";
-      const line = (text, cls) => {
-        const span = document.createElement("span");
-        span.className = cls;
-        span.textContent = text;
-        grow.append(span);
-      };
-      line(ship.current ? ship.name : `${ship.name} (removed)`, "");
-      line(inner.length ? `${east.length} towards Helsinki · ${west.length} towards Stockholm` : "No inner-route passages", "small muted");
-      const usual = [];
-      if (east.length >= 3) usual.push(`${hhmm(median(east.map((p) => p.minute)))} towards Helsinki`);
-      if (west.length >= 3) usual.push(`${hhmm(median(west.map((p) => p.minute)))} towards Stockholm`);
-      if (usual.length) line(`Usually ${usual.join(", ")}`, "small muted");
-      if (all.length > inner.length) {
-        line(`Inner route on ${inner.length} of ${all.length} recorded trips (${Math.round((100 * inner.length) / all.length)}%)`, "small muted");
-      }
-      const count = document.createElement("span");
-      count.className = "stat-count";
-      count.textContent = String(inner.length);
-      li.append(dot, grow, count);
+      li.className = "clickable stat-ship";
+      if (statsHidden.has(ship.mmsi)) li.classList.add("left-out");
+      const only = shown.every((s) => s.mmsi === ship.mmsi || statsHidden.has(s.mmsi)) && !statsHidden.has(ship.mmsi);
+      li.title = only ? "Count every ship again" : `Count only ${ship.name}`;
+      const usual = ["east", "west"].map((dir) => {
+        const these = inner.filter((p) => p.direction === dir);
+        return these.length >= 3 ? `${hhmm(median(these.map((p) => p.minute)))} ${SHORT_DIR[dir]}` : null;
+      }).filter(Boolean);
+      const share = all.length ? ` · ${Math.round((100 * inner.length) / all.length)}% of ${all.length}` : "";
+      li.innerHTML = `<span class="dot" style="background:${esc(ship.color)}"></span>`
+        + `<div class="grow"><span>${esc(ship.current ? ship.name : `${ship.name} (removed)`)}</span>`
+        + `<span class="small muted">${inner.length ? `${inner.length} inner${share}` : "No inner passages"}${usual.length ? ` · usually ${usual.join(", ")}` : ""}</span></div>`
+        + `<span class="stat-count">${inner.length}</span>`;
+      li.addEventListener("click", () => setHidden(only ? [] : ships.filter((s) => s.mmsi !== ship.mmsi).map((s) => s.mmsi)));
       return li;
     }));
+  }
+
+  // The passages in the selection, newest first, a day heading over each day's.
+  function renderPassageList(scope, scopeName) {
+    const list = $("passages-list");
+    const sorted = [...scope].sort((a, b) => b.ts - a.ts);
+    $("passages-title").textContent = statsPick != null || statsDay ? `Passages, ${scopeName}` : "Passages";
+    $("passages-count").textContent = sorted.length ? `${sorted.length} · newest first` : "";
+    if (!sorted.length) {
+      const p = document.createElement("p");
+      p.className = "small muted";
+      p.textContent = statsData.passages.length ? "No passages in this selection." : "None yet.";
+      list.replaceChildren(p);
+      $("passages-more").hidden = true;
+      return;
+    }
+    const colors = new Map(statsShips().map((s) => [s.mmsi, s]));
+    const out = [];
+    let day = null;
+    for (const p of sorted.slice(0, passagesShown)) {
+      const d = fmtDay(p.ts);
+      if (d !== day) {
+        day = d;
+        const h = document.createElement("h4");
+        h.className = "day-head";
+        h.textContent = d;
+        out.push(h);
+      }
+      const ship = colors.get(p.mmsi);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "passage-row";
+      row.title = `${ship?.name || `MMSI ${p.mmsi}`}: show this passage on the map`;
+      row.innerHTML = `<span class="pr-time">${clock(p.ts)}</span>`
+        + `<i class="dot" style="background:${esc(ship?.color || "#64748b")}"></i>`
+        + `<span class="pr-ship">${esc(shortName(ship?.name || String(p.mmsi)))}</span>`
+        + `<span class="route-tag ${p.route}">${p.route === "inner" ? "Inner" : "Outer"}</span>`
+        + `<span class="pr-dir" title="${SHORT_DIR[p.direction] || ""}">${p.direction === "east" ? "→ Hel" : p.direction === "west" ? "← Sto" : ""}</span>`;
+      const wx = FerryWeather.row(p);
+      if (wx) { wx.classList.add("pr-wx"); row.append(wx); }
+      if (p.notified) row.insertAdjacentHTML("beforeend", '<svg class="pr-bell" viewBox="0 0 24 24" aria-label="Alert sent"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>');
+      row.addEventListener("click", () => openPassage(p).catch(console.error));
+      out.push(row);
+    }
+    list.replaceChildren(...out);
+    const more = $("passages-more");
+    more.hidden = sorted.length <= passagesShown;
+    more.textContent = `Show ${Math.min(PAGE, sorted.length - passagesShown)} more`;
+  }
+  $("passages-more").addEventListener("click", () => { passagesShown += PAGE; renderStats(); });
+
+  async function openPassage(p) {
+    const [row] = await api(`api/passages?since=${p.ts}&until=${p.ts + 1}&mmsi=${p.mmsi}&limit=1`);
+    if (menuModal()) $("ships-dialog").close();
+    await showPassage(row || p);
+  }
+
+  // "Does the weather matter?": only with enough passages to say anything.
+  const WEATHER_MIN = 20;
+  function renderStatsWeather(scope, scopeName) {
+    const box = $("stats-weather-box"), note = $("stats-weather-note");
+    const enough = scope.length >= WEATHER_MIN;
+    box.hidden = !enough;
+    note.hidden = enough || !scope.length;
+    note.textContent = `The weather comparison needs at least ${WEATHER_MIN} passages in the selection (this has ${scope.length}).`;
+    if (enough) FerryWeather.breakdown($("stats-weather"), scope, scopeName);
+  }
+
+  // CSV of the selection: its time span (the year, month, week or day picked), ships and
+  // direction. A weekday or time of day can't be cut out on the server: that gives the year.
+  function renderStatsCsv(picked, scopeName) {
+    const q = new URLSearchParams();
+    const sec = (date) => String(Math.round(date.getTime() / 1000));
+    const span = (a, b) => { q.set("since", sec(a)); q.set("until", sec(b)); };
+    let what = scopeName;
+    if (statsDay) span(new Date(statsYear, statsPick, statsDay), new Date(statsYear, statsPick, statsDay + 1));
+    else if (statsView === "month" && picked) span(new Date(statsYear, statsPick, 1), new Date(statsYear, statsPick + 1, 1));
+    else if (statsView === "year" && picked) span(new Date(statsPick, 0, 1), new Date(statsPick + 1, 0, 1));
+    else if (statsView === "week" && picked) {
+      const jan4 = new Date(statsYear, 0, 4);
+      const monday = new Date(statsYear, 0, 4 - ((jan4.getDay() + 6) % 7) + (statsPick - 1) * 7);
+      span(monday, new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7));
+    } else if (statsView !== "year") { span(new Date(statsYear, 0, 1), new Date(statsYear + 1, 0, 1)); what = String(statsYear); }
+    else what = "all years";
+    const shown = statsShips().filter((s) => !statsHidden.has(s.mmsi));
+    if (statsHidden.size) q.set("mmsi", shown.map((s) => s.mmsi).join(","));
+    if (statsDir !== "both") q.set("direction", statsDir);
+    const link = $("stats-csv-sel");
+    link.href = `api/passages.csv?${q}`;
+    link.title = [what, statsHidden.size ? shown.map((s) => shortName(s.name)).join(", ") : "", statsDir !== "both" ? SHORT_DIR[statsDir] : ""]
+      .filter(Boolean).join(" · ");
+  }
+
+  // The aircraft history lives at the bottom of Stats (switched on in Layers).
+  function renderStatsAircraft() {
+    const box = $("stats-aircraft");
+    const info = lastState?.aircraft || {};
+    if (!info.enabled && !info.flights_stored) { box.replaceChildren(); return; }
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ah-open-button";
+    const n = info.flights_stored || 0;
+    open.innerHTML = `<span class="strong">Aircraft history</span><span class="small muted">${n ? `${n.toLocaleString()} ${n === 1 ? "flight" : "flights"} of rescue aircraft stored` : "No flights stored yet"}</span>`;
+    open.addEventListener("click", () => historyView.open());
+    box.replaceChildren(open);
   }
 
   // --- fleets -------------------------------------------------------------------
@@ -2321,17 +2716,8 @@
     note.className = info.error ? "small warn-text" : "small muted note";
     note.innerHTML = info.error
       ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again shortly.`
-      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
+      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them, shown in Stats › Aircraft history. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
     section.append(head, note);
-    if (info.enabled || info.flights_stored) {
-      const open = document.createElement("button");
-      open.type = "button";
-      open.className = "ah-open-button";
-      const n = info.flights_stored || 0;
-      open.innerHTML = `<span class="strong">Aircraft history</span><span class="small muted">${n ? `${n.toLocaleString()} ${n === 1 ? "flight" : "flights"} stored` : "No flights stored yet"}</span>`;
-      open.addEventListener("click", () => historyView.open());
-      section.append(open);
-    }
     return section;
   }
 
@@ -2503,28 +2889,8 @@
   }
 
   function renderLayers() {
-    const w = lastState?.weather || {};
-    const weatherOn = w.enabled !== false;
     const faultCount = faultsData?.faults?.length;
     $("layers-list").replaceChildren(
-      groupHead("Weather"),
-      switchRow({
-        title: "Sea conditions", color: "#0ea5e9", checked: weatherOn,
-        note: weatherOn && w.error
-          ? `Couldn't reach the Finnish Meteorological Institute just now (${w.error}). It tries again in a few minutes.`
-          : "Wind, sea temperature, waves and visibility from FMI stations near Porkkala, read while the map is open. Shown at the top of the map; tap it for details.",
-        onChange: async (on) => { await api("api/weather", { method: "POST", body: { enabled: on } }); await loadState(); },
-      }),
-      switchRow({
-        title: "Weather stations", color: "#0284c7", checked: stationsOn,
-        count: stationsOn && stationsData?.stations ? `${stationsData.stations.length} stations` : "",
-        note: stationsOn && stationsData?.error
-          ? `Couldn't reach the Finnish Meteorological Institute just now (${stationsData.error}). It tries again in a few minutes.`
-          : "Wind at FMI's coastal and sea stations in m/s, the arrow pointing where it blows. Tap one for gusts, temperatures and the past 24 hours. Read every 10 minutes while the map is open.",
-        extra: stationsOn ? windLegend() : null,
-        onChange: async (on) => { setStations(on); renderLayers(); },
-      }),
-      ...overlays.rows(),
       groupHead("On the chart"),
       switchRow({
         title: "Harbours", color: HARBOUR_RED, checked: harboursOn,
@@ -2555,6 +2921,48 @@
     renderRoutesList();
     renderFleets();
   }
+
+  // --- weather on the map: its own button and panel ---------------------------------------
+  // Sea conditions (the pill), the stations and the overlays, each a big switch with its
+  // opacity; the button lights up while any weather is drawn on the map.
+
+  function renderWeather() {
+    const w = lastState?.weather || {};
+    const weatherOn = w.enabled !== false;
+    const lit = stationsOn || [...overlays.entries.values()].some((e) => e.on);
+    $("weather-button").classList.toggle("lit", lit);
+    if ($("weather-sheet").hidden) return;
+    $("weather-list").replaceChildren(
+      switchRow({
+        title: "Sea conditions", color: "#0ea5e9", checked: weatherOn,
+        note: weatherOn && w.error
+          ? `Couldn't reach the Finnish Meteorological Institute just now (${w.error}). It tries again in a few minutes.`
+          : "Wind, sea temperature, waves and visibility from FMI stations near Porkkala, read while the map is open. Shown at the top of the map; tap it for details.",
+        onChange: async (on) => { await api("api/weather", { method: "POST", body: { enabled: on } }); await loadState(); },
+      }),
+      switchRow({
+        title: "Weather stations", color: "#0284c7", checked: stationsOn,
+        count: stationsOn && stationsData?.stations ? `${stationsData.stations.length} stations` : "",
+        note: stationsOn && stationsData?.error
+          ? `Couldn't reach the Finnish Meteorological Institute just now (${stationsData.error}). It tries again in a few minutes.`
+          : "Wind at FMI's coastal and sea stations in m/s, the arrow pointing where it blows. Tap one for gusts, temperatures and the past 24 hours. Read every 10 minutes while the map is open.",
+        extra: stationsOn ? windLegend() : null,
+        onChange: async (on) => { setStations(on); renderWeather(); },
+      }),
+      ...overlays.rows(),
+    );
+  }
+
+  function toggleWeather(open = $("weather-sheet").hidden) {
+    $("weather-sheet").hidden = !open;
+    document.body.classList.toggle("weather-open", open);
+    $("weather-button").setAttribute("aria-expanded", String(open));
+    if (open && !$("conditions-sheet").hidden) toggleConditions(false);
+    if (open && SIDE.matches === false && menu.open) menu.close();
+    renderWeather();
+  }
+  $("weather-button").addEventListener("click", () => toggleWeather());
+  $("weather-close").addEventListener("click", () => toggleWeather(false));
 
   // --- settings -------------------------------------------------------------------
 
@@ -3880,7 +4288,11 @@
   // Escape backs out of one thing at a time: a route field being typed in, drawing, a popup,
   // the aircraft history, the sheet, a playback, the route tool, the ship card, a replay.
   document.addEventListener("keydown", (e) => {
-    if ($("ships-dialog").open) return;
+    if (menu.open) {
+      // The side panel isn't modal, so Escape is ours to handle (a modal sheet closes itself).
+      if (e.key === "Escape" && !menuModal() && !(e.target instanceof HTMLInputElement && e.target.value)) menu.close();
+      return;
+    }
     const typing = e.target instanceof HTMLInputElement;
     if (route.on && !typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
@@ -3892,6 +4304,7 @@
     else if (drawing) cancelDrawing();
     else if (popupOpen) map.closePopup();
     else if (historyView.isOpen()) historyView.escape();
+    else if (!$("weather-sheet").hidden) toggleWeather(false);
     else if (!$("conditions-sheet").hidden) toggleConditions(false);
     else if (player) stopPlayback();
     else if (route.on) setRouteMode(false);

@@ -366,16 +366,30 @@ class Web:
             raise web.HTTPNotFound()
         return zone
 
-    async def passages(self, request: web.Request) -> web.Response:
-        limit = min(int(request.query.get("limit", 30)), 500)
-        names = stats.ship_names(self.fw.store)
+    @staticmethod
+    def _passage_filters(request: web.Request) -> dict[str, Any]:
+        """Which passages a list or CSV asks for: route, direction (east/west), since and
+        until (Unix times), mmsi (comma separated)."""
+        q = request.query
         try:
-            since = int(request.query["since"]) if "since" in request.query else None
-            until = int(request.query["until"]) if "until" in request.query else None
+            return {
+                "route": q.get("route") or None,
+                "direction": q.get("direction") or None,
+                "since_ts": int(q["since"]) if q.get("since") else None,
+                "before_ts": int(q["until"]) if q.get("until") else None,
+                "mmsis": [int(m) for m in q["mmsi"].split(",") if m] if q.get("mmsi") else None,
+            }
         except ValueError:
-            raise web.HTTPBadRequest(text="Invalid time") from None
-        rows = self.fw.store.passages(limit=limit, route=request.query.get("route"), since_ts=since,
-                                      before_ts=until)
+            raise web.HTTPBadRequest(text="Invalid filter") from None
+
+    async def passages(self, request: web.Request) -> web.Response:
+        try:
+            limit = min(int(request.query.get("limit", 30)), 500)
+            offset = int(request.query.get("offset", 0))
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid limit") from None
+        names = stats.ship_names(self.fw.store)
+        rows = self.fw.store.passages(limit=limit, offset=offset, **self._passage_filters(request))
         for row in rows:
             info = names.get(row["mmsi"], {})
             row["name"] = info.get("name", f"MMSI {row['mmsi']}")
@@ -384,7 +398,7 @@ class Web:
 
     async def passages_csv(self, request: web.Request) -> web.Response:
         return web.Response(
-            text=stats.to_csv(self.fw.store), content_type="text/csv",
+            text=stats.to_csv(self.fw.store, **self._passage_filters(request)), content_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="ferry-watch-passages.csv"'},
         )
 

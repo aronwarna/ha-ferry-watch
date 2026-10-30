@@ -27,8 +27,8 @@ def test_payload_keeps_removed_ships(tmp_path):
     assert by_mmsi[1]["current"] and by_mmsi[1]["name"] == "Kept"
     assert by_mmsi[2] == {"mmsi": 2, "name": "Removed", "color": "#222222", "current": False}
     assert 3 not in by_mmsi  # removed and no passages: nothing to show
-    assert data["passages"] == [[1000, 2, "inner", "west", None, None, None],
-                                [2000, 1, "inner", "east", None, None, None]]
+    assert data["passages"] == [[1000, 2, "inner", "west", None, None, None, 0],
+                                [2000, 1, "inner", "east", None, None, None, 0]]
 
 
 def test_change_mmsi_moves_passages(tmp_path):
@@ -36,7 +36,7 @@ def test_change_mmsi_moves_passages(tmp_path):
     store.add_ship(1, "Ship", "#111111")
     passage(store, 1, 1000)
     store.change_mmsi(1, 9)
-    assert stats.payload(store)["passages"] == [[1000, 9, "inner", "west", None, None, None]]
+    assert stats.payload(store)["passages"] == [[1000, 9, "inner", "west", None, None, None, 0]]
 
 
 def test_csv(tmp_path):
@@ -53,4 +53,5 @@ def test_csv(tmp_path):
                            "11.0", "1.2", "12.0", "ice", "31", "90"]
     assert rows[2][1:] == ["Silja Serenade", "1", "inner", "towards Stockholm", "17.2", "sent", "", "",
                            "", "", "", "", "", ""]
-    assert stats.payload(store)["passages"][1][4:] == [8.4, 225.0, "ice"]
+    assert stats.payload(store)["passages"][1][4:] == [8.4, 225.0, "ice", 0]
+    assert stats.payload(store)["passages"][0][7] == 1  # its alert was sent

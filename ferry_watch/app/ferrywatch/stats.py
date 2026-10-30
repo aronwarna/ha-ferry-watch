@@ -35,11 +35,12 @@ def payload(store: Store) -> dict[str, Any]:
     ]
     for mmsi in seen - names.keys():
         ships.append({"mmsi": mmsi, "name": f"MMSI {mmsi}", "color": "#64748b", "current": False})
-    # [ts, mmsi, route, direction, wind m/s, wind from °, ice state]
+    # [ts, mmsi, route, direction, wind m/s, wind from °, ice state, alert sent 0/1]
     return {"ships": ships, "passages": [list(r) for r in rows]}
 
 
-def to_csv(store: Store) -> str:
+def to_csv(store: Store, **filters: Any) -> str:
+    """Every passage as CSV, newest first; ``filters`` as Store.passages takes them."""
     names = ship_names(store)
     out = io.StringIO()
     writer = csv.writer(out)
@@ -49,7 +50,7 @@ def to_csv(store: Store) -> str:
     def num(value: Any, digits: int = 1) -> str:
         return "" if value is None else f"{value:.{digits}f}"
 
-    for row in store.passages(limit=1_000_000):
+    for row in store.passages(limit=1_000_000, **filters):
         writer.writerow([
             time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"])),
             names.get(row["mmsi"], {}).get("name", f"MMSI {row['mmsi']}"),

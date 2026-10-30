@@ -408,8 +408,12 @@ class Store:
         return dict(row) if row else None
 
     def passages(self, limit: int = 50, route: str | None = None, direction: str | None = None,
-                 before_ts: int | None = None, since_ts: int | None = None) -> list[dict[str, Any]]:
+                 before_ts: int | None = None, since_ts: int | None = None,
+                 mmsis: list[int] | None = None, offset: int = 0) -> list[dict[str, Any]]:
         sql, args = "SELECT * FROM passages WHERE 1=1", []
+        if mmsis:
+            sql += f" AND mmsi IN ({','.join('?' * len(mmsis))})"
+            args.extend(mmsis)
         if since_ts is not None:
             sql += " AND ts >= ?"
             args.append(since_ts)
@@ -422,15 +426,15 @@ class Store:
         if before_ts is not None:
             sql += " AND ts < ?"
             args.append(before_ts)
-        sql += " ORDER BY ts DESC LIMIT ?"
-        args.append(limit)
+        sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+        args.extend((limit, max(0, offset)))
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def passage_rows(self) -> list[tuple]:
-        """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice), oldest
-        first, for the stats."""
+        """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified),
+        oldest first, for the stats."""
         return [tuple(r) for r in self.db.execute(
-            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice "
+            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice, notified "
             "FROM passages ORDER BY ts").fetchall()]
 
     # --- sea ice -----------------------------------------------------------
