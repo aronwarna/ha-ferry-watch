@@ -51,6 +51,7 @@
     lightArc: "#f6b10a",
     wreckFill: "#d6eefa", // inside the dotted ring of a dangerous wreck
   };
+  const LIGHT_ALPHA = 0.7; // lights' flares, arcs, rings and wedges are see-through
   const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", Roboto, sans-serif';
   const SERIF = '"Times New Roman", Times, "Liberation Serif", "Noto Serif", serif';
 
@@ -475,7 +476,9 @@
     ctx.bezierCurveTo(r, cy - 1.6 * r, 0.25 * r, 0.3 * L, 0, 0.5 * s);
     ctx.closePath();
     ctx.fillStyle = color;
+    ctx.globalAlpha = LIGHT_ALPHA;
     ctx.fill();
+    ctx.globalAlpha = 1;
     if (color === C.lightY) {
       ctx.lineWidth = 0.9 * lw;
       ctx.strokeStyle = C.black;
@@ -1811,7 +1814,7 @@
         let a2 = ((to + 90) * Math.PI) / 180;
         if (a2 <= a1) a2 += 2 * Math.PI;
         // See-through yellow, so the lines and depths under it still show, as on the paper chart.
-        ctx.globalAlpha = 0.7;
+        ctx.globalAlpha = LIGHT_ALPHA;
         ctx.fillStyle = C.lightY;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, len, a1, a2); ctx.closePath();
         ctx.fill();
@@ -2012,7 +2015,7 @@
           if (narrow(arc)) {
             // A narrow white sector: a yellow wedge out to the arcs, no edge.
             ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, arc.a1, arc.a2); ctx.closePath();
-            ctx.fillStyle = C.lightY; ctx.fill();
+            ctx.fillStyle = C.lightY; ctx.globalAlpha = LIGHT_ALPHA; ctx.fill(); ctx.globalAlpha = 1;
             const mid = (arc.a1 + arc.a2) / 2;
             for (let d = 8 * s; d <= r; d += 8 * s) keepOff(x, y, x + Math.cos(mid) * d, y + Math.sin(mid) * d);
           } else {
@@ -2024,18 +2027,29 @@
       // lighthouse a ring in its light's colour.
       const rings = lights.filter((l) => l.aid && "msa".includes(l.aid[2]) && l.plan.lead == null && l.plan.dir == null && !l.plan.arcs.length);
       for (const l of rings) l.plan.ring = lightColours(l.aid)[0] || "W";
-      for (const pass of [0, 1]) {
-        for (const { x, y, plan } of lights) {
-          const parts = plan.ring ? [{ a1: 0, a2: 2 * Math.PI, letter: plan.ring }] : plan.arcs.filter((arc) => !narrow(arc));
-          for (const { a1, a2, letter } of parts) {
-            const pale = ARC[letter] === C.lightArc;
-            if (pass === 0 && !pale) continue;
-            ctx.beginPath();
-            ctx.arc(x, y, plan.ring ? ringR : r, a1, a2);
-            ctx.strokeStyle = pass === 0 ? C.black : ARC[letter];
-            ctx.lineWidth = pass === 0 ? width + 1.1 * unit : width;
-            ctx.stroke();
+      // See-through, so the lines and marks under them show; a pale arc's dark edge is a thin
+      // line either side of it.
+      for (const { x, y, plan } of lights) {
+        const parts = plan.ring ? [{ a1: 0, a2: 2 * Math.PI, letter: plan.ring }] : plan.arcs.filter((arc) => !narrow(arc));
+        const rad = plan.ring ? ringR : r;
+        for (const { a1, a2, letter } of parts) {
+          ctx.globalAlpha = LIGHT_ALPHA;
+          ctx.beginPath();
+          ctx.arc(x, y, rad, a1, a2);
+          ctx.strokeStyle = ARC[letter];
+          ctx.lineWidth = width;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          if (ARC[letter] !== C.lightArc) continue;
+          ctx.beginPath();
+          for (const side of [-1, 1]) {
+            const rr = rad + side * (width + 0.55 * unit) / 2;
+            ctx.moveTo(x + Math.cos(a1) * rr, y + Math.sin(a1) * rr);
+            ctx.arc(x, y, rr, a1, a2);
           }
+          ctx.strokeStyle = C.black;
+          ctx.lineWidth = 0.55 * unit;
+          ctx.stroke();
         }
       }
       for (const { x, y } of rings) {

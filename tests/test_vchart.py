@@ -1409,3 +1409,40 @@ def test_service_report_names_providers(tmp_path):
     assert rows["Traficom"] == {"name": rows["Traficom"]["name"], "ok": 200.0, "failing": None}
     assert rows["Väylä"]["ok"] == 50.0 and rows["Väylä"]["failing"] == 60.0
     assert rows["Land"]["ok"] is None and rows["Land"]["failing"] == 70.0
+
+
+def test_rocks_merge_when_zoomed_out_and_none_goes_missing():
+    from ferrywatch.vchart import ROCK_SCALE, ROCK_SIGN, merge_rocks
+    under, above = (38511,), (38513,)
+    # A tight cluster of five rocks, one above water, and a lone rock well away.
+    cluster = [[100 + dx, 100 + dy, above if dx == 3 else under] for dx, dy in ((0, 0), (3, 2), (5, 5), (1, 6), (6, 1))]
+    rows = {"rock": cluster + [[400, 300, under]], "rockpt": [[50, 50, under]], "rockctr": [[250, 250, under]]}
+    merge_rocks(rows, 12, 10, 20)
+    assert rows["rock"] == [[400, 300, under]]
+    signs = sorted(map(tuple, rows["rockpt"]))
+    # The cluster's sign stands on one of its rocks and shows the one above water; the small
+    # cluster's middle from "rockctr" has its sign ("rockpt" isn't used alongside it).
+    assert len(signs) == 2 and signs[1] == (250, 250, under)
+    assert [signs[0][0], signs[0][1]] in [r[:2] for r in cluster] and signs[0][2][0] == 38513
+    # Every rock has a sign within about a sign's width.
+    cell = ROCK_SIGN * ROCK_SCALE[12]
+    shown = [tuple(r[:2]) for r in rows["rock"] + rows["rockpt"]]
+    for x, y, _ in cluster:
+        assert min(math.hypot(x - sx, y - sy) for sx, sy in shown) < 1.6 * cell
+    # Zoomed in, each rock its own sign.
+    rows = {"rock": [list(r) for r in cluster]}
+    merge_rocks(rows, 14, 10, 20)
+    assert len(rows["rock"]) + len(rows["rockpt"]) <= 5
+
+
+def test_rock_merging_is_the_same_in_neighbouring_tiles():
+    from ferrywatch.vchart import EXTENT, merge_rocks
+    under = (38511,)
+    # Rocks along the edge between tile x=10 and x=11, given to both in their own units.
+    world = [(10 * EXTENT + 500 + i * 7, 3 * EXTENT + 200 + (i % 3) * 5) for i in range(8)]
+    out = []
+    for tx in (10, 11):
+        rows = {"rock": [[gx - tx * EXTENT, gy - 3 * EXTENT, under] for gx, gy in world]}
+        merge_rocks(rows, 12, tx, 3)
+        out.append(sorted((r[0] + tx * EXTENT, r[1] + 3 * EXTENT) for r in rows["rock"] + rows["rockpt"]))
+    assert out[0] == out[1] and 1 <= len(out[0]) < len(world)

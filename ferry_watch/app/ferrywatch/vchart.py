@@ -83,7 +83,7 @@ EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
 POINT_BUFFER = 64  # wider for points: symbols and their text reach past the tile edge
 POINT_BUFFERS = {"sector": 448, "aid": 128, "light": 128, "name": 256, "sounding": 128, "landmark": 128,
-                 "sign": 96, "call": 128, "building": 16}
+                 "sign": 96, "call": 128, "building": 16, "rock": 96, "rockctr": 96}
 BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge...
 POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
@@ -113,7 +113,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 22  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 23  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -256,6 +256,8 @@ LIGHT_COLOURS = {"v": "W", "p": "R", "vi": "G", "k": "Y"}
 
 # MML feature classes. Rocks: 1 underwater, 2 awash, 3 above water.
 ROCK_TYPES = {38511: 1, 38512: 2, 38513: 3}
+# The panel's rock sign size by zoom (vchart.js SCALE, smaller still up to zoom 12).
+ROCK_SCALE = {12: 0.62 * 0.8, 13: 0.78, 14: 1.0}
 # Wrecks: 1 depth unknown (dangerous), 2 depth known, 3 hull showing.
 WRECK_TYPES = {16721: 1, 16722: 2, 16712: 3}
 # Depth contours as the paper chart shows them; Traficom's data has more.
@@ -332,7 +334,7 @@ DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 11, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
-               "rock": 12, "rockarea": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
+               "rock": 12, "rockarea": 12, "rockctr": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
                "xland": MIN_Z, "xdepth": MIN_Z}
@@ -1908,8 +1910,58 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if rows.get("xland"):
         # Land outside Finland, under the foreign depth areas (see foreign.py).
         tile["land"] = tile.get("land", []) + [ring for _, *rings in rows["xland"] for ring in rings]
+    if z <= ROCK_MERGE_MAX_Z:
+        merge_rocks(rows, z, x, y)
+    rows.pop("rockctr", None)
     _format(tile, rows, z, classes)
     return {k: v for k, v in tile.items() if v != []}
+
+
+# Zoomed out, rocks close together are one sign, so they don't pile up on each other. Every
+# rock still has a sign within about a sign's width: a cluster's sign stands on one of its
+# rocks, as the paper chart's overview editions do. From ROCK_MERGE_MAX_Z on, every rock.
+ROCK_MERGE_MAX_Z = 14
+ROCK_SIGN = 40  # tile units at scale 1 (20 chart px): the room a rock sign takes, and a bit
+ROCK_TYPES_ORDER = (3, 2, 1)  # a cluster shows its rock above water first, then awash
+
+
+def merge_rocks(rows: dict, z: int, x: int, y: int) -> None:
+    """Rocks and rock clusters' signs in a tile (rows "rock", "rockpt", and "rockctr": the
+    middles of clusters too small for zoomed-out levels), merged to one sign per cell of a
+    grid fixed to the map, so every tile merges them alike. A sign right beside another's
+    gives way to it. Singles go back in "rock", merged and cluster signs in "rockpt"."""
+    scale = ROCK_SCALE.get(z, 1.0)
+    cell = ROCK_SIGN * scale
+    signs = [(px, py, p, False) for px, py, p in rows.get("rock", ())]
+    groups = rows.get("rockctr") if "rockctr" in rows else rows.get("rockpt", ())
+    signs += [(px, py, p, True) for px, py, p in groups or ()]
+    if not signs:
+        return
+    gx0, gy0 = x * EXTENT, y * EXTENT  # the tile's corner on the map, in tile units
+    cells: dict[tuple[int, int], list] = {}
+    for sign in signs:
+        cells.setdefault((math.floor((gx0 + sign[0]) / cell), math.floor((gy0 + sign[1]) / cell)), []).append(sign)
+    picked = {}
+    for key, members in cells.items():
+        cx = sum(m[0] for m in members) / len(members)
+        cy = sum(m[1] for m in members) / len(members)
+        # On the rock nearest the middle (ties: the same one in every tile).
+        px, py, p, group = min(members, key=lambda m: ((m[0] - cx) ** 2 + (m[1] - cy) ** 2, m[0], m[1]))
+        if len(members) > 1:
+            kinds = {ROCK_TYPES.get(_int(_pad(m[2], 1)[0]), 1) for m in members}
+            first = next((k for k in ROCK_TYPES_ORDER if k in kinds), 1)
+            code = next(c for c, k in ROCK_TYPES.items() if k == first)
+            p, group = (code, *_pad(p, 1)[1:]), True
+        picked[key] = (px, py, p, group)
+    near = (0.8 * cell) ** 2
+    rock, rockpt = [], []
+    for key, (px, py, p, group) in picked.items():
+        if any(other < key and (ox - px) ** 2 + (oy - py) ** 2 < near
+               for other, (ox, oy, _, _) in picked.items()
+               if abs(other[0] - key[0]) <= 1 and abs(other[1] - key[1]) <= 1 and other != key):
+            continue
+        (rockpt if group else rock).append([px, py, p])
+    rows["rock"], rows["rockpt"] = rock, rockpt
 
 
 def _pad(p: tuple, n: int) -> tuple:
@@ -3052,6 +3104,22 @@ class VectorChart:
                 merge_into(layers, got)  # foreign rows add to the Finnish ones
                 continue
             layers.update(got)
+            if part == "mml" and level < len(LEVELS) - 1:
+                # Zoomed-out levels leave small rock clusters out: their middles, from the
+                # full level, so that each still gets a sign (see merge_rocks).
+                try:
+                    _, full = read_block(path, len(LEVELS) - 1)
+                except (OSError, ValueError, EOFError):
+                    full = {}
+                area = full.get("rockarea")
+                b = LayerBuilder("point")
+                for i in range(area.n if area is not None else 0):
+                    r0 = area.rings(i)[0]
+                    v0, v1 = area.vo[r0], area.vo[r0 + 1]
+                    if v1 > v0:
+                        b.point(area.props[area.pi[i]], sum(area.co[2 * v] for v in range(v0, v1)) / (v1 - v0),
+                                sum(area.co[2 * v + 1] for v in range(v0, v1)) / (v1 - v0))
+                layers["rockctr"] = b.layer
         return layers
 
     def _written(self, bx: int, by: int) -> None:

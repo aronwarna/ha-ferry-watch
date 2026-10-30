@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.2
+
+- Rocks no longer pile up when zoomed out (up to zoom 14): rocks close together are drawn
+  as one cluster sign, standing on one of them and showing a rock above water if there is
+  one. No place with rocks is left without a sign; small rock clusters that used to vanish
+  when zooming out now keep theirs. From zoom 15 every rock is drawn.
+- All light symbols are see-through: flares, sector arcs, rings and wedges, so lines,
+  marks and depths under them show.
+
 ## 0.26.1
 
 - Sector wedges are see-through yellow, so the lines, depths and contours under them show,
