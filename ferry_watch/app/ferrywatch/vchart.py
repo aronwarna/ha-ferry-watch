@@ -64,6 +64,10 @@ VAYLA_WFS = "https://avoinapi.vaylapilvi.fi/vaylatiedot/vesivaylatiedot/wfs"
 MML_API = "https://avoin-paikkatieto.maanmittauslaitos.fi/maastotiedot/features/v1"
 # Finnish Heritage Agency's registers (CC BY 4.0, no key).
 MV_WFS = "https://geoserver.museovirasto.fi/geoserver/rajapinta/wfs"
+# The chart's data providers by host, as Settings names them.
+SERVICE_NAMES = {"julkinen.traficom.fi": "Traficom (depths, routeing)", "avoinapi.vaylapilvi.fi": "Väylä (fairways, marks)",
+                 "avoin-paikkatieto.maanmittauslaitos.fi": "Land Survey (rocks, names, land)",
+                 "geoserver.museovirasto.fi": "Museovirasto (wrecks, heritage)"}
 ATTRIBUTION = ("Chart data: Traficom (depths, routeing, harbour structures), Väylävirasto (fairways, aids, signs), "
                "Maanmittauslaitos (rocks, names, land), Museovirasto (wrecks, heritage sites and defences, "
                "CC BY 4.0). Outside Finland: depths EMODnet Bathymetry (CC BY 4.0); coast, sea marks, routeing "
@@ -109,7 +113,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 20  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 21  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -1384,17 +1388,15 @@ def lead_marks(data: dict) -> tuple[dict[int, list], dict[tuple[int, int], float
 
 
 # A sector light's narrow white sector is drawn as a yellow wedge out along the fairway it
-# leads ships along, as far as it is any use: until it grows wider than the fairway's area
-# (its edges reach the buoys), or the fairway turns out of it, whichever comes first (the
-# panel's NARROW and lightPlan say which sectors are wedges).
+# leads ships along. Like the paper chart's, they're all about one length, and shorter only
+# where the fairway's leg turns out of the white sooner (the panel's NARROW and lightPlan say
+# which sectors are wedges).
 WEDGE_SPAN = 8  # degrees: a white sector this narrow is a wedge
 WEDGE_MIN_Z = 13  # drawn from this zoom (the panel draws sector arcs from 14)
-WEDGE_REACH = UNITS // 12  # block units (about 800 m): with no fairway area to go by
+WEDGE_REACH = UNITS // 10  # block units (about 1 km): the usual length
 WEDGE_MIN = UNITS // 25  # (about 400 m)
-# (About 1.6 km.) Well within the points kept past each block's edge, so every block a wedge
-# reaches has its light.
-WEDGE_MAX = UNITS // 6
-WEDGE_STEP = 270  # block units (about 40 m) between the widths measured along a wedge
+# Well within the points kept past each block's edge, so every block a wedge reaches has its light.
+WEDGE_MAX = WEDGE_REACH
 WEDGE_SLACK = 100  # block units (about 15 m): a fairway's line this far outside still runs in it
 WEDGE_ALONG = math.cos(math.radians(20))  # a fairway's line within 20° of the wedge runs along it
 _wedge_cache: OrderedDict = OrderedDict()
@@ -1404,14 +1406,14 @@ def sector_wedges(data: dict) -> dict[int, int]:
     """How far each sector light's narrow white sector reaches: {sector row: block units}
     (see WEDGE_SPAN above). A light that is all narrow sectors is a directional light's beam,
     drawn otherwise, and has none."""
-    sector, fline, farea = data.get("sector"), data.get("fline") or data.get("route"), data.get("farea")
+    sector, fline = data.get("sector"), data.get("fline") or data.get("route")
     if sector is None or not sector.n:
         return {}
-    key = (id(sector), id(fline), id(farea))
+    key = (id(sector), id(fline))
     hit = _wedge_cache.get(key)
-    if hit is not None and hit[0] is sector and hit[1] is fline and hit[2] is farea:
+    if hit is not None and hit[0] is sector and hit[1] is fline:
         _wedge_cache.move_to_end(key)
-        return hit[3]
+        return hit[2]
     lights: dict[tuple[int, int], list] = {}
     for i in range(sector.n):
         a, b, colour = _pad(sector.props[sector.pi[i]], 3)
@@ -1438,52 +1440,19 @@ def sector_wedges(data: dict) -> dict[int, int]:
         box = (lx - WEDGE_MAX, ly - WEDGE_MAX, lx + WEDGE_MAX, ly + WEDGE_MAX)
         near = [s for s in segs if min(s[0], s[2]) <= box[2] and max(s[0], s[2]) >= box[0]
                 and min(s[1], s[3]) <= box[3] and max(s[1], s[3]) >= box[1]]
-        areas = []  # each fairway area round the light, as its edges
-        for j in range(farea.n if farea is not None else 0):
-            x0, y0, x1, y1 = farea.bbox(j)
-            if x1 < box[0] or x0 > box[2] or y1 < box[1] or y0 > box[3]:
-                continue
-            edges = []
-            for r in farea.rings(j):
-                ring = farea.pts(farea.vo[r], farea.vo[r + 1])
-                edges.extend((*p, *q) for p, q in zip(ring, ring[1:] + ring[:1]) if p != q)
-            areas.append(edges)
         for i, a, span, colour in rows:
             if str(colour or "").lower() == "v" and span <= WEDGE_SPAN:
-                out[i] = _wedge_reach(lx, ly, a, span, near, areas)
-    _wedge_cache[key] = (sector, fline, farea, out)
+                out[i] = _wedge_reach(lx, ly, a, span, near)
+    _wedge_cache[key] = (sector, fline, out)
     while len(_wedge_cache) > 32:
         _wedge_cache.popitem(last=False)
     return out
 
 
-def _across(px: float, py: float, nx: float, ny: float, edges: list) -> tuple[float, float] | None:
-    """How far an area reaches either way from a point inside it, along (nx, ny) and back;
-    None when the point is outside."""
-    ahead, back, crossings = math.inf, math.inf, 0
-    for ax, ay, bx, by in edges:
-        ex, ey = bx - ax, by - ay
-        den = nx * ey - ny * ex
-        if den == 0:
-            continue
-        # The point + s (nx, ny) meets the edge at a + u (ex, ey).
-        wx, wy = ax - px, ay - py
-        u = (wx * ny - wy * nx) / den
-        if not 0 <= u < 1:
-            continue
-        s_ = (wx * ey - wy * ex) / den
-        if s_ > 0:
-            crossings += 1
-            ahead = min(ahead, s_)
-        else:
-            back = min(back, -s_)
-    return (ahead, back) if crossings % 2 else None
-
-
-def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list, areas: list = ()) -> int:
+def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list) -> int:
     """A narrow white sector's reach (see WEDGE_SPAN above). ``start`` and ``span`` are its
     bearings towards the light, as Väylä gives them; it lies on the opposite side. ``segs``
-    are the fairways' lines round it, ``areas`` the fairway areas' edges."""
+    are the fairways' lines round it."""
     mid = math.radians(start + span / 2 + 180)
     ux, uy = math.sin(mid), -math.cos(mid)  # out along the wedge, y down
     tan = math.tan(math.radians(span / 2))
@@ -1514,26 +1483,8 @@ def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list, ar
         if lo <= hi:
             t = max(t0 + lo * (t1 - t0), t0 + hi * (t1 - t0))
             far = t if far is None else max(far, t)
-    # Out to where the fairway turns out of it (or not far, with no fairway line in it)...
-    reach = WEDGE_REACH if far is None else min(WEDGE_MAX, far + 2 * WEDGE_SLACK)
-    # ...but only while it fits in the fairway's area: once it's wider, being in the white
-    # no longer keeps a ship between the marks. Without areas to go by, not far.
-    inside = False
-    d = WEDGE_STEP
-    while d < reach:
-        px, py = lx + ux * d, ly + uy * d
-        widths = [w for w in (_across(px, py, -uy, ux, edges) for edges in areas) if w]
-        if widths:
-            inside = True
-            if 2 * d * tan >= max(sum(w) for w in widths):
-                reach = d
-                break
-        elif inside:
-            reach = d  # out of the fairway's area
-            break
-        d += WEDGE_STEP
-    if not inside:
-        reach = min(reach, WEDGE_REACH)
+    # The usual length, or out to where the fairway turns out of it if that's sooner.
+    reach = WEDGE_REACH if far is None else far + 2 * WEDGE_SLACK
     return round(min(WEDGE_MAX, max(WEDGE_MIN, reach)))
 
 
@@ -2506,6 +2457,8 @@ class VectorChart:
         self._failed: dict[tuple, float] = {}
         self._down: dict[str, float] = {}  # service -> until when it's left alone, after timing out
         self._down_streak: dict[str, int] = {}  # service -> times it timed out in a row
+        self._ok_at: dict[str, float] = {}  # service -> when it last answered
+        self._fail_since: dict[str, float] = {}  # service -> when it started failing (until it answers)
         # file name -> (mtime, some layer failed, type names the services didn't have then)
         self._missing: dict[str, tuple[float, bool, tuple]] = {}
         self._filled: dict[str, float] = {}  # part "" file -> mtime it was seen without 0.16.5's drawn contours
@@ -2611,7 +2564,20 @@ class VectorChart:
                 "errors": {**self.errors, **self.foreign.errors}, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
                 "keep": self.keep_status, "mml_key": bool(self.mml_key), "foreign": self.foreign.enabled,
                 "memory_mb": round(self._memory_bytes / 1e6, 1),
-                "layers": self.layer_report(), "rev": self._rev()}
+                "layers": self.layer_report(), "rev": self._rev(), "services": self.service_report()}
+
+    def service_report(self) -> list[dict[str, Any]]:
+        """Each chart data provider asked so far: when it last answered, and since when it has
+        been failing (None while it answers), for Settings' list of data sources."""
+        out: dict[str, dict[str, Any]] = {}
+        for service in {*self._ok_at, *self._fail_since}:
+            name = SERVICE_NAMES.get(urlsplit(service).hostname or "", urlsplit(service).hostname or service)
+            row = out.setdefault(name, {"name": name, "ok": None, "failing": None})
+            if service in self._ok_at:
+                row["ok"] = max(row["ok"] or 0, self._ok_at[service])
+            if service in self._fail_since:
+                row["failing"] = min(row["failing"] or math.inf, self._fail_since[service])
+        return sorted(out.values(), key=lambda r: r["name"])
 
     def memory_bytes(self) -> dict[str, int]:
         """What the chart holds in RAM: block layers, heritage sites, foreign depth grids."""
@@ -3141,10 +3107,14 @@ class VectorChart:
                     self.errors.pop(key, None)
                     for service in services:
                         self._down_streak.pop(service, None)
+                        self._ok_at[service] = time.time()
+                        self._fail_since.pop(service, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
                     if isinstance(err, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
                         for service in services:
                             self._service_down(service)
+                    for service in services:
+                        self._fail_since.setdefault(service, time.time())
                     msg = self._scrub(str(err) or type(err).__name__)
                     if self.errors.get(key) != msg:
                         _LOGGER.warning("Chart data %s for block %s,%s failed: %s", key, bx, by, msg)

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.25.1
+
+- Sector lights' narrow white sectors (the yellow wedges) are now all about one length,
+  about 1 km, as on the paper chart. A wedge is shorter only where its fairway turns off
+  sooner. They no longer try to follow the fairway's width.
+- Each wedge has a thin dark edge and its W at the far end, as on the paper chart, instead
+  of a W at the arc.
+
 ## 0.25.0
 
 The menu and the Stats tab rebuilt (items 1 to 18 and 31 of the UI review).

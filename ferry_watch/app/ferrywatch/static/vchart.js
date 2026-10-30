@@ -1814,8 +1814,20 @@
         if (a2 <= a1) a2 += 2 * Math.PI;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, len, a1, a2); ctx.closePath();
         ctx.fill();
-        // Soundings keep off it near the light, where the arcs are.
+        // A thin dark edge, and its W at the far end along it, as the paper chart has.
+        ctx.strokeStyle = C.black;
+        ctx.lineWidth = 0.6 * s;
+        ctx.stroke();
         const mid = (a1 + a2) / 2;
+        const tx = x + Math.cos(mid) * (len + 7 * s), ty = y + Math.sin(mid) * (len + 7 * s);
+        ctx.save();
+        ctx.translate(tx, ty); ctx.rotate(mid - Math.PI / 2); // its top towards the light
+        ctx.font = `${11 * s}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = C.black; ctx.fillText("W", 0, 0);
+        ctx.restore();
+        ctx.fillStyle = C.lightY;
+        marks.push([tx - 6 * s, ty - 6 * s, tx + 6 * s, ty + 6 * s]);
+        // Soundings keep off it near the light, where the arcs are.
         for (let d = 8 * s; d <= Math.min(len, r); d += 8 * s) {
           const px = x + Math.cos(mid) * d, py = y + Math.sin(mid) * d;
           const box = [px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s];
@@ -2030,8 +2042,9 @@
           ctx.fillText(plan.ring, x, ly);
           marks.push([x - 6 * s, ly - 6 * s, x + 6 * s, ly + 6 * s]);
         }
-        for (const { a1, a2, letter } of plan.arcs) {
-          if (a2 - a1 < 0.03) continue;
+        for (const arc of plan.arcs) {
+          const { a1, a2, letter } = arc;
+          if (a2 - a1 < 0.03 || (arc.reach != null && narrow(arc))) continue; // a wedge has its own, at its end
           // Narrow neighbours' letters would touch: the later one steps further out.
           const a = (a1 + a2) / 2;
           let d = r + 9 * s, lx, ly;

@@ -1352,10 +1352,10 @@ def test_buildings_true_size():
     assert old["building"] == [[1, 2, 1, None]]
 
 
-def test_narrow_white_sector_reaches_until_wider_than_its_fairway(tmp_path):
-    # The simulator's Rönnbåda has a 7° white sector over a boat route leg 1.6 km long, in a
-    # fairway area 120 m wide: the sector is that wide about 1 km out, and ends there. A tile
-    # further along than sectors are sent for gets the wedge alone.
+def test_narrow_white_sector_has_the_usual_length(tmp_path):
+    # The simulator's Rönnbåda has a 7° white sector over a boat route leg longer than the usual
+    # wedge, so it gets the usual 1 km. A tile further along than sectors are sent for gets the
+    # wedge alone.
     from ferrywatch.simscene import _lonlat
     async def run():
         chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
@@ -1373,17 +1373,23 @@ def test_narrow_white_sector_reaches_until_wider_than_its_fairway(tmp_path):
     assert not any(len(r) == 6 for r in near["sector"] if r[2] in (39, 43, 47))
 
 
-def test_wedge_reach_by_fairway_line_and_area():
-    from ferrywatch.vchart import WEDGE_MAX, WEDGE_REACH, _wedge_reach
-    # The wedge points south (y down), 8° wide: 2 * d * tan 4° = 0.14 d.
+def test_wedge_reach_by_fairway_line():
+    from ferrywatch.vchart import WEDGE_MIN, WEDGE_REACH, _wedge_reach
+    # The wedge points south (y down), 8° wide.
     across = [(-3000, 7000, 3000, 7000)]
     along = [(0, 2000, 0, 30000)]
+    assert _wedge_reach(0, 0, 356, 8, []) == WEDGE_REACH
     assert _wedge_reach(0, 0, 356, 8, across) == WEDGE_REACH  # a fairway crossing it doesn't count
-    assert _wedge_reach(0, 0, 356, 8, along) == WEDGE_REACH  # a long leg, but no area to go by
-    # In an area 1000 units wide it's that wide at about 7150 units.
-    area = [[(-500, 1000, -500, 30000), (-500, 30000, 500, 30000), (500, 30000, 500, 1000), (500, 1000, -500, 1000)]]
-    assert 7000 <= _wedge_reach(0, 0, 356, 8, along, area) <= 7450
-    # A wide area: the leg's end, capped.
-    wide = [[(-9000, 1000, -9000, 30000), (-9000, 30000, 9000, 30000), (9000, 30000, 9000, 1000), (9000, 1000, -9000, 1000)]]
-    assert _wedge_reach(0, 0, 356, 8, along, wide) == WEDGE_MAX
-    assert 5000 <= _wedge_reach(0, 0, 356, 8, [(0, 2000, 0, 5000)], wide) <= 5300
+    assert _wedge_reach(0, 0, 356, 8, along) == WEDGE_REACH  # a long leg: never longer than usual
+    assert 4000 <= _wedge_reach(0, 0, 356, 8, [(0, 1000, 0, 4000)]) <= 4300  # a leg turning off sooner
+    assert _wedge_reach(0, 0, 356, 8, [(0, 100, 0, 600)]) == WEDGE_MIN
+
+
+def test_service_report_names_providers(tmp_path):
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    chart._ok_at = {vchart.TRAFICOM_WFS: 100.0, vchart.TRAFICOM_OPEN_WFS: 200.0, vchart.VAYLA_WFS: 50.0}
+    chart._fail_since = {vchart.VAYLA_WFS: 60.0, vchart.MML_API: 70.0}
+    rows = {r["name"].split()[0]: r for r in chart.service_report()}
+    assert rows["Traficom"] == {"name": rows["Traficom"]["name"], "ok": 200.0, "failing": None}
+    assert rows["Väylä"]["ok"] == 50.0 and rows["Väylä"]["failing"] == 60.0
+    assert rows["Land"]["ok"] is None and rows["Land"]["failing"] == 70.0

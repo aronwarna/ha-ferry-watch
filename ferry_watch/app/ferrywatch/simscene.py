@@ -360,7 +360,7 @@ def scene() -> dict[str, list[dict]]:
     out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207),
                     _line(_km_line(RONNBADA_LEG), mitoitussyvays=3.0, jnro=4208)]
     out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207)]
-    # The leg's fairway area, 120 m wide: Rönnbåda's white sector outgrows it about 1 km out.
+    # The leg's fairway area, 120 m wide.
     (ax, ay), (bx, by) = RONNBADA_LEG[:2]
     norm = math.hypot(bx - ax, by - ay)
     nx, ny = (ay - by) / norm * 0.06, (bx - ax) / norm * 0.06
