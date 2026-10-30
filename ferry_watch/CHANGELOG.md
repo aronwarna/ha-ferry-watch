@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.24.1
+
+Sector lights and all-round lights drawn more like Sailmate's paper chart, from your
+Porkkala and Barösund screenshots.
+
+- A sector light's narrow white sector is a long yellow wedge, not a short flare.
+  It reaches as far as the fairway it leads along: out to where the fairway's line turns
+  out of the sector, so you can see a buoy sitting on its edge (at most about 2 km; about
+  1 km when no fairway runs inside it). It's drawn under the lines and marks, from zoom 13.
+- A sector light on a leading line (like Träsköklobb alempi) gets that wedge along the line
+  instead of the flare.
+- All-round lights (Toppholm, Högholmen, Svartö Höganäs and the like) are a ring in their
+  light's colour with its letter above, as lighthouses already were, instead of a flare.
+  Leading marks and lit buoys keep their flares.
+- The chart's tiles are drawn again once after the update.
+
 ## 0.24.0
 
 The drawn chart's land, the green boat route and a tidier menu, from your phone screenshots.

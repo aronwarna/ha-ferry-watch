@@ -77,6 +77,7 @@ SKERRIES = [(10.2, 5.6, 0.45, 9), (11.4, 6.6, 0.3, 6), (9.6, 3.9, 0.35, 7), (12.
             (8.9, 10.8, 0.3, 6), (12.4, 9.4, 0.4, 8), (5.1, 6.4, 0.18, 3), (11.0, 8.2, 0.2, 4)]
 # The boat route meets the leading line south of its front mark and follows it out to sea.
 BOAT_ROUTE = [(0.4, 2.0), (4.6, 2.6), (7.425, 2.2), (7.5, 0.8)]
+RONNBADA_LEG = [(9.68, 3.55), (9.92, 2.33), (11.3, 1.6)]
 LEAD = [(7.2, 9.6), (7.35, 3.6), (7.5, 0.8)]  # rear mark, front mark, out to sea
 CABLE = [(0.0, 7.3), (2.6, 6.9), (5.0, 7.7), (6.2, 9.0)]
 
@@ -355,7 +356,9 @@ def scene() -> dict[str, list[dict]]:
     out["lake.lake"] = [_poly([_km_line([(3.6, 14.6), (4.3, 14.8), (4.6, 14.4), (4.0, 14.1), (3.5, 14.3), (3.6, 14.6)])])]
     out["landmark.mast"] = [_km_point(8.4, 12.6, korkeus=131), _km_point(8.0, 12.2, korkeus=82),
                             _km_point(8.8, 12.3, korkeus=59)]
-    out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207)]
+    # Rönnbåda's narrow white sector leads along the second leg, out to its turn 1.6 km off.
+    out["fline"] = [_line(_km_line(BOAT_ROUTE), mitoitussyvays=2.4, jnro=4207),
+                    _line(_km_line(RONNBADA_LEG), mitoitussyvays=3.0, jnro=4208)]
     out["route"] = [_line(_km_line(BOAT_ROUTE), vaylaluokkakoodi=4, jnro=4207)]
     out["lead"] = [_line(_km_line(LEAD), suunta=round(math.degrees(math.atan2(
         LEAD[1][0] - LEAD[2][0], LEAD[1][1] - LEAD[2][1])) % 360, 1))]
@@ -367,20 +370,20 @@ def scene() -> dict[str, list[dict]]:
              (7.55, 5.6, "Viitta", 2, "E", "Drages 5"), (7.2, 9.6, "Linjamerkki", 99, "K", "Dragesvik ylempi"),
              (7.35, 3.6, "Linjamerkki", 99, "K", "Dragesvik alempi"), (9.6, 3.9, "Sektoriloisto", 99, "K", "Rönnbåda"),
              (2.0, 2.3, "Viitta", 3, "E", "Sandö N"), (11.6, 3.0, "Poiju", 4, "K", "Svartö S"),
-             (12.0, 4.25, "Suuntaloisto", 99, "K", "Svartö suunta")]
+             (12.0, 4.25, "Suuntaloisto", 99, "K", "Svartö suunta"), (3.0, 2.75, "Apuloisto", 99, "K", "Sandö")]
     out["aid"] = [_km_point(x, y, turvalaitetyyppifi=t, navigointilajikoodi=cat, valaistu=lit, nimifi=name)
                   for x, y, t, cat, lit, name in marks]
     out["light"] = [_km_point(9.6, 3.9, viralvalotunnuse="Fl WRG 3s"), _km_point(7.2, 9.6, viralvalotunnuse="Iso 4s"),
                     _km_point(7.35, 3.6, viralvalotunnuse="Iso 2s"), _km_point(6.6, 2.2, viralvalotunnuse="Fl G 3s"),
                     _km_point(11.6, 3.0, viralvalotunnuse="Q(6)+LFl 15s"),
-                    _km_point(12.0, 4.25, viralvalotunnuse="Oc WRG 4s")]
+                    _km_point(12.0, 4.25, viralvalotunnuse="Oc WRG 4s"), _km_point(3.0, 2.75, viralvalotunnuse="Fl 2s")]
     out["sector"] = [_km_point(9.6, 3.9, alkukulma=a, loppukulma=b, vari=col)
                      for a, b, col in ((300, 345, "vi"), (345, 352, "v"), (352, 40, "p"))] + [
         # A directional light's beam out to the south-west, between narrow green and red.
         _km_point(12.0, 4.25, alkukulma=a, loppukulma=b, vari=col)
         for a, b, col in ((39, 43, "vi"), (43, 47, "v"), (47, 51, "p"))] + [
         _km_point(x, y, alkukulma=0, loppukulma=360, vari=col)
-        for x, y, col in ((7.2, 9.6, "v"), (7.35, 3.6, "v"), (6.6, 2.2, "vi"), (11.6, 3.0, "v"))]
+        for x, y, col in ((7.2, 9.6, "v"), (7.35, 3.6, "v"), (6.6, 2.2, "vi"), (11.6, 3.0, "v"), (3.0, 2.75, "v"))]
     names = [(2.6, 8.4, "Sandöfjärden", "swe", 36000), (10.6, 6.2, "Svartöfjärden", "swe", 36000),
              (8.4, 7.4, "Källviklandet", "swe", 35020), (6.2, 5.6, "Porkkalanniemi", "fin", 35060),
              (6.2, 5.6, "Porkala udd", "swe", 35060), (7.7, 6.9, "Dragesviken", "swe", 36000),

@@ -521,10 +521,14 @@
   //   and no bar, whatever narrow sector Väylä gives it); sectors well off the line stay;
   // - a directional light, or a light with nothing but a narrow beam: a flare and a solid
   //   black line out along the beam, its bearing in red ("Suuntaloisto");
-  // - a sector light: coloured arcs, a narrow white sector a yellow wedge;
+  // - a sector light: coloured arcs, a narrow white sector a yellow wedge out along the
+  //   fairway it leads along (the tile gives its reach; see drawWedges);
+  // - an all-round lighthouse, sector light or minor light: a ring in its colour, as the
+  //   paper chart draws them, also on a leading line (only leading marks get the flare);
   // - else one flare in its colour.
-  // `rows` are its sector rows. Returns { lead?, dir?, beam?, arcs }: arcs as { from, to,
-  // letter, span, a1, a2 } with a1..a2 canvas angles round the light.
+  // `rows` are its sector rows. Returns { lead?, dir?, beam?, wedged?, arcs }: arcs as { from,
+  // to, letter, span, a1, a2, reach } with a1..a2 canvas angles round the light; wedged when a
+  // wedge lies along its leading line, and stands in for the flare.
   const NARROW = 8; // degrees: a white sector this narrow is the light's beam
   // Tile units: how far round a light its arcs (and the dotted limits, 1.3 times as far) and
   // a directional light's beam reach, all within the 448 units round the tile the server
@@ -534,16 +538,18 @@
   const BEAM_AT = Array.from({ length: 17 }, (_, i) => 0.5 + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.05);
   function lightPlan(aid, rows, leads) {
     const type = aid ? aid[2] : "s";
-    const arcs = rows.map(([, , from, to, colour]) => {
+    const arcs = rows.map(([, , from, to, colour], i) => {
       const a1 = ((from + 90) * Math.PI) / 180;
       let a2 = ((to + 90) * Math.PI) / 180;
       if (a2 <= a1) a2 += 2 * Math.PI;
-      return { from, to, letter: SECTOR[colour] || "W", span: norm(to - from) || 360, a1, a2 };
+      return { from, to, letter: SECTOR[colour] || "W", span: norm(to - from) || 360, a1, a2, reach: rows[i][5] };
     });
-    const lead = aid && "lsda".includes(type) ? leadBearing(aid, leads) : null;
+    const allRound = !rows.length && "msa".includes(type);
+    const lead = aid && "lsda".includes(type) && !allRound ? leadBearing(aid, leads) : null;
     if (lead != null) {
       const toward = norm(lead + 180);
-      return { lead, arcs: arcs.filter((a) => a.span > 15 && !holds(a.from, a.to, toward)) };
+      const wedged = arcs.some((a) => a.reach != null && holds(a.from, a.to, toward));
+      return { lead, wedged, arcs: arcs.filter((a) => a.span > 15 && !holds(a.from, a.to, toward)) };
     }
     const narrow = arcs.filter((a) => a.letter === "W" && a.span <= NARROW);
     const total = arcs.reduce((sum, a) => sum + a.span, 0);
@@ -562,6 +568,7 @@
     const main = LIGHT[colours.includes("W") ? "W" : colours[0]] || C.lightY;
     const along = plan.lead ?? plan.dir;
     if (along != null) {
+      if (plan.wedged) return [];
       flare(ctx, aid[0], aid[1], s, lw, plan.beam ? LIGHT[plan.beam.letter] : main, along);
       return [along];
     }
@@ -1793,6 +1800,31 @@
     // Submarine cables and pipelines.
     if (data.cable) drawCables(ctx, data.cable, s, unit);
 
+    // 8b. Narrow white sectors of sector lights: yellow wedges out along the fairway each
+    // leads along, under the lines and marks as on the paper chart. Each wedge's reach comes
+    // with its sector (or, for a light further off, on its own), the same in every tile.
+    if (zoom >= 13) {
+      const r = Math.min(80 * s, ARC_MAX);
+      const wedges = [...(data.sector || []).filter((row) => row[5] != null), ...(data.wedge || []).map(([x, y, a, b, reach]) => [x, y, a, b, "v", reach])];
+      ctx.fillStyle = C.lightY;
+      for (const [x, y, from, to, , reach] of wedges) {
+        const len = zoom >= 14 ? Math.max(reach, r) : reach;
+        const a1 = ((from + 90) * Math.PI) / 180;
+        let a2 = ((to + 90) * Math.PI) / 180;
+        if (a2 <= a1) a2 += 2 * Math.PI;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, len, a1, a2); ctx.closePath();
+        ctx.fill();
+        // Soundings keep off it near the light, where the arcs are.
+        const mid = (a1 + a2) / 2;
+        for (let d = 8 * s; d <= Math.min(len, r); d += 8 * s) {
+          const px = x + Math.cos(mid) * d, py = y + Math.sin(mid) * d;
+          const box = [px - 4 * s, py - 4 * s, px + 4 * s, py + 4 * s];
+          marks.push(box);
+          if (inside(x, y)) label.soft.push(box);
+        }
+      }
+    }
+
     // 9. Leading lines as the key draws them: dashed through the marks and on out to sea,
     // solid only where they are the fairway (the tile says where), the bearing in red beside
     // the solid part. A tile without that is all solid.
@@ -1952,6 +1984,7 @@
       ctx.lineCap = "butt";
       for (const { x, y, plan } of lights) {
         for (const arc of plan.arcs) {
+          if (narrow(arc) && arc.reach != null) continue; // its wedge is drawn (8b)
           if (narrow(arc)) {
             // A narrow white sector: a yellow wedge out to the arcs, no edge.
             ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, arc.a1, arc.a2); ctx.closePath();
@@ -1965,7 +1998,7 @@
       }
       // Thin coloured arcs, a white light's orange-yellow with a thin dark edge; an all-round
       // lighthouse a ring in its light's colour.
-      const rings = lights.filter((l) => l.aid && l.aid[2] === "m" && l.plan.lead == null && l.plan.dir == null && !l.plan.arcs.length);
+      const rings = lights.filter((l) => l.aid && "msa".includes(l.aid[2]) && l.plan.lead == null && l.plan.dir == null && !l.plan.arcs.length);
       for (const l of rings) l.plan.ring = lightColours(l.aid)[0] || "W";
       for (const pass of [0, 1]) {
         for (const { x, y, plan } of lights) {
@@ -1991,6 +2024,12 @@
       ctx.textBaseline = "middle";
       for (const { x, y, plan } of lights) {
         const placed = [];
+        if (plan.ring) {
+          // A ring's colour letter just above it, upright.
+          const ly = y - ringR - 9 * s;
+          ctx.fillText(plan.ring, x, ly);
+          marks.push([x - 6 * s, ly - 6 * s, x + 6 * s, ly + 6 * s]);
+        }
         for (const { a1, a2, letter } of plan.arcs) {
           if (a2 - a1 < 0.03) continue;
           // Narrow neighbours' letters would touch: the later one steps further out.

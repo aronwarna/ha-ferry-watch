@@ -109,7 +109,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 18  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 19  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -1383,6 +1383,104 @@ def lead_marks(data: dict) -> tuple[dict[int, list], dict[tuple[int, int], float
     return solids, bearings
 
 
+# A sector light's narrow white sector is drawn as a yellow wedge reaching as far as the
+# fairway it guides along (the panel's NARROW and lightPlan say which sectors are wedges).
+WEDGE_SPAN = 8  # degrees: a white sector this narrow is a wedge
+WEDGE_MIN_Z = 13  # drawn from this zoom (the panel draws sector arcs from 14)
+WEDGE_REACH = UNITS // 10  # block units (about 1 km): a wedge with no fairway running in it
+WEDGE_MIN = UNITS // 20  # (about 500 m)
+# (About 2 km.) Well within the points kept past each block's edge, so every block a wedge
+# reaches has its light.
+WEDGE_MAX = UNITS // 5
+WEDGE_SLACK = 100  # block units (about 15 m): a fairway's line this far outside still runs in it
+WEDGE_ALONG = math.cos(math.radians(20))  # a fairway's line within 20° of the wedge runs along it
+_wedge_cache: OrderedDict = OrderedDict()
+
+
+def sector_wedges(data: dict) -> dict[int, int]:
+    """How far each sector light's narrow white sector reaches: {sector row: block units}.
+    Out to the farthest point of a fairway's line running along inside it (on charts the
+    white sector covers the leg it leads ships along), else WEDGE_REACH. A light that is all
+    narrow sectors is a directional light's beam, drawn otherwise, and has none."""
+    sector, fline = data.get("sector"), data.get("fline") or data.get("route")
+    if sector is None or not sector.n:
+        return {}
+    key = (id(sector), id(fline))
+    hit = _wedge_cache.get(key)
+    if hit is not None and hit[0] is sector and hit[1] is fline:
+        _wedge_cache.move_to_end(key)
+        return hit[2]
+    lights: dict[tuple[int, int], list] = {}
+    for i in range(sector.n):
+        a, b, colour = _pad(sector.props[sector.pi[i]], 3)
+        a, b = _num(a), _num(b)
+        span = None if a is None or b is None else (b - a) % 360
+        if span:
+            lights.setdefault((sector.co[2 * i], sector.co[2 * i + 1]), []).append((i, a, span, colour))
+    directional = set()
+    aid = data.get("aid")
+    for j in range(aid.n if aid is not None else 0):
+        if AID_TYPES.get(str(aid.props[aid.pi[j]][0] or "").lower()) == "d":
+            directional.add((aid.co[2 * j], aid.co[2 * j + 1]))
+    segs = []
+    for i in range(fline.n if fline is not None else 0):
+        line = fline.pts(fline.vo[i], fline.vo[i + 1])
+        segs.extend((ax, ay, bx, by) for (ax, ay), (bx, by) in zip(line, line[1:]) if (ax, ay) != (bx, by))
+    out: dict[int, int] = {}
+    for (lx, ly), rows in lights.items():
+        if sum(span for _, _, span, _ in rows) <= 30 or any(
+                abs(lx - dx) <= LEAD_REACH and abs(ly - dy) <= LEAD_REACH for dx, dy in directional):
+            continue
+        near = [s for s in segs if min(s[0], s[2]) <= lx + WEDGE_MAX and max(s[0], s[2]) >= lx - WEDGE_MAX
+                and min(s[1], s[3]) <= ly + WEDGE_MAX and max(s[1], s[3]) >= ly - WEDGE_MAX]
+        for i, a, span, colour in rows:
+            if str(colour or "").lower() != "v" or span > WEDGE_SPAN:
+                continue
+            out[i] = _wedge_reach(lx, ly, a, span, near)
+    _wedge_cache[key] = (sector, fline, out)
+    while len(_wedge_cache) > 32:
+        _wedge_cache.popitem(last=False)
+    return out
+
+
+def _wedge_reach(lx: float, ly: float, start: float, span: float, segs: list) -> int:
+    """A narrow white sector's reach (see sector_wedges). ``start`` and ``span`` are its
+    bearings towards the light, as Väylä gives them; it lies on the opposite side."""
+    mid = math.radians(start + span / 2 + 180)
+    ux, uy = math.sin(mid), -math.cos(mid)  # out along the wedge, y down
+    tan = math.tan(math.radians(span / 2))
+    far = None
+    for ax, ay, bx, by in segs:
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        if abs(dx * ux + dy * uy) < WEDGE_ALONG * length:
+            continue  # crossing the wedge, not running along it
+        # Along (t) and across (s) the wedge at both ends; inside where 0 <= t <= WEDGE_MAX
+        # and |s| <= t * tan + WEDGE_SLACK. The stretch inside is one run, clipped here.
+        t0, s0 = (ax - lx) * ux + (ay - ly) * uy, (ax - lx) * -uy + (ay - ly) * ux
+        t1, s1 = (bx - lx) * ux + (by - ly) * uy, (bx - lx) * -uy + (by - ly) * ux
+        lo, hi = 0.0, 1.0
+        for f0, f1 in ((-t0, -t1), (t0 - WEDGE_MAX, t1 - WEDGE_MAX),
+                       (s0 - t0 * tan - WEDGE_SLACK, s1 - t1 * tan - WEDGE_SLACK),
+                       (-s0 - t0 * tan - WEDGE_SLACK, -s1 - t1 * tan - WEDGE_SLACK)):
+            # Each limit f(λ) = f0 + λ (f1 - f0) <= 0.
+            if f0 > 0 and f1 > 0:
+                lo, hi = 1.0, 0.0
+                break
+            if (f0 > 0) != (f1 > 0):
+                cut = f0 / (f0 - f1)
+                if f0 > 0:
+                    lo = max(lo, cut)
+                else:
+                    hi = min(hi, cut)
+        if lo <= hi:
+            t = max(t0 + lo * (t1 - t0), t0 + hi * (t1 - t0))
+            far = t if far is None else max(far, t)
+    if far is None:
+        return WEDGE_REACH
+    return round(min(WEDGE_MAX, max(WEDGE_MIN, far + 2 * WEDGE_SLACK)))
+
+
 def heritage_props(feature: dict) -> tuple | None:
     """A Museovirasto site as (register id, name, class, kind, dating, position accuracy,
     sub-type in English). Kind: 1 wooden wreck, 2 metal wreck, 3 other or unknown wreck,
@@ -1583,6 +1681,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
 
         solids, on_lead = lead_marks(data) if z >= LAYER_MIN_Z["lead"] else ({}, {})
         leans = spar_leans(data) if z >= 12 and "aid" in data else {}
+        wedges = sector_wedges(data) if z >= WEDGE_MIN_Z else {}
         for key, layer in data.items():
             if key[0] == "_" or z < LAYER_MIN_Z.get(key, 99):
                 continue
@@ -1601,6 +1700,20 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 for i in range(layer.n):
                     px, py = co[2 * i], co[2 * i + 1]
                     if not (px0 <= px <= px1 and py0 <= py <= py1):
+                        if key == "sector" and i in wedges:
+                            # A wedge reaching here from a light further off: just the wedge.
+                            p = props[pi[i]]
+                            reach = wedges[i]
+                            a, b = _num(p[0]), _num(p[1])
+                            ends = [(px, py)] + [(px - reach * math.sin(math.radians(d)), py + reach * math.cos(math.radians(d)))
+                                                 for d in (a, (a + b + (360 if b < a else 0)) / 2, b)]
+                            if max(e[0] for e in ends) >= bx0 and min(e[0] for e in ends) <= bx1 \
+                                    and max(e[1] for e in ends) >= by0 and min(e[1] for e in ends) <= by1:
+                                tx, ty = round((px - ox) * k), round((py - oy) * k)
+                                seen = ("wedge", tx, ty, p)
+                                if seen not in seen_points:
+                                    seen_points.add(seen)
+                                    rows.setdefault("wedge", []).append([tx, ty, a, b, round(reach * k, 1)])
                         continue
                     p = props[pi[i]]
                     if key == "aid" and not (nx0 <= px <= nx1 and ny0 <= py <= ny1) and _pad(p, 3)[2] != "K":
@@ -1612,6 +1725,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     seen_points.add(seen)
                     if key == "aid":
                         out.append([tx, ty, p, on_lead.get((px, py)), leans.get((px, py))])
+                    elif key == "sector" and i in wedges:
+                        out.append([tx, ty, p, round(wedges[i] * k, 1)])
                     else:
                         out.append([tx, ty, p])
                 continue
@@ -1748,7 +1863,9 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
       solid along those stretches, where it's the fairway (no solid: all solid); band: [line]; restrict: [types, value, ...rings]; shore: [line]
       (shore structures, pontoons, berths, dams and gates)
     - rockarea: [kind, ...rings]; rockpt: [x, y, kind] where each rock cluster's sign goes
-      (the middle of its whole outline, the same in every tile); sector: [x, y, from°, to°, colour]; light: [x, y, text]
+      (the middle of its whole outline, the same in every tile); sector: [x, y, from°, to°, colour, reach?]
+      (reach: how far a narrow white sector's wedge goes); wedge: [x, y, from°, to°, reach], a wedge
+      from a light further off than the sectors are sent for; light: [x, y, text]
     - aid: [x, y, type, category, lit, name, colours, lead?, lean?] (lead: the compass bearing out
       to sea of the leading line it stands on, or null; lean: a spar buoy's or buoy's lean in
       degrees clockwise from upright); sounding: [x, y, depth]
@@ -1851,16 +1968,19 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int]) 
         tile["rockpt"] = [[px, py, ROCK_TYPES.get(_int(_pad(p, 1)[0]), 0)] for px, py, p in rows["rockpt"]]
 
     colours: dict[tuple[int, int], set] = {}
-    for px, py, (a, b, c) in rows.get("sector", ()):
+    for px, py, (a, b, c), *_ in rows.get("sector", ()):
         letter = LIGHT_COLOURS.get(str(c or "").lower())
         if letter:
             colours.setdefault((px, py), set()).add(letter)
     if "sector" in rows:
         # Light sectors: [x, y, from°, to°, colour], bearings towards the light as charts give them.
         # All-round rows only give a plain light its colour, read above.
-        tile["sector"] = [[px, py, a, b, str(c or "v")] for px, py, a, b, c in
-                          ((px, py, _num(a), _num(b), c) for px, py, (a, b, c) in rows["sector"])
+        # A narrow white sector's wedge adds its reach (see sector_wedges).
+        tile["sector"] = [[px, py, a, b, str(c or "v"), *reach] for px, py, a, b, c, reach in
+                          ((px, py, _num(a), _num(b), c, reach) for px, py, (a, b, c), *reach in rows["sector"])
                           if a is not None and b is not None and (b - a) % 360 != 0]
+    if "wedge" in rows:
+        tile["wedge"] = rows["wedge"]
     if "aid" in rows:
         aids = []
         for px, py, (kind, cat, lit, name), *extra in rows["aid"]:

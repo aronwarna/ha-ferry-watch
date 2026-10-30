@@ -528,7 +528,7 @@ def test_chart_style_fields(tmp_path):
     assert lighthouse[6] == "W"
     sector_light = next(a for a in t13["aid"] if a[5] == "Kallbådan")
     assert sector_light[6] == "WRG"
-    assert all((b - a) % 360 for _, _, a, b, _ in t13["sector"])  # no all-round arcs
+    assert all((r[3] - r[2]) % 360 for r in t13["sector"])  # no all-round arcs
     # Fairway class from the route data; the small-craft trunk route gets the green band.
     assert any(row[2] == 1 for row in t11["farea"])
     assert {row[1] for row in t11["fline"]} >= {1, 4}
@@ -1350,3 +1350,32 @@ def test_buildings_true_size():
     old = {}
     vchart._format(old, {"building": [[1, 2, (42211, 1)]]}, 14, {})
     assert old["building"] == [[1, 2, 1, None]]
+
+
+def test_narrow_white_sector_reaches_along_its_fairway(tmp_path):
+    # The simulator's Rönnbåda has a narrow white sector over a boat route leg that turns
+    # 1.6 km out; a tile further along the leg than sectors are sent for gets the wedge alone.
+    from ferrywatch.simscene import _lonlat
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+        near, _ = await chart.tile(*tile_at(*reversed(_lonlat(9.6, 3.9)), 15))
+        far, _ = await chart.tile(*tile_at(*reversed(_lonlat(9.85, 2.7)), 16))
+        return near, far
+
+    near, far = asyncio.run(run())
+    rows = [r for r in near["sector"] if r[4] == "v" and len(r) == 6]
+    assert len(rows) == 1  # only the narrow white one, not the green or red
+    metres_per_unit = 40075016 * math.cos(math.radians(60.0)) / 2 ** 15 / vchart.EXTENT
+    assert 1500 < rows[0][5] * metres_per_unit < 1900
+    assert far.get("wedge") and far["wedge"][0][2:4] == rows[0][2:4]
+    # The directional light's narrow beam isn't a wedge.
+    assert not any(len(r) == 6 for r in near["sector"] if r[2] in (39, 43, 47))
+
+
+def test_wedge_reach_without_a_fairway_and_across_one():
+    from ferrywatch.vchart import WEDGE_REACH, _wedge_reach
+    # A fairway crossing the wedge 1 km out doesn't count; one along it does.
+    across = [(-3000, 7000, 3000, 7000)]
+    along = [(0, 2000, 0, 9000)]
+    assert _wedge_reach(0, 0, 356, 8, across) == WEDGE_REACH  # wedge points south (y down)
+    assert 9000 <= _wedge_reach(0, 0, 356, 8, along) <= 9300
