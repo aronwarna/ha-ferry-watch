@@ -169,6 +169,7 @@ class FerryWatch:
             self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
+            self.tasks.append(asyncio.create_task(self.notifier.get_panel_url()))  # for Settings' link
             if self.options.ha_entities:
                 self.next_sensor = NextPassageSensor(self.ha)
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
@@ -463,12 +464,24 @@ class FerryWatch:
             "phone": self.phone,
             "memory_mb": memory.rss_mb(),
             "memory": memory.breakdown(self),
+            "alerts": self.alert_settings(),
             "aircraft": {
                 "enabled": self.aircraft_enabled,
                 "flights_stored": self.air_history.count(),
                 "error": self.aircraft.error if self.aircraft else None,
                 "list": self.aircraft.snapshot() if self.aircraft and self.aircraft_enabled else [],
             },
+        }
+
+    def alert_settings(self) -> dict[str, Any]:
+        """The add-on options that shape alerts, for Settings, and where they're changed."""
+        o = self.options
+        panel = self.notifier.panel_url  # "/<slug>", once looked up
+        return {
+            "notify_service": o.notify_service, "phone_entity": o.phone_entity,
+            "require_phone_area": o.require_phone_area, "notify_feed_problems": o.notify_feed_problems,
+            "phone_max_age_minutes": o.phone_max_age_minutes,
+            "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
         }
 
     def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:

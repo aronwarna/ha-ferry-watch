@@ -129,10 +129,16 @@ window.FerryHistory = (() => {
     if (perSecond < 2 * 86400) return `${Math.round(perSecond / 3600)} h/s`;
     return `${Math.round(perSecond / 86400)} days/s`;
   }
+  // The panel's one date style: "Thu 30 Oct, 07:34" (24-hour).
+  const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const hhmm = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  function dayText(d, withYear) {
+    return `${DAYS[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ""}`;
+  }
   function stamp(ts, withYear) {
     const d = new Date(ts * 1000);
-    const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) });
-    return `${day} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+    return `${dayText(d, withYear)}, ${hhmm(d)}`;
   }
 
   // Web Mercator pixels at zoom z, without Leaflet's per-point objects.
@@ -598,10 +604,10 @@ window.FerryHistory = (() => {
       const box = el.querySelector(".ah-pick");
       const a = aircraft.find((x) => x.icao === f.icao) || {};
       const d0 = new Date(f.start * 1000);
-      const hm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+      const hm = (ts) => hhmm(new Date(ts * 1000));
       box.innerHTML = `<span class="ah-swatch" style="--c: ${f.color}"></span>
         <div class="grow"><strong>${esc(a.reg || f.icao.toUpperCase())}${a.type_name || a.type ? ` · ${esc(a.type_name || a.type)}` : ""}</strong>
-        <span>${esc(d0.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}, ${hm(f.start)}–${hm(f.end)} · ${spanText(f.end - f.start)}</span>
+        <span>${esc(dayText(d0, true))}, ${hm(f.start)}–${hm(f.end)} · ${spanText(f.end - f.start)}</span>
         <span class="muted">Up to ${Math.round(f.maxAlt ?? 0).toLocaleString()} m · ${f.km} km${a.operator ? ` · ${esc(a.operator)}` : ""}</span>
         ${altLegend()}</div>
         <button type="button" class="icon-button plain" aria-label="Close the flight">${ICON.close}</button>`;

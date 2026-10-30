@@ -656,3 +656,103 @@ body.menu-open .weather-sheet { right: calc(var(--panel-w) + 10px); }
   .weather-sheet { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); left: 8px; right: 8px; width: auto; max-height: 72vh; }
   body.weather-open .strip { visibility: hidden; }
 }
+
+/* Ships tab: tap a ship to find it; its bell and ⋯ (Remove) at the end. */
+.my-ships li.clickable { cursor: pointer; flex-wrap: wrap; }
+.my-ships li.clickable:hover .grow > span:first-child { color: var(--accent); }
+.ships-list .icon-button.plain { border: 0; padding: 0; width: 32px; height: 32px; flex: 0 0 auto; color: var(--muted); }
+.ships-list .icon-button.plain:hover { color: var(--text); }
+.bell-button[aria-pressed="true"] { color: var(--accent); }
+.bell-button[aria-pressed="false"] { color: var(--muted); opacity: 0.75; }
+.bell-button:disabled { opacity: 0.4; }
+.ships-list button.danger, button.danger {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.4);
+  margin-left: auto;
+}
+button.danger:hover { background: rgba(220, 38, 38, 0.08); }
+.ships-list li button.danger { flex-basis: auto; margin: 0 0 0 20px; }
+.ships-list button.two-line { display: flex; flex-direction: column; align-items: center; line-height: 1.15; padding: 4px 10px; }
+.two-line small { font-size: 10px; color: var(--muted); font-weight: 400; }
+
+/* Fleets fold open; the switch beside the name stays a switch. */
+.fleet-fold > summary { list-style: none; }
+.fleet-fold > summary::-webkit-details-marker { display: none; }
+.fleet-fold > summary::before {
+  content: "";
+  width: 7px; height: 7px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+.fleet-fold[open] > summary::before { transform: rotate(45deg); }
+.fold-switch { display: flex; align-items: center; cursor: pointer; }
+.fleet-fold > :not(summary) { margin-left: 18px; }
+
+/* Layers: compact rows, their note behind ⓘ. */
+.fleet .info-button { width: 26px; height: 26px; color: var(--muted); flex: 0 0 auto; }
+.fleet .info-button svg { width: 17px; height: 17px; stroke-width: 1.8; }
+.fleet .info-button[aria-expanded="true"] { color: var(--accent); }
+.weather-list .compact { margin-top: 8px; }
+
+/* Map key */
+.key-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.key-list li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.key-icon { width: 28px; height: 18px; flex: 0 0 auto; overflow: visible; }
+.key-block { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+
+/* Settings: alerts in one box */
+.sub-head { font-size: 12px; font-weight: 600; color: var(--muted); margin: 12px 0 2px; text-transform: none; }
+.alert-facts dd { font-weight: 500; overflow-wrap: anywhere; }
+.alert-facts dd a { font-weight: 600; }
+.alert-facts dd span.muted { display: inline; font-weight: 400; font-size: 12px; }
+.compact-list li { padding: 5px 0; }
+.compact-list li button { font-size: 13px; }
+.alert-ships { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.alert-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 2px 0 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  font-size: 13px;
+}
+.alert-chip .icon-button.plain { width: 30px; height: 30px; }
+.alert-chip .bell-button svg { width: 17px; height: 17px; }
+.alert-chip.off > span { color: var(--muted); text-decoration: line-through; }
+.alert-chip.off .dot { opacity: 0.4; }
+
+/* Chart download progress */
+.progress { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin: 6px 0 4px; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+
+/* Data sources: a dot per source. */
+.sources-status { list-style: none; margin: 6px 0 0; padding: 0; }
+.sources-status li { display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.sources-status li:last-child { border-bottom: 0; }
+.sources-status li > i { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex: 0 0 auto; background: #9ca3af; }
+.sources-status li.ok > i { background: var(--ok); }
+.sources-status li.bad > i { background: #dc2626; }
+.sources-status li.off { opacity: 0.7; }
+.sources-status .grow { flex: 1; min-width: 0; }
+.sources-status .grow > span { display: block; overflow-wrap: anywhere; }
+
+/* Memory: a bar by part, the peak marked. */
+.memory-box { margin: 6px 0 8px; }
+.memory-box > summary { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: baseline; cursor: pointer; list-style: none; }
+.memory-box > summary::-webkit-details-marker { display: none; }
+.memory-box > summary > span:nth-child(2) { justify-self: end; }
+.mem-bar { grid-column: 1 / -1; position: relative; display: flex; height: 8px; border-radius: 4px; background: var(--border); overflow: visible; }
+.mem-bar i { display: block; height: 100%; }
+.mem-bar i:first-child { border-radius: 4px 0 0 4px; }
+.mem-bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
+.mem-parts { list-style: none; margin: 8px 0 0; padding: 0; }
+.mem-parts li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.mem-parts li i { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+.mem-parts li span { margin-left: auto; font-variant-numeric: tabular-nums; }
+.mem-parts li.muted { display: block; margin-top: 4px; }
+
+/* Card: the ship's bell beside its name. */
+.card-bell:empty { display: none; }
+.card-bell { display: inline-flex; flex: 0 0 auto; }
+.card-bell .icon-button.plain { width: 32px; height: 32px; }

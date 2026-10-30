@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.26.0
+
+The rest of the UI review (items 19 to 30).
+
+- Ships tab: tap one of your ships to find it on the map. Each has a bell to turn its
+  alerts on or off, and Remove sits behind ⋯ so it isn't tapped by mistake. Search results
+  say what Follow (map only) and Add (alerts and stats) mean. Fleets moved here from
+  Layers, and each folds open to list its ships.
+- Layers: one line per layer with its switch; the explanation is behind ⓘ. A map key at
+  the bottom explains the lines, dots and colours on the map.
+- Settings:
+  - Alerts are in one box: where they go, whether only while your phone is in your area,
+    the last alert sent, your areas with Edit, and a bell per ship. A link opens the
+    app's configuration in Home Assistant.
+  - A Data sources list shows each source with a green, red or grey dot: ship positions,
+    Home Assistant, FMI, the weather overlays, aircraft and each chart provider.
+  - Memory is a bar by part with the peak marked; tap it for the numbers.
+  - Downloading the chart for the NAS shows a progress bar.
+- Dates are written the same way everywhere, 24-hour: "Thu 30 Oct, 07:34".
+- The ship card has a bell for that ship's alerts and a Stats link that opens Stats for
+  that ship alone.
+- On a computer: Esc closes the side panel or the card, and the left and right arrow
+  keys step through the Stats bars, or the days once a day is picked.
+
 ## 0.25.1
 
 - Sector lights' narrow white sectors (the yellow wedges) are now all about one length,

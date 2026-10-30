@@ -259,13 +259,21 @@
   const CLOCK = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const clock = (ts) => CLOCK.format(new Date(ts * 1000));
   const shortName = (name) => name.split(" ").slice(-1)[0];
+  // One date style everywhere: "Thu 30 Oct", "Thu 30 Oct, 07:34" (24-hour).
+  const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const fmtDay = (ts) => {
+    const d = new Date(ts * 1000);
+    return `${DAY_NAMES[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTH_NAMES[d.getMonth()]}`;
+  };
+  const fmtWhen = (ts) => `${fmtDay(ts)}, ${clock(ts)}`;
 
   function ago(ts) {
     const s = Math.max(0, Math.round(now() - ts));
     if (s < 60) return `${s} s ago`;
     if (s < 3600) return `${Math.round(s / 60)} min ago`;
     if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min ago`;
-    return new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short", hour12: false });
+    return fmtWhen(ts);
   }
 
   function duration(seconds) {
@@ -874,7 +882,7 @@
     if (info.eta_ais) {
       const d = new Date(info.eta_ais * 1000);
       const sameDay = d.toDateString() === new Date(now() * 1000).toDateString();
-      const day = sameDay ? "" : `${d.toLocaleDateString("en-GB", { weekday: "short" })} `;
+      const day = sameDay ? "" : `${DAY_NAMES[(d.getDay() + 6) % 7]} `;
       const legs = (info.destination || "").split(/<>|\s*-?>\s*/).filter(Boolean);
       const place = legs.length ? placeName(legs[legs.length - 1]) : "";
       parts.push(`ETA ${place ? `${place} ` : ""}${day}${clock(info.eta_ais)} (AIS)`);
@@ -925,7 +933,7 @@
       const since = info.voyage_from ? `since ${info.voyage_from} ${clock(info.voyage_start)}` : `since ${clock(info.voyage_start)}`;
       voyage = `Track ${since} (${duration(now() - info.voyage_start)})`;
       if (now() - info.voyage_start > 86400) {
-        voyage = `Track since ${new Date(info.voyage_start * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short", hour12: false })}`;
+        voyage = `Track since ${fmtWhen(info.voyage_start)}`;
       }
     }
     setText($("card-voyage"), voyage);
@@ -942,6 +950,11 @@
     if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;
     $("card-follow").hidden = !info.fleet;
     $("card-unfollow").hidden = info.fleet !== "followed";
+    // My ships: their alerts bell by the name, and a way to their stats.
+    $("card-stats-link").hidden = Boolean(info.fleet);
+    const bell = $("card-bell").firstChild;
+    if (info.fleet) $("card-bell").replaceChildren();
+    else if (!bell?.disabled) $("card-bell").replaceChildren(bellButton(info, () => { renderShipsList(); renderAlertBox(); }));
     $("card-play").hidden = (focused.points || []).length < 2;
     $("peek-play").hidden = (focused.points || []).length < 2;
     renderCardStats(info);
@@ -1019,6 +1032,20 @@
   }
 
   $("card-close").addEventListener("click", unfocus);
+  // Stats counting only this ship.
+  $("card-stats-link").addEventListener("click", () => {
+    const info = focused && ships.get(focused.mmsi)?.info;
+    if (!info) return;
+    const pool = statsData ? statsData.ships.map((s) => s.mmsi) : [...ships.values()].filter(({ info: i }) => !i.fleet).map(({ info: i }) => i.mmsi);
+    const others = pool.filter((m) => m !== info.mmsi);
+    statsHidden.clear();
+    for (const m of others) statsHidden.add(m);
+    store.set("fw-stats-hidden", JSON.stringify(others));
+    statsPick = null;
+    statsDay = null;
+    if (!menu.open) openMenu("stats");
+    else setTab("stats");
+  });
   $("card-unfollow").addEventListener("click", async () => {
     const info = focused && ships.get(focused.mmsi)?.info;
     if (!info) return;
@@ -1438,10 +1465,45 @@
 
   // --- ships dialog -------------------------------------------------------------
 
+  // My ships: tap one to show it; the bell turns its alerts on and off; ⋯ holds Remove.
+  const BELL = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>';
+  const BELL_OFF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 4l16 16"/></svg>';
+  let shipMenuOpen = null; // the ship whose ⋯ is open
+
+  function bellButton(info, onDone) {
+    const bell = document.createElement("button");
+    bell.type = "button";
+    bell.className = "icon-button plain bell-button";
+    const paint = () => {
+      const on = info.alerts !== false;
+      bell.innerHTML = on ? BELL : BELL_OFF;
+      bell.setAttribute("aria-pressed", String(on));
+      bell.setAttribute("aria-label", on ? `Alerts on for ${info.name}: tap to turn off` : `Alerts off for ${info.name}: tap to turn on`);
+      bell.title = on ? "Alerts on: a phone alert when it takes the inner route" : "Alerts off";
+    };
+    paint();
+    bell.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      bell.disabled = true;
+      try {
+        const on = info.alerts === false;
+        await api(`api/ships/${info.mmsi}/alerts`, { method: "POST", body: { enabled: on } });
+        info.alerts = on;
+        paint();
+        onDone?.();
+      } finally {
+        bell.disabled = false;
+      }
+    });
+    return bell;
+  }
+
   function renderShipsList() {
     const list = $("ships-list");
     list.replaceChildren(...[...ships.values()].filter(({ info }) => !info.fleet).map(({ info }) => {
       const li = document.createElement("li");
+      li.className = "clickable";
+      li.title = `Show ${info.name} on the map`;
       const dot = document.createElement("span");
       dot.className = "dot";
       dot.style.background = info.color;
@@ -1451,37 +1513,42 @@
       name.textContent = info.name;
       const sub = document.createElement("span");
       sub.className = "muted small";
-      sub.textContent = `MMSI ${info.mmsi} · ${info.position ? `last report ${ago(info.position.ts)}` : "no data yet"}`;
+      sub.textContent = chipText(info);
       grow.append(name, sub);
-      // Inner-route alerts per ship: on for the four ferries, off for ships added later.
-      const alerts = document.createElement("label");
-      alerts.className = "alert-switch small";
-      alerts.title = "Send a phone alert when this ship takes the inner route";
-      const toggle = document.createElement("input");
-      toggle.type = "checkbox";
-      toggle.className = "switch";
-      toggle.checked = info.alerts !== false;
-      toggle.addEventListener("change", async () => {
-        toggle.disabled = true;
-        try {
-          await api(`api/ships/${info.mmsi}/alerts`, { method: "POST", body: { enabled: toggle.checked } });
-          info.alerts = toggle.checked;
-        } finally {
-          toggle.disabled = false;
-        }
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "icon-button plain";
+      more.setAttribute("aria-label", `More for ${info.name}`);
+      more.setAttribute("aria-expanded", String(shipMenuOpen === info.mmsi));
+      more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="fill" cx="5.5" cy="12" r="1.6"/><circle class="fill" cx="12" cy="12" r="1.6"/><circle class="fill" cx="18.5" cy="12" r="1.6"/></svg>';
+      more.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        shipMenuOpen = shipMenuOpen === info.mmsi ? null : info.mmsi;
+        renderShipsList();
       });
-      alerts.append("Alerts", toggle);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", async () => {
-        if (!confirm(`Stop tracking ${info.name}?`)) return;
-        await fetch(`api/ships/${info.mmsi}`, { method: "DELETE" });
-        await loadState();
+      li.append(dot, grow, bellButton(info, renderAlertBox), more);
+      if (shipMenuOpen === info.mmsi) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger";
+        remove.textContent = "Remove";
+        remove.title = `Stop tracking ${info.name} (its passages stay in Stats)`;
+        remove.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          if (!confirm(`Stop tracking ${info.name}?`)) return;
+          shipMenuOpen = null;
+          await fetch(`api/ships/${info.mmsi}`, { method: "DELETE" });
+          await loadState();
+        });
+        li.append(remove);
+      }
+      li.addEventListener("click", () => {
+        if (menuModal()) menu.close();
+        focusShip(info.mmsi);
       });
-      li.append(dot, grow, alerts, remove);
       return li;
     }));
+    renderFleets();
   }
 
   let searchTimer = null;
@@ -1516,13 +1583,14 @@
       };
       const follow = document.createElement("button");
       follow.type = "button";
-      follow.textContent = "Follow";
+      follow.className = "two-line";
+      follow.innerHTML = "Follow<small>map only</small>";
       follow.title = "Show on the map with its latest trip";
       follow.addEventListener("click", () => choose("api/follow", follow));
       const add = document.createElement("button");
       add.type = "button";
-      add.className = "primary";
-      add.textContent = "Add";
+      add.className = "primary two-line";
+      add.innerHTML = "Add<small>alerts and stats</small>";
       add.title = "Alerts and stats, like the ferries";
       add.addEventListener("click", () => choose("api/ships", add));
       li.append(grow, follow, add);
@@ -1849,11 +1917,85 @@
 
   const DIRECTIONS = { east: "towards Helsinki", west: "towards Stockholm" };
 
-  function renderNotifyStatus() {
-    $("notify-status").textContent = lastState?.ha_connected
-      ? "Alerts go to your phone when a ship takes the inner route while you're in your area."
+  function renderNotifyStatus() { renderAlertBox(); }
+
+  // Whether a point is inside a polygon given as [[lat, lon], ...].
+  function inPolygon(lat, lon, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [ay, ax] = pts[i], [by, bx] = pts[j];
+      if ((ay > lat) !== (by > lat) && lon < ((bx - ax) * (lat - ay)) / (by - ay) + ax) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Alerts in one box: where they go, when they're held back, the areas, which ships alert,
+  // the last one sent, and the add-on options (changed in Home Assistant).
+  function renderAlertBox() {
+    const st = lastState;
+    if (!st) return;
+    const a = st.alerts || {};
+    $("notify-status").textContent = st.ha_connected
+      ? "A phone alert when one of your ships takes the inner route."
       : "Not connected to Home Assistant, so no alerts can be sent.";
-    $("notify-test").disabled = !lastState?.ha_connected;
+    $("notify-test").disabled = !st.ha_connected;
+    const zones = st.zones || [];
+    const areas = zones.filter((z) => z.role === "phone" && z.shape !== "line");
+    const ph = phoneFix();
+    const inArea = ph ? areas.find((z) => inPolygon(ph.lat, ph.lon, z.points)) : null;
+    let where;
+    if (!areas.length) where = "you have no area drawn, so alerts go out wherever you are";
+    else if (!ph) where = "your phone's position isn't known just now";
+    else where = inArea ? `your phone is in ${inArea.name} now` : "your phone is outside your areas now";
+    const last = st.last_notification;
+    const lastShip = last && ships.get(last.mmsi)?.info.name;
+    const facts = [
+      ["Sent to", a.notify_service || "–"],
+      ["Only in my area", a.require_phone_area === false ? "No: alerts go out wherever you are" : `Yes: ${where}`],
+      ["Phone position", a.phone_entity || "–"],
+      ["Feed problems", a.notify_feed_problems === false ? "Not alerted" : "Alerted when ship data stops coming"],
+      ["Last alert", last ? `${lastShip ? `${shortName(lastShip)}, ` : ""}${fmtWhen(last.ts)}` : "None yet"],
+    ];
+    const dl = $("alert-facts");
+    dl.replaceChildren(...facts.flatMap(([k, v]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      return [dt, dd];
+    }));
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dd.innerHTML = `<a href="${esc(a.config_url || "/hassio/dashboard")}" target="_top">Change these in Home Assistant</a> <span class="muted">(the app's Configuration tab)</span>`;
+    dl.append(dt, dd);
+
+    const list = $("alert-areas");
+    list.replaceChildren(...(zones.length ? zones.map((zone) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="swatch ${zone.shape}" style="background:${esc(ZONE_STYLE[zone.role]?.color || "#64748b")}"></span>`
+        + `<div class="grow"><span>${esc(zone.name)}</span><span class="small muted">${esc(ZONE_STYLE[zone.role]?.label || zone.role)}`
+        + `${zone === inArea ? " · your phone is here" : ""}</span></div>`;
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => {
+        $("areas-open").click();
+        const layer = zoneLayers.get(zone.id)?.layer;
+        if (layer) map.fitBounds(layer.getBounds(), { ...cardPadding(), maxZoom: 13 });
+      });
+      li.append(edit);
+      return li;
+    }) : [Object.assign(document.createElement("li"), { className: "small muted", textContent: "No areas yet." })]));
+
+    const mine = [...ships.values()].filter(({ info }) => !info.fleet);
+    $("alert-ships").replaceChildren(...mine.map(({ info }) => {
+      const chip = document.createElement("span");
+      chip.className = "alert-chip";
+      chip.innerHTML = `<i class="dot" style="background:${esc(info.color)}"></i><span>${esc(shortName(info.name))}</span>`;
+      chip.classList.toggle("off", info.alerts === false);
+      chip.append(bellButton(info, () => { renderAlertBox(); renderShipsList(); }));
+      return chip;
+    }));
   }
 
   function renderChartKeep() {
@@ -1864,13 +2006,16 @@
     $("chart-sample").checked = sampleOnPress;
     let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
     if (keep && keep.running) {
-      const last = keep.last_ok ? ` Last area finished at ${new Date(keep.last_ok * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+      const last = keep.last_ok ? ` Last area finished at ${clock(keep.last_ok)}.` : "";
       const failed = keep.failed ? ` ${keep.failed} areas failed and will be tried again in an hour.` : "";
       text = `Downloading the Gulf of Finland: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.${last}${failed}`;
     } else if (keep) {
       text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
     }
     $("chart-keep-status").textContent = text;
+    const bar = $("chart-keep-progress");
+    bar.hidden = !(keep && keep.running && keep.total);
+    if (!bar.hidden) bar.firstElementChild.style.width = `${Math.min(100, (100 * keep.done) / keep.total).toFixed(1)}%`;
     // With a key saved the form folds away behind "Change".
     const saved = Boolean(vc?.mml_key);
     $("mml-saved").hidden = !saved;
@@ -2009,7 +2154,7 @@
 
     $("replay-dot").style.background = color;
     $("replay-title").textContent = `${p.name}: ${p.route} route, ${DIRECTIONS[p.direction] || p.direction}`;
-    const when = new Date(p.ts * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+    const when = fmtWhen(p.ts);
     $("replay-when").textContent = p.sog ? `${when} · ${p.sog.toFixed(0)} kn` : when;
     const keepDays = lastState?.retention_days ?? 60;
     $("replay-note").textContent = data.points.length > 1
@@ -2060,13 +2205,6 @@
   const statsHidden = new Set((() => { try { return JSON.parse(store.get("fw-stats-hidden") || "[]"); } catch { return []; } })());
   let passagesShown = PAGE;
   let statsBars = []; // the bars drawn, for the hover box and arrow keys
-
-  // One date style everywhere: "Thu 30 Oct", "Thu 30 Oct, 07:34".
-  const fmtDay = (ts) => {
-    const d = new Date(ts * 1000);
-    return `${WEEKDAYS[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
-  };
-  const fmtWhen = (ts) => `${fmtDay(ts)}, ${clock(ts)}`;
 
   function isoWeek(d) {
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -2423,6 +2561,24 @@
     return picked;
   }
 
+  // Arrow keys step through the bars, or through the days once a day is picked.
+  function stepStats(delta) {
+    if (!statsData) return false;
+    if (statsDay) {
+      const days = new Date(statsYear, statsPick + 1, 0).getDate();
+      statsDay = Math.min(days, Math.max(1, statsDay + delta));
+    } else {
+      const strip = statsBars.find((bars) => bars.some((b) => b.key === statsPick)) || statsBars[0];
+      if (!strip?.length) return false;
+      const i = strip.findIndex((b) => b.key === statsPick);
+      const next = i < 0 ? (delta > 0 ? 0 : strip.length - 1) : Math.min(strip.length - 1, Math.max(0, i + delta));
+      statsPick = strip[next].key;
+    }
+    passagesShown = PAGE;
+    renderStats();
+    return true;
+  }
+
   // Tap a bar to look at it on its own; hover one (with a mouse) for its numbers by ship.
   function barAt(target) {
     const g = target.closest?.("[data-i]");
@@ -2685,49 +2841,30 @@
 
   function renderAircraftSection() {
     const info = lastState?.aircraft || { enabled: false };
-    const section = document.createElement("section");
-    section.className = "fleet";
-    const head = document.createElement("label");
-    head.className = "fleet-head";
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.background = AIRCRAFT_COLORS.FinnHEMS;
-    const name = document.createElement("span");
-    name.className = "grow strong";
-    name.textContent = "Rescue aircraft";
-    const count = document.createElement("span");
-    count.className = "small muted";
-    count.textContent = info.enabled ? `${aircraft.size} in the air` : "";
-    const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.className = "switch";
-    toggle.checked = info.enabled;
-    toggle.addEventListener("change", async () => {
-      toggle.disabled = true;
-      try {
-        await api("api/aircraft", { method: "POST", body: { enabled: toggle.checked } });
-        await loadState();
-      } finally {
-        toggle.disabled = false;
-      }
+    return switchRow({
+      compact: true,
+      title: "Rescue aircraft", color: AIRCRAFT_COLORS.FinnHEMS, checked: info.enabled,
+      count: info.enabled ? `${aircraft.size} in the air` : "",
+      note: info.error
+        ? `Couldn't reach adsb.fi just now (${info.error}). It tries again shortly.`
+        : "FinnHEMS, Border Guard and police helicopters and Border Guard planes, from adsb.fi. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them, shown in Stats › Aircraft history.",
+      onChange: async (on) => { await api("api/aircraft", { method: "POST", body: { enabled: on } }); await loadState(); },
     });
-    head.append(dot, name, count, toggle);
-    const note = document.createElement("p");
-    note.className = info.error ? "small warn-text" : "small muted note";
-    note.innerHTML = info.error
-      ? `Couldn't reach adsb.fi just now (${esc(info.error)}). It tries again shortly.`
-      : "FinnHEMS, Border Guard and police helicopters and Border Guard planes. While this is on, the add-on also records their flights with the map closed (a check every 30 seconds) and keeps a year of them, shown in Stats › Aircraft history. Data from <a href=\"https://adsb.fi\" target=\"_blank\" rel=\"noopener\">adsb.fi</a>.";
-    section.append(head, note);
-    return section;
   }
 
+  // Fleets fold: a row with its switch; open it to see its ships.
+  const fleetsOpen = new Set();
   function renderFleets() {
     const box = $("fleets-list");
     const fleets = lastState?.fleets || [];
     box.replaceChildren(...fleets.map((fleet) => {
-      const section = document.createElement("section");
-      section.className = "fleet";
-      const head = document.createElement("label");
+      const section = document.createElement("details");
+      section.className = "fleet fleet-fold";
+      section.open = fleetsOpen.has(fleet.id);
+      section.addEventListener("toggle", () => {
+        if (section.open) fleetsOpen.add(fleet.id); else fleetsOpen.delete(fleet.id);
+      });
+      const head = document.createElement("summary");
       head.className = "fleet-head";
       const toggle = document.createElement("input");
       toggle.type = "checkbox";
@@ -2751,7 +2888,11 @@
       name.textContent = fleet.name;
       const count = document.createElement("span");
       count.className = "small muted";
-      head.append(dot, name, count, toggle);
+      const sw = document.createElement("label");
+      sw.className = "fold-switch";
+      sw.setAttribute("aria-label", `Show ${fleet.name}`);
+      sw.append(toggle);
+      head.append(dot, name, count, sw);
       section.append(head);
 
       const members = fleet.members.map((mmsi) => ships.get(mmsi)?.info).filter(Boolean);
@@ -2803,7 +2944,7 @@
           li.append(stop);
         }
         li.addEventListener("click", () => {
-          $("ships-dialog").close();
+          if (menuModal()) menu.close();
           focusShip(info.mmsi);
         });
         return li;
@@ -2822,7 +2963,8 @@
 
   // --- "On the map": layer switches ------------------------------------------------
 
-  function switchRow({ title, color, checked, count = "", note, extra, onChange }) {
+  const infoOpen = new Set(); // compact rows whose explanation is unfolded
+  function switchRow({ title, color, checked, count = "", note, extra, onChange, compact = false }) {
     const section = document.createElement("section");
     section.className = "fleet";
     const head = document.createElement("label");
@@ -2850,9 +2992,35 @@
         toggle.disabled = false;
       }
     });
-    head.append(dot, name, counter, toggle);
-    section.append(head);
-    if (note) section.append(noteText(note));
+    head.append(dot, name, counter);
+    const problem = note && /^Couldn't/.test(note);
+    if (compact && note && !problem) {
+      // One line; the explanation behind ⓘ.
+      const info = document.createElement("button");
+      info.type = "button";
+      info.className = "icon-button plain info-button";
+      info.setAttribute("aria-label", `About ${title}`);
+      info.setAttribute("aria-expanded", String(infoOpen.has(title)));
+      info.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle class="fill" cx="12" cy="7.6" r="1.2"/></svg>';
+      const p = document.createElement("p");
+      p.className = "small muted";
+      p.textContent = note;
+      p.hidden = !infoOpen.has(title);
+      info.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (infoOpen.has(title)) infoOpen.delete(title); else infoOpen.add(title);
+        p.hidden = !infoOpen.has(title);
+        info.setAttribute("aria-expanded", String(!p.hidden));
+      });
+      head.append(info, toggle);
+      section.append(head, p);
+    } else {
+      head.append(toggle);
+      section.append(head);
+      if (note) section.append(noteText(note));
+    }
+    section.classList.toggle("compact", compact);
     if (extra) section.append(extra);
     return section;
   }
@@ -2893,24 +3061,28 @@
     $("layers-list").replaceChildren(
       groupHead("On the chart"),
       switchRow({
+        compact: true,
         title: "Harbours", color: HARBOUR_RED, checked: harboursOn,
         count: harboursOn && harbourCount ? `${harbourCount} in view` : "",
         note: harbourNote || "Marinas and harbours from OpenStreetMap with their services, from zoom 11. Tap one for its card. Downloaded once a month.",
         onChange: async (on) => { setHarbours(on); renderLayers(); },
       }),
       switchRow({
+        compact: true,
         title: "Faulty lights and buoys", color: "#dc2626", checked: faultsOn,
         count: faultsOn && faultCount != null ? `${faultCount} nearby` : "",
         note: "Unlit, damaged or missing buoys, beacons and lights, from Digitraffic. Shown on the chart view.",
         onChange: async (on) => { faultsOn = on; store.set("fw-faults", on ? "1" : "0"); renderFaults(); renderLayers(); },
       }),
       switchRow({
+        compact: true,
         title: "Wrecks and coastal heritage", color: "#92400e", checked: heritageOn,
         note: "Wrecks, and bunkers, trenches and gun positions on the shore and islands (from zoom 13), from Museovirasto's registers. Shown on the drawn chart.",
         onChange: async (on) => { heritageOn = on; store.set("fw-heritage", on ? "1" : "0"); applyHeritage(); },
       }),
       groupHead("Traffic"),
       switchRow({
+        compact: true,
         title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
         note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
         extra: trafficOn ? trafficLegend() : null,
@@ -2919,7 +3091,48 @@
       renderAircraftSection(),
     );
     renderRoutesList();
-    renderFleets();
+    renderMapKey();
+  }
+
+  // The map key at the bottom of Layers: what the lines, circles and tags on the map mean.
+  function renderMapKey() {
+    const icon = (svg) => `<svg class="key-icon" viewBox="0 0 28 18" aria-hidden="true">${svg}</svg>`;
+    const line = (color) => icon(`<path d="M2 9h24" stroke="${color}" stroke-width="3" stroke-dasharray="5 4" fill="none"/>`);
+    const boat = '<path d="M14 3v9M14 3l5 8h-5M9 12h11l-2 3h-7z" fill="currentColor" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round"/>';
+    const rows = [
+      [line(ZONE_STYLE.inner.color), "Inner route line: a ship crossing it counts as an inner passage"],
+      [line(ZONE_STYLE.outer.color), "Outer route line"],
+      [icon(`<path d="M5 4h18v10H5z" stroke="${ZONE_STYLE.phone.color}" stroke-width="2.5" stroke-dasharray="5 4" fill="${ZONE_STYLE.phone.color}" fill-opacity="0.12"/>`), "My area: alerts only while your phone is in it"],
+      [icon('<circle cx="14" cy="9" r="6" fill="#2563eb" stroke="#fff" stroke-width="2.5"/>'), "Your phone, from Home Assistant"],
+      [icon('<circle cx="14" cy="9" r="8" fill="#16a34a"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">6</text>'), "Weather station: wind in m/s, coloured by strength"],
+      [icon('<rect x="2" y="3" width="24" height="12" rx="4" fill="#0f766e"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1.4 m</text>'), "Wave buoy (wave height) or sea temperature"],
+      [icon(`<g style="color:${HARBOUR_RED}">${boat}</g>`), "Harbour on the chart"],
+      [icon(`<rect x="7" y="0.5" width="14" height="17" rx="4" fill="#1d4ed8"/><g style="color:#fff" transform="translate(0.3 0.2) scale(1)">${boat}</g>`), "Harbour on the map and satellite views"],
+      [icon('<circle cx="14" cy="9" r="7" fill="#fff" stroke="#dc2626" stroke-width="2.5"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="800" fill="#dc2626">!</text>'), "Faulty light or buoy"],
+    ];
+    const list = document.createElement("ul");
+    list.className = "key-list small";
+    for (const [svg, text] of rows) {
+      const li = document.createElement("li");
+      li.innerHTML = `${svg}<span>${esc(text)}</span>`;
+      list.append(li);
+    }
+    const speed = document.createElement("div");
+    speed.className = "key-block small";
+    speed.innerHTML = `<span class="muted">A ship's track, by speed</span><div class="speed-scale"><i style="background:${SPEED_GRADIENT}"></i><span class="small muted"><span>0</span><span>${SPEED_MAX} kn</span></span></div>`;
+    const wind = document.createElement("div");
+    wind.className = "key-block small";
+    wind.innerHTML = '<span class="muted">Wind colours</span>';
+    wind.append(windLegend());
+    const air = document.createElement("div");
+    air.className = "key-block small";
+    air.innerHTML = `<span class="muted">Rescue aircraft</span><ul class="legend">${Object.entries(AIRCRAFT_COLORS)
+      .map(([k, c]) => `<li><i style="background:${c}; clip-path:none; border-radius:50%"></i>${esc(k)}</li>`).join("")}</ul>`;
+    const traffic = document.createElement("div");
+    traffic.className = "key-block small";
+    traffic.innerHTML = '<span class="muted">Other ships</span>';
+    traffic.append(trafficLegend());
+    $("map-key").replaceChildren(list, speed, wind, air, traffic);
   }
 
   // --- weather on the map: its own button and panel ---------------------------------------
@@ -2967,14 +3180,8 @@
   // --- settings -------------------------------------------------------------------
 
   function renderSettings() {
-    const mem = lastState?.memory;
-    const mb = mem?.total ?? lastState?.memory_mb;
-    // Where it goes: the parts holding data, then the program itself (Python, libraries).
-    const NAMES = { chart: "chart", "depth model": "foreign depths", database: "database", ships: "ships", aircraft: "aircraft" };
-    const parts = (mem?.parts || []).filter(([, v]) => v >= 0.1).map(([k, v]) => `${NAMES[k] || k} ${v.toFixed(1)}`);
-    if (mem?.program != null) parts.push(`program ${Math.round(mem.program)}`);
-    const peak = mem?.peak > mb ? `, at most ${Math.round(mem.peak)} MB since it started` : "";
-    setText($("memory"), mb ? `Memory in use: ${Math.round(mb)} MB${peak}.${parts.length ? ` In MB: ${parts.join(", ")}.` : ""}` : "");
+    renderMemory();
+    renderSources();
     const problems = overlays.problems();
     $("overlay-status").hidden = !problems.length;
     setText($("overlay-status"), problems.length
@@ -2982,6 +3189,64 @@
     const checks = overlays.checks();
     $("overlay-checks").hidden = !checks.length;
     setText($("overlay-checks"), checks.join(" "));
+  }
+
+  // Memory as a bar: the parts holding data and the program, the peak marked; the split by
+  // part behind a tap.
+  const MEM_NAMES = { chart: "Chart", "depth model": "Foreign depths", database: "Database", ships: "Ships", aircraft: "Aircraft" };
+  const MEM_COLORS = ["#2563eb", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"];
+  function renderMemory() {
+    const mem = lastState?.memory;
+    const mb = mem?.total ?? lastState?.memory_mb;
+    $("memory-box").hidden = !mb;
+    if (!mb) return;
+    const parts = (mem?.parts || []).filter(([, v]) => v >= 0.1).map(([k, v]) => [MEM_NAMES[k] || k, v]);
+    if (mem?.program != null) parts.push(["Program (Python and libraries)", mem.program]);
+    const peak = Math.max(mb, mem?.peak || 0);
+    const scale = peak * 1.08;
+    setText($("memory-text"), `${Math.round(mb)} MB now${mem?.peak > mb ? ` · ${Math.round(mem.peak)} MB at most` : ""}`);
+    const bar = $("memory-bar");
+    bar.innerHTML = parts.map(([, v], i) => `<i style="width:${((100 * v) / scale).toFixed(1)}%; background:${MEM_COLORS[i % MEM_COLORS.length]}"></i>`).join("")
+      + `<b style="left:${((100 * peak) / scale).toFixed(1)}%" title="Peak"></b>`;
+    $("memory-parts").innerHTML = parts.map(([k, v], i) => `<li><i style="background:${MEM_COLORS[i % MEM_COLORS.length]}"></i>${esc(k)}<span>${v.toFixed(v < 10 ? 1 : 0)} MB</span></li>`).join("")
+      + '<li class="muted">Measured on the NAS. The peak is the most since the app started.</li>';
+  }
+
+  // Every source the app reads, with a dot: green answering, red failing, grey off.
+  function renderSources() {
+    const st = lastState;
+    if (!st) return;
+    const rows = [];
+    const ok = (ts) => (ts ? `OK, ${ago(ts)}` : "OK");
+    const feed = st.feed || {};
+    if (st.simulated) rows.push(["Ship positions (Digitraffic)", "ok", "Simulated data"]);
+    else {
+      const quiet = feed.last_message_ts && now() - feed.last_message_ts > 300;
+      rows.push(["Ship positions (Digitraffic)", feed.connected && !quiet ? "ok" : "bad",
+        feed.connected ? (quiet ? `Connected, but nothing since ${fmtWhen(feed.last_message_ts)}` : ok(feed.last_message_ts)) : "Not connected; it keeps trying"]);
+    }
+    rows.push(["Home Assistant", st.ha_connected ? "ok" : "bad", st.ha_connected ? "Connected" : "Not connected: no alerts or phone position"]);
+    const w = st.weather || {};
+    rows.push(["Sea conditions (FMI)", w.enabled === false ? "off" : w.error ? "bad" : "ok",
+      w.enabled === false ? "Off" : w.error ? `Failing: ${w.error}` : ok(w.fetched)]);
+    rows.push(["Weather stations (FMI)", !stationsOn ? "off" : stationsData?.error ? "bad" : "ok",
+      !stationsOn ? "Off" : stationsData?.error ? `Failing: ${stationsData.error}` : stationsData ? "OK" : "Waiting for the first reading"]);
+    for (const e of overlays.entries.values()) {
+      rows.push([e.ov.title, !e.on ? "off" : e.ov.error ? "bad" : "ok", !e.on ? "Off" : e.ov.error ? `Failing: ${e.ov.error}` : "OK"]);
+    }
+    for (const sv of st.vchart?.services || []) {
+      rows.push([`Chart: ${sv.name}`, sv.failing ? "bad" : "ok",
+        sv.failing ? `Failing since ${fmtWhen(sv.failing)}${sv.ok ? ` (last OK ${fmtWhen(sv.ok)})` : ""}` : ok(sv.ok)]);
+    }
+    if (st.vchart && !st.vchart.mml_key) rows.push(["Chart: Land Survey (rocks, names, land)", "off", "No API key (see Drawn chart above)"]);
+    const air = st.aircraft || {};
+    rows.push(["Rescue aircraft (adsb.fi)", !air.enabled ? "off" : air.error ? "bad" : "ok", !air.enabled ? "Off" : air.error ? `Failing: ${air.error}` : "OK"]);
+    $("sources-status").replaceChildren(...rows.map(([name, state, text]) => {
+      const li = document.createElement("li");
+      li.className = state;
+      li.innerHTML = `<i></i><span class="grow"><span class="small strong">${esc(name)}</span><span class="small muted">${esc(text)}</span></span>`;
+      return li;
+    }));
   }
 
   // --- wrecks and coastal heritage on the drawn chart ---------------------------------
@@ -3045,7 +3310,7 @@
   function renderConditionsSheet() {
     const w = lastState?.weather || {};
     const rows = [];
-    const at = (v) => `${v.where}, ${clock(v.ts)}${now() - v.ts > 86400 ? ` ${new Date(v.ts * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : ""}`;
+    const at = (v) => `${v.where}, ${now() - v.ts > 86400 ? fmtWhen(v.ts) : clock(v.ts)}`;
     if (w.enabled !== false) {
       if (w.wind) {
         const gust = w.wind.gust != null ? `, gusts ${Math.round(w.wind.gust)}` : "";
@@ -3330,9 +3595,7 @@
 
   function faultPopup(f) {
     const since = f.since ? new Date(f.since * 1000) : null;
-    const day = since && since.toLocaleDateString("en-GB", {
-      day: "numeric", month: "short", ...(now() - f.since > 300 * 86400 ? { year: "numeric" } : {}),
-    });
+    const day = since && `${fmtDay(f.since)}${now() - f.since > 300 * 86400 ? ` ${since.getFullYear()}` : ""}`;
     const what = [f.name, f.aton_type && f.aton_type.toLowerCase()].filter(Boolean).join(", ");
     return `<strong>${esc(f.type)}${day ? ` since ${esc(day)}` : ""}</strong>`
       + `${what ? `<br>${esc(what)}` : ""}${f.fairway ? `<br><span class="muted">${esc(f.fairway)}</span>` : ""}`;
@@ -4291,6 +4554,8 @@
     if (menu.open) {
       // The side panel isn't modal, so Escape is ours to handle (a modal sheet closes itself).
       if (e.key === "Escape" && !menuModal() && !(e.target instanceof HTMLInputElement && e.target.value)) menu.close();
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.target.closest?.("input, select, textarea")
+          && !menu.querySelector('[data-pane="stats"]').hidden && stepStats(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
       return;
     }
     const typing = e.target instanceof HTMLInputElement;

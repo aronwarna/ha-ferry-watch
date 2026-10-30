@@ -117,6 +117,7 @@
       <div class="card-head">
         <span class="dot" id="card-dot"></span>
         <h2 id="card-name"></h2>
+        <span id="card-bell" class="card-bell"></span>
         <button type="button" class="icon-button plain" id="card-collapse" aria-label="Make the card small" aria-expanded="true" title="Make the card small">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
         </button>
@@ -143,6 +144,7 @@
       <div class="card-actions">
         <button type="button" id="card-zoom">Show whole track</button>
         <button type="button" id="card-play" class="play-link">Play back</button>
+        <button type="button" class="link-button" id="card-stats-link" hidden>Stats</button>
         <label class="link-button" id="card-photo-label">Change photo<input type="file" id="card-upload" accept="image/jpeg,image/png,image/webp" hidden></label>
         <button type="button" class="link-button" id="card-follow" hidden>Add to my ships</button>
         <button type="button" class="link-button" id="card-unfollow" hidden>Stop following</button>
@@ -236,24 +238,30 @@
       </form>
     </div>
     <div data-pane="ships" role="tabpanel">
-      <ul id="ships-list" class="ships-list"></ul>
-      <h3>Add a ship</h3>
-      <p class="small muted">Add gives a ship alerts and stats like the ferries. Follow just shows it on the map with its latest trip.</p>
-      <input id="ship-search" type="search" placeholder="Ship name or MMSI" autocomplete="off">
+      <input id="ship-search" type="search" placeholder="Find a ship to add: name or MMSI" autocomplete="off" aria-label="Find a ship by name or MMSI">
       <ul id="search-results" class="ships-list results"></ul>
+      <h3 class="group-head">My ships</h3>
+      <ul id="ships-list" class="ships-list my-ships"></ul>
+      <h3 class="group-head">Fleets</h3>
+      <p class="small muted note">Switched-on fleets are shown on the map with their latest trip; tap one to see its ships. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
+      <div id="fleets-list"></div>
     </div>
     <div data-pane="layers" role="tabpanel" hidden>
       <div id="layers-list"></div>
-      <h3>Routes</h3>
+      <h3 class="group-head">Routes</h3>
       <div id="routes-list"></div>
-      <h3>Fleets</h3>
-      <p class="small muted">Switched-on fleets are shown on the map with their latest trip. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
-      <div id="fleets-list"></div>
+      <h3 class="group-head">Map key</h3>
+      <div id="map-key" class="map-key"></div>
     </div>
     <div data-pane="settings" role="tabpanel" hidden>
       <section class="group">
         <h3>Alerts</h3>
         <p class="small muted" id="notify-status"></p>
+        <dl class="facts alert-facts" id="alert-facts"></dl>
+        <h4 class="sub-head">Areas</h4>
+        <ul id="alert-areas" class="ships-list compact-list"></ul>
+        <h4 class="sub-head">Ships that alert</h4>
+        <div id="alert-ships" class="alert-ships"></div>
         <div class="row-buttons">
           <button type="button" id="areas-open">Edit alert areas</button>
           <button type="button" id="notify-test">Send a test notification</button>
@@ -267,7 +275,8 @@
             <span class="grow strong">Keep chart on the NAS</span>
             <input type="checkbox" class="switch" id="chart-keep">
           </label>
-          <p class="small muted note" id="chart-keep-status"></p>
+          <p class="small muted" id="chart-keep-status"></p>
+          <div class="progress" id="chart-keep-progress" hidden><i></i></div>
         </div>
         <div class="fleet">
           <label class="fleet-head">
@@ -303,11 +312,19 @@
         </div>
       </section>
       <section class="group">
+        <h3>Data sources</h3>
+        <ul class="sources-status" id="sources-status"></ul>
+      </section>
+      <section class="group">
         <h3>About</h3>
-        <p class="small" id="memory"></p>
+        <details class="memory-box" id="memory-box">
+          <summary><span class="small strong">Memory</span><span class="small muted" id="memory-text"></span>
+            <span class="mem-bar" id="memory-bar"></span></summary>
+          <ul class="mem-parts small" id="memory-parts"></ul>
+        </details>
         <p class="muted small" id="version"></p>
         <details class="sources">
-          <summary class="small strong">Data sources</summary>
+          <summary class="small strong">Credits</summary>
           <ul class="credits small muted">
             <li>Ship positions: <a href="https://www.digitraffic.fi/en/marine-traffic/" target="_blank" rel="noopener">Digitraffic</a> (Fintraffic, CC BY 4.0)</li>
             <li>Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto, CC BY 4.0)</li>
