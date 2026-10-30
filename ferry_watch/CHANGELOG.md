@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.3
+
+- Masts and chimneys show their height as the paper chart does: the top above the sea.
+  The Land Survey gives the structure's own height in millimetres (Husö's mast came out as
+  61000); it's now metres, plus the ground under it from the nearest land contour, so
+  Husö reads about (84) like the paper chart. Good to within a contour step (5 m or less).
+- Rocks from Traficom's own chart data are added to the Land Survey's, where Traficom
+  publishes them. The Land Survey misses some rocks the paper chart has, mostly ones found
+  by depth surveys out in open water. A rock both have is drawn once.
+
 ## 0.26.2
 
 - Rocks no longer pile up when zoomed out (up to zoom 14): rocks close together are drawn

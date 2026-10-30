@@ -83,7 +83,7 @@ EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
 POINT_BUFFER = 64  # wider for points: symbols and their text reach past the tile edge
 POINT_BUFFERS = {"sector": 448, "aid": 128, "light": 128, "name": 256, "sounding": 128, "landmark": 128,
-                 "sign": 96, "call": 128, "building": 16, "rock": 96, "rockctr": 96}
+                 "sign": 96, "call": 128, "building": 16, "rock": 96, "rockctr": 96, "trock": 96}
 BLOCK_POINT_MARGIN = UNITS // 4  # points are kept this far past each block edge...
 POINT_MARGINS = {"building": UNITS // 32}  # ...but buildings are dense and small: no need to fetch that much more
 MAX_AGE = 30 * 86400
@@ -113,7 +113,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 23  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 25  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -180,6 +180,12 @@ SOURCES: dict[str, tuple[str, str | dict[str, tuple[str, ...]], str, tuple[str, 
         "cable": ("rajoitettu:CableSubmarine_L", "avoin:CableSubmarine_L"),
         "pipe": ("rajoitettu:PipelineSubmarineOnBelow_L", "avoin:PipelineSubmarineOnBelow_L"),
     }, "line", ("_src",)),
+    # The chart's own rocks (S-57 UWTROC; WATLEV 2 always dry, 3 always under water, 4 and 5
+    # awash). The Land Survey's rocks ("rock") miss some that the paper chart has, mostly
+    # hydrographic finds out in open water; these add them (see add_chart_rocks). The name is
+    # a guess in Traficom's pattern, used only if the service lists it.
+    "trock": (TRAFICOM_WFS, {"rock": ("rajoitettu:UnderwaterAwashRock_P", "rajoitettu:UnderwaterRock_P")},
+              "point", ("_src", "watlev", "valsou")),
     "call": (TRAFICOM_OPEN_WFS, "avoin:Rdocal_P", "point", ("objnam", "comcha", "orient")),
     "pier": (TRAFICOM_OPEN_WFS, {
         "pontoon": ("avoin:Pontoon_L", "avoin:Pontoon_A"), "berth": ("avoin:Berths_L",),
@@ -219,6 +225,7 @@ PARTS: dict[str, tuple[str, ...]] = {
     "mml": ("rock", "rockarea", "wreck", "name"),
     "tss": ("tss", "tssline", "pilot", "call", "pier", "sign"),
     "cbl": ("cable",),
+    "trk": ("trock",),
     "lake": ("lake",),
     "land": ("height", "road", "rail"),
     "mark": ("building", "buildarea", "landmark", "markh"),
@@ -334,7 +341,7 @@ DEFENCE_MIN_Z = 13  # coastal defence sites on land, only drawn up close
 COAST_REACH = UNITS // 12  # block units (about 800 m): land sites further from the sea are left out
 LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 11, "farea": 11, "fline": MIN_Z,
                "lead": 11, "route": 11, "restrict": 12, "aid": MIN_Z, "sector": 11, "shore": 12, "light": 10,
-               "rock": 12, "rockarea": 12, "rockctr": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
+               "rock": 12, "rockarea": 12, "rockctr": 12, "trock": 12, "wreck": 12, "name": MIN_Z, "heritage": 11,
                "tss": MIN_Z, "tssline": MIN_Z, "pilot": 10, "call": 11, "pier": 12, "sign": 13, "cable": 11,
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
                "xland": MIN_Z, "xdepth": MIN_Z}
@@ -1185,6 +1192,37 @@ def join_heights(marks: Layer, labels: Layer | None) -> Layer:
     return b.layer
 
 
+GROUND_REACH = 1000  # block units (about 150 m): the land contour nearest a landmark gives its ground
+
+
+def landmark_top(data: dict, props: tuple, x: float, y: float) -> tuple:
+    """A landmark's (kind, height, name) with the height as the paper chart gives it: its top
+    above the sea. The Land Survey gives the structure's own height, in millimetres (61000 for
+    a 61 m mast); the ground under it is taken from the nearest land contour, so the top is
+    only as good as the contours (within a contour step, 5 m or less)."""
+    kind, height, name = _pad(props, 3)[:3]
+    h = _num(height)
+    if h is None:
+        return props
+    if h >= HEIGHT_MM_FROM:
+        h /= 1000
+    ground, best = None, GROUND_REACH ** 2
+    lines = data.get("height")
+    for i in range(lines.n if lines is not None else 0):
+        x0, y0, x1, y1 = lines.bbox(i)
+        if x0 - GROUND_REACH > x or x1 + GROUND_REACH < x or y0 - GROUND_REACH > y or y1 + GROUND_REACH < y:
+            continue
+        v = _height_m(_pad(lines.props[lines.pi[i]], 1)[0])
+        if v is None:
+            continue
+        for px, py in lines.pts(lines.vo[i], lines.vo[i + 1]):
+            d = (px - x) ** 2 + (py - y) ** 2
+            if d < best:
+                ground, best = v, d
+    top = h + (ground or 0)
+    return (kind, int(round(top)), name)
+
+
 def _fairway_on_lead(data: dict, pts: list) -> list[tuple[float, float]] | None:
     """The stretches of a leading line that a fairway's line runs along, as (from, to)
     distances along it in block units, merged. None when the block has no fairway lines
@@ -1825,6 +1863,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                         out.append([tx, ty, p, on_lead.get((px, py)), leans.get((px, py))])
                     elif key == "sector" and i in wedges:
                         out.append([tx, ty, p, round(wedges[i][0] * k, 1), round(wedges[i][1] * k, 1)])
+                    elif key == "landmark":
+                        out.append([tx, ty, landmark_top(data, p, px, py)])
                     else:
                         out.append([tx, ty, p])
                 continue
@@ -1910,6 +1950,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if rows.get("xland"):
         # Land outside Finland, under the foreign depth areas (see foreign.py).
         tile["land"] = tile.get("land", []) + [ring for _, *rings in rows["xland"] for ring in rings]
+    add_chart_rocks(rows, z)
     if z <= ROCK_MERGE_MAX_Z:
         merge_rocks(rows, z, x, y)
     rows.pop("rockctr", None)
@@ -1923,6 +1964,26 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
 ROCK_MERGE_MAX_Z = 14
 ROCK_SIGN = 40  # tile units at scale 1 (20 chart px): the room a rock sign takes, and a bit
 ROCK_TYPES_ORDER = (3, 2, 1)  # a cluster shows its rock above water first, then awash
+
+
+CHART_ROCK_KINDS = {2: 38513, 3: 38511, 4: 38512, 5: 38512}  # S-57 WATLEV -> the Land Survey's rock class
+SAME_ROCK = 100  # block units (about 15 m): a chart rock this near a Land Survey rock is that rock
+
+
+def add_chart_rocks(rows: dict, z: int) -> None:
+    """Traficom's rocks ("trock") into "rock", as Land Survey rock classes, leaving out the
+    ones the Land Survey has too."""
+    chart = rows.pop("trock", None)
+    if not chart:
+        return
+    near = SAME_ROCK * EXTENT * 2 ** (z - BLOCK_Z) / UNITS  # in tile units
+    have = rows.setdefault("rock", [])
+    known = [(px, py) for px, py, _ in have]
+    for px, py, p in chart:
+        if any(abs(px - kx) <= near and abs(py - ky) <= near for kx, ky in known):
+            continue
+        have.append([px, py, (CHART_ROCK_KINDS.get(_int(_pad(p, 2)[1]), 38511),)])
+        known.append((px, py))
 
 
 def merge_rocks(rows: dict, z: int, x: int, y: int) -> None:

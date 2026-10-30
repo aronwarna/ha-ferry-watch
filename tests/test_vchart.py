@@ -680,8 +680,9 @@ def test_land_detail(tmp_path):
     assert {m for m, _ in h13["height"]} <= set(range(10, 70, 10)) and 30 in {m for m, _ in h13["height"]}
     assert {15, 25} <= {m for m, _ in h14["height"]}
     assert "height" not in h11 and "road" not in h11
-    # Masts with their heights, one from the separate height label.
-    assert sorted(m[3] for m in h12["landmark"] if m[2] == "mast") == [59, 82, 131]
+    # Masts with their heights (131, 82 and 59 m, one from the separate height label), as
+    # their tops over the sea: the ground under each from the nearest land contour.
+    assert sorted(m[3] for m in h12["landmark"] if m[2] == "mast") == [119, 131, 142]
     # Roads: major and minor at zoom 12, paths from 13, ice roads never.
     assert {r[0] for r in roads12["road"]} == {1, 2}
     assert {r[0] for r in path13["road"]} == {3}
@@ -1446,3 +1447,26 @@ def test_rock_merging_is_the_same_in_neighbouring_tiles():
         merge_rocks(rows, 12, tx, 3)
         out.append(sorted((r[0] + tx * EXTENT, r[1] + 3 * EXTENT) for r in rows["rock"] + rows["rockpt"]))
     assert out[0] == out[1] and 1 <= len(out[0]) < len(world)
+
+
+def test_chart_rocks_add_to_the_land_surveys():
+    from ferrywatch.vchart import add_chart_rocks
+    rows = {"rock": [[100, 100, (38511,)]],
+            "trock": [[101, 99, ("rock", 3, 2.0)], [300, 200, ("rock", 4, 0.2)], [400, 50, ("rock", 2, None)]]}
+    add_chart_rocks(rows, 14)
+    assert "trock" not in rows
+    # The one on top of the Land Survey's rock is the same rock; the rest become rocks awash
+    # and above water.
+    assert rows["rock"] == [[100, 100, (38511,)], [300, 200, (38512,)], [400, 50, (38513,)]]
+
+
+def test_landmark_top_is_its_height_over_the_ground():
+    from ferrywatch.vchart import LayerBuilder, landmark_top
+    b = LayerBuilder("line")
+    b.line((20000,), [(0, 0), (100, 0)])  # a 20 m contour, in millimetres, close by
+    b.line((40000,), [(5000, 5000), (5100, 5000)])  # a higher one, too far off
+    data = {"height": b.layer}
+    assert landmark_top(data, ("mast", 61000, "Husö"), 50, 200) == ("mast", 81, "Husö")
+    assert landmark_top({}, ("mast", 61000, None), 50, 200) == ("mast", 61, None)  # no contours: its own height
+    assert landmark_top({}, ("chimney", 45, None), 0, 0) == ("chimney", 45, None)  # already metres
+    assert landmark_top({}, ("church", None, None), 0, 0) == ("church", None, None)

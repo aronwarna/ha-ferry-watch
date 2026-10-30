@@ -342,6 +342,8 @@ def scene() -> dict[str, list[dict]]:
     out["rock"] = rocks
     out["building"] = [_poly([_house(x, y, rnd)], **feat["properties"])
                        for feat in houses for x, y in [feat["geometry"]["coordinates"]]]
+    # Traficom's own rocks, out in open water where the Land Survey has none.
+    out["trock.rock"] = [_km_point(10.4, 2.4, watlev=4, valsou=0.3), _km_point(8.6, 2.0, watlev=3, valsou=1.6)]
     out["rockarea"] = [_poly([_km_line([(9.3, 6.9), (9.7, 7.1), (9.8, 6.7), (9.4, 6.5), (9.3, 6.9)])], kohdeluokka=38512)]
     # The Land Survey gives contour heights in millimetres.
     out["height"] = [_line(line, korkeusarvo=lv * 1000) for lv in range(5, 75, 5) for loop in _loops(f, lv)
