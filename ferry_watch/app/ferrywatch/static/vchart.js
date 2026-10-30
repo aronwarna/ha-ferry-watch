@@ -1805,19 +1805,29 @@
     // with its sector (or, for a light further off, on its own), the same in every tile.
     if (zoom >= 13) {
       const r = Math.min(80 * s, ARC_MAX);
-      const wedges = [...(data.sector || []).filter((row) => row[5] != null), ...(data.wedge || []).map(([x, y, a, b, reach]) => [x, y, a, b, "v", reach])];
-      ctx.fillStyle = C.lightY;
-      for (const [x, y, from, to, , reach] of wedges) {
-        const len = zoom >= 14 ? Math.max(reach, r) : reach;
+      const wedges = [...(data.sector || []).filter((row) => row[5] != null), ...(data.wedge || []).map(([x, y, a, b, ...ends]) => [x, y, a, b, "v", ...ends])];
+      for (const [x, y, from, to, , len, tail = len * 4 / 3] of wedges) {
         const a1 = ((from + 90) * Math.PI) / 180;
         let a2 = ((to + 90) * Math.PI) / 180;
         if (a2 <= a1) a2 += 2 * Math.PI;
+        // See-through yellow, so the lines and depths under it still show, as on the paper chart.
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = C.lightY;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, len, a1, a2); ctx.closePath();
         ctx.fill();
-        // A thin dark edge, and its W at the far end along it, as the paper chart has.
+        ctx.globalAlpha = 1;
+        // Its edges as thin dotted lines, going on about a third past the yellow (short of any other
+        // wedge); its W at the end.
         ctx.strokeStyle = C.black;
         ctx.lineWidth = 0.6 * s;
+        ctx.setLineDash([1.5 * s, 2 * s]);
+        ctx.beginPath();
+        for (const a of [a1, a2]) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(a) * tail, y + Math.sin(a) * tail);
+        }
         ctx.stroke();
+        ctx.setLineDash([]);
         const mid = (a1 + a2) / 2;
         const tx = x + Math.cos(mid) * (len + 7 * s), ty = y + Math.sin(mid) * (len + 7 * s);
         ctx.save();
@@ -1825,7 +1835,6 @@
         ctx.font = `${11 * s}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillStyle = C.black; ctx.fillText("W", 0, 0);
         ctx.restore();
-        ctx.fillStyle = C.lightY;
         marks.push([tx - 6 * s, ty - 6 * s, tx + 6 * s, ty + 6 * s]);
         // Soundings keep off it near the light, where the arcs are.
         for (let d = 8 * s; d <= Math.min(len, r); d += 8 * s) {
@@ -1982,8 +1991,11 @@
       ctx.setLineDash([0.01 * unit, 4 * unit]);
       ctx.beginPath();
       for (const { x, y, plan } of lights) {
+        // A wedge's edges are its own, dotted as far as it says (step 8b).
+        const wedged = plan.arcs.filter((arc) => arc.reach != null && narrow(arc)).flatMap((arc) => [arc.a1, arc.a2]);
         for (const arc of plan.arcs) {
           for (const a of [arc.a1, arc.a2]) {
+            if (wedged.some((w) => Math.abs(Math.sin((w - a) / 2)) < 1e-6)) continue;
             ctx.moveTo(x + Math.cos(a) * 7 * s, y + Math.sin(a) * 7 * s);
             ctx.lineTo(x + Math.cos(a) * 1.3 * r, y + Math.sin(a) * 1.3 * r);
           }

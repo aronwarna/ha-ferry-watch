@@ -377,18 +377,23 @@ def scene() -> dict[str, list[dict]]:
              (7.55, 5.6, "Viitta", 2, "E", "Drages 5"), (7.2, 9.6, "Linjamerkki", 99, "K", "Dragesvik ylempi"),
              (7.35, 3.6, "Linjamerkki", 99, "K", "Dragesvik alempi"), (9.6, 3.9, "Sektoriloisto", 99, "K", "Rönnbåda"),
              (2.0, 2.3, "Viitta", 3, "E", "Sandö N"), (11.6, 3.0, "Poiju", 4, "K", "Svartö S"),
-             (12.0, 4.25, "Suuntaloisto", 99, "K", "Svartö suunta"), (3.0, 2.75, "Apuloisto", 99, "K", "Sandö")]
+             (12.0, 4.25, "Suuntaloisto", 99, "K", "Svartö suunta"), (3.0, 2.75, "Apuloisto", 99, "K", "Sandö"),
+             (10.6, 3.3, "Sektoriloisto", 99, "K", "Kalvbåda")]
     out["aid"] = [_km_point(x, y, turvalaitetyyppifi=t, navigointilajikoodi=cat, valaistu=lit, nimifi=name)
                   for x, y, t, cat, lit, name in marks]
     out["light"] = [_km_point(9.6, 3.9, viralvalotunnuse="Fl WRG 3s"), _km_point(7.2, 9.6, viralvalotunnuse="Iso 4s"),
                     _km_point(7.35, 3.6, viralvalotunnuse="Iso 2s"), _km_point(6.6, 2.2, viralvalotunnuse="Fl G 3s"),
                     _km_point(11.6, 3.0, viralvalotunnuse="Q(6)+LFl 15s"),
-                    _km_point(12.0, 4.25, viralvalotunnuse="Oc WRG 4s"), _km_point(3.0, 2.75, viralvalotunnuse="Fl 2s")]
+                    _km_point(12.0, 4.25, viralvalotunnuse="Oc WRG 4s"), _km_point(3.0, 2.75, viralvalotunnuse="Fl 2s"),
+                    _km_point(10.6, 3.3, viralvalotunnuse="LFl WRG 6s")]
     out["sector"] = [_km_point(9.6, 3.9, alkukulma=a, loppukulma=b, vari=col)
                      for a, b, col in ((300, 345, "vi"), (345, 352, "v"), (352, 40, "p"))] + [
         # A directional light's beam out to the south-west, between narrow green and red.
         _km_point(12.0, 4.25, alkukulma=a, loppukulma=b, vari=col)
         for a, b, col in ((39, 43, "vi"), (43, 47, "v"), (47, 51, "p"))] + [
+        # Kalvbåda's white sector to the west runs into Rönnbåda's near its own end: it stops short.
+        _km_point(10.6, 3.3, alkukulma=a, loppukulma=b, vari=col)
+        for a, b, col in ((60, 86, "vi"), (86, 92, "v"), (92, 120, "p"))] + [
         _km_point(x, y, alkukulma=0, loppukulma=360, vari=col)
         for x, y, col in ((7.2, 9.6, "v"), (7.35, 3.6, "v"), (6.6, 2.2, "vi"), (11.6, 3.0, "v"), (3.0, 2.75, "v"))]
     names = [(2.6, 8.4, "Sandöfjärden", "swe", 36000), (10.6, 6.2, "Svartöfjärden", "swe", 36000),

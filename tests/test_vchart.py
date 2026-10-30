@@ -1364,13 +1364,14 @@ def test_narrow_white_sector_has_the_usual_length(tmp_path):
         return near, far
 
     near, far = asyncio.run(run())
-    rows = [r for r in near["sector"] if r[4] == "v" and len(r) == 6]
+    rows = [r for r in near["sector"] if r[4] == "v" and len(r) == 7]
     assert len(rows) == 1  # only the narrow white one, not the green or red
     metres_per_unit = 40075016 * math.cos(math.radians(60.0)) / 2 ** 15 / vchart.EXTENT
     assert 880 < rows[0][5] * metres_per_unit < 1080
+    assert abs(rows[0][6] - rows[0][5] * 4 / 3) <= 1  # its dotted edges, a third further
     assert far.get("wedge") and far["wedge"][0][2:4] == rows[0][2:4]
     # The directional light's narrow beam isn't a wedge.
-    assert not any(len(r) == 6 for r in near["sector"] if r[2] in (39, 43, 47))
+    assert not any(len(r) > 5 for r in near["sector"] if r[2] in (39, 43, 47))
 
 
 def test_wedge_reach_by_fairway_line():
@@ -1383,6 +1384,21 @@ def test_wedge_reach_by_fairway_line():
     assert _wedge_reach(0, 0, 356, 8, along) == WEDGE_REACH  # a long leg: never longer than usual
     assert 4000 <= _wedge_reach(0, 0, 356, 8, [(0, 1000, 0, 4000)]) <= 4300  # a leg turning off sooner
     assert _wedge_reach(0, 0, 356, 8, [(0, 100, 0, 600)]) == WEDGE_MIN
+
+
+def test_wedges_that_meet_stop_short_of_each_other():
+    from ferrywatch.vchart import WEDGE_GAP, WEDGE_REACH as R, _untangle
+    # One east from the origin; one north from below, reaching across the first near its own
+    # end. The second stops short; the first, met halfway along, keeps its length.
+    reach, shapes = {1: R, 2: R}, {1: (0, 0, 266, 8), 2: (0.55 * R, 0.9 * R, 176, 8)}
+    _untangle(reach, shapes)
+    assert reach[1] == R
+    edge = 0.9 * R - 0.55 * R * math.tan(math.radians(4))  # where it meets the first's edge
+    assert abs(reach[2] - (edge - WEDGE_GAP)) < 0.03 * R
+    # Apart, or from one light: untouched.
+    reach, shapes = {1: R, 2: R, 3: R}, {1: (0, 0, 266, 8), 2: (0, 3 * R, 266, 8), 3: (0, 0, 86, 8)}
+    _untangle(reach, shapes)
+    assert reach == {1: R, 2: R, 3: R}
 
 
 def test_service_report_names_providers(tmp_path):

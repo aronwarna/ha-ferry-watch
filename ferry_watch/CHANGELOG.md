@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.1
+
+- Sector wedges are see-through yellow, so the lines, depths and contours under them show,
+  as on the paper chart.
+- A wedge's edges are thin dotted lines that go on about a third past the yellow, with
+  its W at the yellow's end.
+- Wedges no longer overlap: of two that would meet, the one meeting the other nearer its
+  own end stops short of it. Dotted edges stop short of another wedge too.
+
 ## 0.26.0
 
 The rest of the UI review (items 19 to 30).
