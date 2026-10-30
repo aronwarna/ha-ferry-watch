@@ -66,6 +66,46 @@ def test_tiles_from_simulated_data(tmp_path):
     assert chart.status()["blocks"] == 4  # the zoom-10 tile's four blocks (the others share them)
 
 
+def test_a_slow_service_never_holds_the_chart_up(tmp_path):
+    # OpenStreetMap's server is often full: the chart is drawn without its layers meanwhile,
+    # and the official layers after them in the queue still come through.
+    release = None
+    asked = []
+
+    async def fetch(key, bbox):
+        asked.append(key)
+        if key.startswith("reserve"):  # only OpenStreetMap has these
+            await release.wait()
+        return await fake_chart_layer(key, bbox)
+
+    async def run():
+        nonlocal release
+        release = asyncio.Event()
+        chart = VectorChart(tmp_path, None, fetch)
+        z, x, y = tile_at(60.005, 24.4, 12)
+        started = time.monotonic()
+        tile, ok = await chart.tile(z, x, y)
+        assert time.monotonic() - started < 10
+        assert tile["depth"] and tile["fline"] and not ok  # drawn, but asked for again later
+        # The wait for OpenStreetMap doesn't hold the download slot the next block needs.
+        first = sum(a.startswith("trock") for a in asked)
+        z2, x2, y2 = tile_at(60.005, 24.5, 12)
+        assert blocks_for(z2, x2, y2) != blocks_for(z, x, y)
+        started = time.monotonic()
+        other, _ = await chart.tile(z2, x2, y2)
+        assert time.monotonic() - started < 10 and other["depth"]
+        assert first and sum(a.startswith("trock") for a in asked) == 2 * first
+        release.set()
+        for _ in range(100):
+            tile, ok = await chart.tile(z, x, y)
+            if ok:
+                break
+            await asyncio.sleep(0.05)
+        assert ok and any(a.startswith("reserve") for a in asked)
+
+    asyncio.run(run())
+
+
 def test_cut_tiles_are_kept_on_disk_until_their_blocks_change(tmp_path):
     import gzip
     chart = VectorChart(tmp_path, None, fake_chart_layer)

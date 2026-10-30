@@ -118,7 +118,11 @@ def test_tiles_outside_finland(tmp_path):
     chart = V.VectorChart(tmp_path, None, fake_chart_layer)
 
     async def run():
-        t12, ok = await chart.tile(*tile_at(59.60, 24.53, 12))  # Naissaar, off Tallinn
+        for _ in range(60):  # parts past the depths finish downloading behind the first answers
+            t12, ok = await chart.tile(*tile_at(59.60, 24.53, 12))  # Naissaar, off Tallinn
+            if ok:
+                break
+            await asyncio.sleep(0.25)
         t8, ok8 = await chart.tile(*tile_at(59.7, 24.9, 8))
         seam, _ = await chart.tile(*tile_at(59.72, 24.4, 11))  # on the Finnish sea border
         return t12, ok, t8, ok8, seam

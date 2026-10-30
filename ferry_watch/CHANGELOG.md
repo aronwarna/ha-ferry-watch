@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.6
+
+- Fixes the drawn chart staying blank after the 0.26.4 update. Each area waited for its new
+  OpenStreetMap layers (cables, nature reserves) and the new Traficom rocks before it was
+  drawn, and OpenStreetMap's server was full. Now only the depths are ever waited for:
+  everything else is drawn from what's already on the NAS while newer data downloads, and
+  layers that haven't come yet are added when they do (the panel asks for those tiles
+  again after 10 s, 30 s, 1.5 min and 5 min).
+- A wait for OpenStreetMap no longer holds up the other chart downloads, and when its
+  server says it's full the app leaves it alone for a while.
+- An OpenStreetMap failure no longer shows up as Traficom failing under Data sources.
+
 ## 0.26.5
 
 - Submarine cables are drawn as on the paper chart (Sailmate): a thinner, pinker magenta

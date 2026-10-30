@@ -252,7 +252,8 @@ class Web:
             return web.json_response({"pending": True}, status=202, headers={"Cache-Control": "no-store"})
         body, complete = result
         # A tile missing a block that couldn't be fetched is asked for again next time.
-        headers = {"Cache-Control": "max-age=86400" if complete else "no-store", "Vary": "Accept-Encoding"}
+        headers = {"Cache-Control": "max-age=86400" if complete else "no-store", "Vary": "Accept-Encoding",
+                   "X-Chart-Complete": "1" if complete else "0"}
         if "gzip" in request.headers.get("Accept-Encoding", ""):
             headers["Content-Encoding"] = "gzip"  # tiles are kept gzipped: sent as they are
         else:

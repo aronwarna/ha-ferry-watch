@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import random
 import time
 from typing import Any
@@ -570,6 +571,11 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
     a fairway with buoys and a boat route; west of them a stretch of coast like
     Porkkala's (simscene.py)."""
     from . import simscene
+    # FW_FAKE_SLOW="reserve:60,cable:30": layers that take that many seconds (a busy service).
+    for item in (os.environ.get("FW_FAKE_SLOW") or "").split(","):
+        name, _, secs = item.partition(":")
+        if name and key.split(".")[0] == name.strip():
+            await asyncio.sleep(float(secs or 60))
     feats = _fake_chart_layer(key, bbox)
     sx0, sy0, sx1, sy1 = simscene.box()
     minx, miny, maxx, maxy = bbox

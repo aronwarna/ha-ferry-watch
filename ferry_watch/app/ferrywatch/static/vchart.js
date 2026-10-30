@@ -2426,6 +2426,9 @@
 
   const tileAids = new Map(); // tile key -> [{ latlng, aid } or { latlng, site }]
   const RETRY_MS = 2500;
+  // A tile drawn while some of its data is still downloading (or failed) is asked for again
+  // after these waits, so what comes later shows up without moving the map.
+  const AGAIN_MS = [10000, 30000, 90000, 300000];
   let waitingTiles = 0; // tiles whose data is still downloading
   let waitingChanged = null;
   let rev = ""; // changes when the server's tiles do (e.g. rocks added), so cached tiles are dropped
@@ -2455,9 +2458,13 @@
       };
       controller.signal.addEventListener("abort", () => setWaiting(false));
       // The server answers 202 while an area's data is still downloading; ask again shortly.
+      let again = 0, partial = false;
       const load = () => {
         fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}?r=${rev}`, { signal: controller.signal })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((r) => {
+            partial = r.headers.get("X-Chart-Complete") === "0";
+            return r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`));
+          })
           .then((data) => {
             if (data.pending) {
               // Left clear meanwhile: the map underneath shows until the chart is drawn.
@@ -2471,6 +2478,7 @@
             this._rememberTaps(coords, data);
             show(null);
             this._labels?.schedule();
+            if (partial && again < AGAIN_MS.length) canvas._retry = setTimeout(load, AGAIN_MS[again++]);
           })
           .catch((err) => {
             if (err.name !== "AbortError") console.error("Chart tile", coords, err);

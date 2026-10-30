@@ -32,6 +32,7 @@ copy, and downloads are parsed a page at a time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import json
 import logging
@@ -120,6 +121,9 @@ LEAN_MAX = 64 * 1024 * 1024
 MEMORY_BYTES = 16 * 1024 * 1024
 MEMORY_BLOCKS = 64  # ...and by count; the rest are read from disk when needed
 FORGET_AFTER = 20  # s; a queued block nobody has asked for again since is skipped
+# s a block being read waits for a part's freshness check or download before it is drawn
+# from the copy on disk (or without that part) and the download carries on behind.
+PART_WAIT = 2.0
 # s without a tile request after which what's in RAM is let go: the chart is mostly not
 # being looked at, and on a small NAS those MB are better left to the rest of the system.
 IDLE_FORGET = 300
@@ -3158,12 +3162,37 @@ class VectorChart:
     async def _load(self, bx: int, by: int, level: int) -> dict | None:
         parts = self._parts(level)
         have = []
+        settled = True
         try:
-            for part in parts:
-                if await self._ensure_part(bx, by, part):
+            if "" in parts and not self._path(bx, by).exists():
+                # Without depths there's no chart to draw: only these are waited for.
+                if not await self._ensure_part(bx, by, ""):
+                    return None
+            # The rest is drawn from the copy on disk while a newer one downloads, or left
+            # out until its first download is done: a slow or busy service (as OpenStreetMap's
+            # often is) never holds the chart up.
+            running = {part for part in parts if (bx, by, part) in self._fetching}
+            tasks = {part: self._ensure_task(bx, by, part) for part in parts}
+            # Each is given a moment (enough to see it's fresh, or for a quick download), but
+            # one already downloading for an earlier look isn't waited for again.
+            new = [asyncio.shield(t) for part, t in tasks.items() if part not in running]
+            if new:
+                await asyncio.wait(new, timeout=PART_WAIT)
+            for part, task in tasks.items():
+                if not task.done():
+                    settled = False
+                    ok = self._path(bx, by, part).exists()
+                elif task.cancelled() or task.exception() is not None:
+                    if isinstance(task.exception(), _Skipped):
+                        raise _Skipped
+                    settled = ok = False
+                else:
+                    ok = task.result()
+                    settled = settled and ok
+                if ok:
                     have.append(part)
                 elif part == "":
-                    return None  # without depths there's no chart to draw
+                    return None
         except _Skipped:
             return None
         gen = self._gen.get((bx, by), 0)
@@ -3174,7 +3203,7 @@ class VectorChart:
         if layers is None:
             return None
         # A part written while this was read: drawn as read, but not kept or cached as complete.
-        layers["_complete"] = len(have) == len(parts) and self._gen.get((bx, by), 0) == gen
+        layers["_complete"] = settled and len(have) == len(parts) and self._gen.get((bx, by), 0) == gen
         if layers["_complete"]:
             self._remember((bx, by, level), layers)
         return layers
@@ -3242,13 +3271,21 @@ class VectorChart:
     async def _ensure_part(self, bx: int, by: int, part: str) -> bool:
         """Make sure a block part is on disk (fetching or converting it if need be). True if
         a copy is there, even an old one after a failed download."""
+        return await asyncio.shield(self._ensure_task(bx, by, part))
+
+    def _ensure_task(self, bx: int, by: int, part: str) -> "asyncio.Future[bool]":
         key = (bx, by, part)
         task = self._fetching.get(key)
         if task is None:
             task = asyncio.create_task(self._ensure(bx, by, part))
             self._fetching[key] = task
-            task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
-        return await asyncio.shield(task)
+
+            def finished(t: "asyncio.Task[bool]", key: tuple = key) -> None:
+                self._fetching.pop(key, None)
+                if not t.cancelled():
+                    t.exception()  # left running in the background: nobody else may look
+            task.add_done_callback(finished)
+        return task
 
     async def _ensure(self, bx: int, by: int, part: str) -> bool:
         path = self._path(bx, by, part)
@@ -3338,9 +3375,14 @@ class VectorChart:
             await self._discover(service)
         started = time.monotonic()
         for i, key in enumerate(fetched):
+            # Only the services actually asked (OpenStreetMap's stand-ins aren't asked where
+            # an official one has the layer), so a failure is put down to the right one.
+            services = {service_of(name) for _, name, _ in self._targets(key)[0]} \
+                or {service_of(name) for _, name in source_names(key)}
             # The download slot is held a layer at a time, so a block someone is looking at
-            # never waits for the whole of a big part being kept on disk.
-            async with self._limit:
+            # never waits for the whole of a big part being kept on disk. OpenStreetMap has
+            # its own (see foreign.py), and a wait for its busy server doesn't hold this one.
+            async with (contextlib.nullcontext() if services == {OSM_OVERPASS} else self._limit):
                 if i == 0 and self._stale((bx, by)):
                     raise _Skipped  # the map moved on while this block waited its turn
                 # Points reach further past the block than lines and areas need to.
@@ -3349,7 +3391,6 @@ class VectorChart:
                 pad = margin / UNITS * size
                 bbox = (bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
                 derived = DERIVED_BY.get(key)
-                services = {service_of(name) for _, name in source_names(key)}
                 down = [s for s in services if time.time() < self._down.get(s, 0)]
                 if down and key != "depth":
                     # A service that just timed out isn't asked again for every layer of every
@@ -3364,7 +3405,9 @@ class VectorChart:
                         self._ok_at[service] = time.time()
                         self._fail_since.pop(service, None)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as err:
-                    if isinstance(err, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
+                    busy = isinstance(err, _HTTPError) and err.status in (429, 502, 503, 504) \
+                        and services == {OSM_OVERPASS}  # still full after its own retry: left alone a while
+                    if busy or isinstance(err, (asyncio.TimeoutError, aiohttp.ClientConnectionError)):
                         for service in services:
                             self._service_down(service)
                     for service in services:
