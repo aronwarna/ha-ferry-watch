@@ -35,6 +35,8 @@ sidebar.
     through the Overpass API). There are no soundings there, and the depths
     are a smoothed model, so shoals can be shallower than shown. Sweden's and
     Estonia's own charts aren't open data, so they aren't used.
+    Out at sea Traficom's depths stop short in places; there the chart shows
+    plain deep water (white) with no depth figures.
   - **Official** is Traficom's electronic chart (the S-57 data official ENCs
     are made from), drawn by Traficom's own S-57 view service: everything on
     the official chart, seamless.
@@ -434,6 +436,8 @@ by name.
   digital terrain model (EMODnet Bathymetry Consortium, CC BY 4.0); coastline, sea marks, lights, routeing
   and names © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, with
   [OpenSeaMap](https://www.openseamap.org)'s sea mark tagging, via the Overpass API.
+- Drawn chart, telling land from open sea where Traficom's depths stop short: [Natural Earth](https://www.naturalearthdata.com)
+  1:10m land (public domain).
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart and depth data © Traficom (Traficom hydrographic data

@@ -154,6 +154,78 @@ def test_failed_depths_give_no_land(tmp_path):
     assert not ok and "land" not in tile and "depth" not in tile
 
 
+EKENAS_SOUTH = (1157, 597)  # open sea south of Ekenäs, well inside Finnish waters (ben's tan strips)
+
+
+def _in_rects(rects, x, y):
+    return any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in rects)
+
+
+def _wavy(y, x0=-3072, x1=68608, step=500, amp=300):
+    """A ragged shore running east-west at y (block units)."""
+    return [(x, y + amp * math.sin(x / 700)) for x in range(x0, x1 + 1, step)]
+
+
+def test_sea_where_traficoms_depths_stop_short():
+    # Depths only over the north of the block, ending at a straight chart limit: the rest is
+    # sea, not land. An island in the depths stays land.
+    island = [(20000, 10000), (24000, 10000), (24000, 14000), (20000, 14000)]
+    deep = [(-3072, -3072), (68608, -3072), (68608, 30000), (-3072, 30000)]
+    rows = {"depth": [[[10, 20], None, [deep, island]]]}
+    layers = vchart.layers_from_rows(rows)
+    gaps = vchart.sea_gaps(*EKENAS_SOUTH, layers["depth"])
+    assert _in_rects(gaps, 30000, 50000) and _in_rects(gaps, 100, 65000) and _in_rects(gaps, 65000, 31000)
+    assert not _in_rects(gaps, 22000, 12000)  # the island
+    assert not _in_rects(gaps, 40000, 20000)  # up in the depths (just a little way past their edge)
+
+    tile = vchart.make_tile(11, *EKENAS_SOUTH, {EKENAS_SOUTH: layers})
+    assert tile["land"]  # the Finnish area is still painted under the depths...
+    (sea,) = [rings for band, *rings in tile["depth"] if band == 4 and min(rings[0][1::2]) > 200]
+    assert vchart._in_water({"depth": [[4, *sea]]}, 256, 500)  # ...and the sea over its south
+
+
+def test_a_shore_without_depths_beyond_stays_land():
+    # The same, but the edge is a ragged shore with a depth area from 0 m along it: the
+    # mainland (also where the chart has no 3 m contour there).
+    shore = _wavy(30000)
+    shallow = [(-3072, 28000)] + [(x, y - 2000) for x, y in shore] + [(68608, 28000)] + shore[::-1]
+    deep = [(-3072, -3072), (68608, -3072), (68608, 28000), (-3072, 28000)]
+    for top in (3, 6):
+        rows = {"depth": [[[10, 20], None, [deep]], [[0, top], None, [shallow]]]}
+        assert vchart.sea_gaps(*EKENAS_SOUTH, vchart.layers_from_rows(rows)["depth"]) == []
+    rows = {"depth": [[[10, 20], None, [deep]], [[3, 6], None, [shallow]]]}  # no shore: a chart limit
+    assert vchart.sea_gaps(*EKENAS_SOUTH, vchart.layers_from_rows(rows)["depth"])
+
+
+def test_natural_earths_land_stays_land():
+    # Hanko's block, its depths stopping in a straight line: Natural Earth has the peninsula.
+    deep = [(-3072, -3072), (68608, -3072), (68608, 20000), (-3072, 20000)]
+    rows = {"depth": [[[10, 20], None, [deep]]]}
+    hanko = (1154, 596)
+    gaps = vchart.sea_gaps(*hanko, vchart.layers_from_rows(rows)["depth"])
+    minx, miny, maxx, maxy = block_bounds(*hanko)
+    x, y = lonlat_to_mercator(22.96, 59.84)  # on the peninsula
+    assert not _in_rects(gaps, (x - minx) / (maxx - minx) * 65536, (maxy - y) / (maxy - miny) * 65536)
+
+
+def test_block_without_depths_is_sea_unless_on_land():
+    assert vchart.sea_gaps(*EKENAS_SOUTH, None) == [(0, 0, 65536, 65536)]
+    assert vchart.sea_gaps(*tile_at(61.0, 25.0, 11)[1:], None) == []  # inland
+    empty = vchart.layers_from_rows({"depth": []})
+    tile = vchart.make_tile(12, 2 * EKENAS_SOUTH[0], 2 * EKENAS_SOUTH[1], {EKENAS_SOUTH: empty})
+    assert "land" not in tile and tile["depth"][0][0] == 4
+
+
+def test_gaps_in_the_simulated_chart(tmp_path, monkeypatch):
+    # The made-up depths stopping at 59.93°, away from the sea border: no land south of there.
+    monkeypatch.setenv("FW_FAKE_DEPTH_SOUTH", "59.93")
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    tile, ok = asyncio.run(chart.tile(*tile_at(59.92, 24.32, 12)))
+    assert ok and tile["land"]
+    sea = [rings for band, *rings in tile["depth"] if band == 4]
+    assert sea and vchart._in_water({"depth": tile["depth"]}, 256, 500)  # the tile's bottom is sea
+
+
 def test_land_only_where_finland_is(tmp_path):
     # A tile off Tallinn lies outside Finnish waters: no Finnish land there (without the
     # foreign stand-ins, so nothing from foreign.py either).
@@ -183,7 +255,9 @@ def test_only_fetches_near_finland(tmp_path):
     assert ok and asked == [] and "land" not in tile
 
 
-def test_oversized_response_is_refused(tmp_path):
+def test_oversized_response_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(vchart, "LEAN_MAX", 16 * 1024 * 1024)  # read in parts up to this, then refused
+
     class Content:
         async def iter_chunked(self, n):
             for _ in range(400):
@@ -1296,6 +1370,40 @@ def test_page_too_big_for_one_feature_is_read_lean(tmp_path, monkeypatch):
     features = asyncio.run(chart._paged("https://example.org", params, "depth", None))
     assert len(features) == 1
     assert asked[0] == vchart.PAGE and asked[-2:] == [1, ("lean", "1")]  # halved all the way down first
+
+
+def test_one_feature_over_the_page_limit_is_read_in_parts(tmp_path, monkeypatch):
+    # Through the real reader: LEAN_MAX was once replaced by another constant of that name
+    # (50, for spar buoys' lean), so every such feature was refused and its blocks never drawn.
+    assert vchart.LEAN_MAX >= 16 * vchart.MAX_RESPONSE
+    body = json.dumps(_big_depth_answer()).encode()
+    monkeypatch.setattr(vchart, "MAX_RESPONSE", len(body) // 3)
+
+    class Content:
+        async def iter_chunked(self, n):
+            for i in range(0, len(body), 1000):
+                yield body[i:i + 1000]
+
+    class Resp:
+        status = 200
+
+        def __init__(self):
+            self.content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def get(self, *a, **kw):
+            return Resp()
+
+    chart = VectorChart(tmp_path, Session())
+    params = {"bbox": "0,0,2000,2000,EPSG:3857"}
+    (feature,) = asyncio.run(chart._paged("https://example.org", params, "depth", None))
+    assert len(feature["geometry"]["coordinates"][0]) == 6  # the parts in the block
 
 
 def test_unreachable_service_is_left_alone_longer_each_time(tmp_path, monkeypatch):

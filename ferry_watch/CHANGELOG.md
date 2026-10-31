@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.26.7
+
+- Fixes made-up land out at sea on the drawn chart (the tan strips and patches south of
+  Ekenäs). Traficom's depth areas stop short of the Finnish sea border in places, and
+  everything they didn't cover was painted as land. Now only real land is: islands, the
+  shore along the shallow-water band, and the mainland (checked against Natural Earth's
+  world map). Where the depths stop, the sea is drawn as plain deep water, without the
+  black coastline that used to run along the edge.
+- Areas out at sea where Traficom has no depths at all are drawn as deep water too, where
+  they used to stay empty (showing the background map through the chart).
+- Fixes areas that never got a chart at all (empty squares, many in the Archipelago Sea):
+  a depth area too big to download in one go was meant to be read in parts since 0.18.1,
+  but a mix-up between two settings of the same name made the app refuse every such
+  area. Those areas download now; each is a big download, so they take a while the
+  first time.
+
 ## 0.26.6
 
 - Fixes the drawn chart staying blank after the 0.26.4 update. Each area waited for its new

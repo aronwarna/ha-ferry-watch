@@ -600,8 +600,10 @@ def _fake_chart_layer(key: str, bbox) -> list[dict]:
         # South of Porkkala they stop a few km short of it, as Traficom's seem to (the tan
         # band ben saw at zoom 10), and the dredged and unsurveyed areas are holes in them:
         # in S-57 those aren't depth areas.
+        # FW_FAKE_DEPTH_SOUTH="59.92": they stop further north, away from the sea border (the
+        # tan strips ben saw south of Ekenäs at zoom 9, Oct 2026).
         from .vchart import FINNISH_WATERS_M, clip_ring, lonlat_to_mercator
-        cut = lonlat_to_mercator(0, SIM_DATA_SOUTH[2])[1]
+        cut = lonlat_to_mercator(0, float(os.environ.get("FW_FAKE_DEPTH_SOUTH") or SIM_DATA_SOUTH[2]))[1]
         lon_mid = (minx + maxx) / 2 * 180 / 20037508.342789244
         bottom = max(miny, cut) if SIM_DATA_SOUTH[0] <= lon_mid <= SIM_DATA_SOUTH[1] else miny
         outer = [list(p) for p in clip_ring(FINNISH_WATERS_M, minx, bottom, maxx, maxy)] if bottom < maxy else []

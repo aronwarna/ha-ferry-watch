@@ -130,7 +130,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 27  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 28  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -1043,6 +1043,262 @@ def _in_finnish_waters(bx: int, by: int, ux: float, uy: float) -> bool:
     return _in_poly(minx + ux * scale, maxy - uy * scale, FINNISH_WATERS_M)
 
 
+@lru_cache(maxsize=4096)
+def block_in_finnish_waters(bx: int, by: int) -> bool:
+    """Whether a whole block lies inside FINNISH_WATERS."""
+    x0, y0, x1, y1 = block_bounds(bx, by)
+    return all(_in_poly(x, y, FINNISH_WATERS_M) for x in (x0, x1) for y in (y0, y1)) \
+        and not any(x0 < x < x1 and y0 < y < y1 for x, y in FINNISH_WATERS_M)
+
+
+# --- where Traficom's depths stop short ------------------------------------------------
+# Land is painted under the depth areas, so whatever no depth area covers shows as land. But
+# out at sea Traficom's depth areas stop at chart limits (straight or stepped edges), in
+# places well inside FINNISH_WATERS, and that made land of open sea (tan strips and patches
+# south of Ekenäs, Oct 2026). So the places in a block that no depth area covers are looked at
+# on a grid of the block and its margin: one with water all round (an island), one on Natural
+# Earth's land, or one along whose edge the depth areas mostly reach up to the surface (a
+# shore has one with a least depth of 0, or drying, along it; a chart limit runs through
+# deeper ones) is land. The
+# rest is sea that Traficom's depths stop short of, painted as deep water: a little past its
+# edge (under the depth areas, so no seam shows) but never onto the land beside it.
+GAP_CELLS = 256  # grid cells across a block (about 40 m each)
+GAP_CELLS_OVERVIEW = 64  # for overview tiles, where a block is 32-64 px across
+NE_SHARE = 0.25  # a place this much on Natural Earth's land is land
+GAP_GROW = 2  # cells the sea is painted past its edge, under the depth areas
+# Grid cell values: 0 no depth area; a depth area's least depth (DRVAL1) as 1 up to 0 m (drying
+# or from the surface: the kind along a shore), 2 under 3 m, 3 under 6, 4 under 10, 5 deeper,
+# the shallowest drawn last, so a shore's cells carry its own; WATER_CELL dredged and
+# unsurveyed areas.
+SHORE_CELLS = (1,)
+DEEP_CELLS = (2, 3, 4, 5)
+WATER_CELL = 7
+_EMPTY_RUN = re.compile(rb"\x00+")
+_SET_RUN = re.compile(rb"\x01+")
+_ONE_RUN = re.compile(r"1+")
+# Natural Earth's land and minor islands at 1:10m (public domain, naturalearthdata.com),
+# clipped to 19-31.6°E 59.2-70.2°N and simplified to 0.002°: [lon, lat, lon, lat, ...] rings.
+# Only good to a few hundred metres, which is plenty to tell the mainland from open sea.
+NE_LAND_FILE = Path(__file__).parent / "ne_land.json"
+_ne_land: list | None = None
+
+
+def ne_land() -> list[tuple[tuple[float, float, float, float], array]]:
+    """Natural Earth's land round Finland as web-mercator rings [x0, y0, x1, y1, ...], each
+    with its bounding box (about 100 kB kept)."""
+    global _ne_land
+    if _ne_land is None:
+        rings = []
+        for flat in json.loads(NE_LAND_FILE.read_text()):
+            pts = [lonlat_to_mercator(flat[i], flat[i + 1]) for i in range(0, len(flat) - 1, 2)]
+            rings.append((_bbox(pts), array("d", [v for p in pts for v in p])))
+        _ne_land = rings
+    return _ne_land
+
+
+def _grid_fill(grid: bytearray, n: int, rings: Iterable[list[tuple[float, float]]], value: int) -> None:
+    """Fill rings (grid units: cell i, j spans i..i+1, j..j+1) into an n×n grid, even-odd,
+    by each cell's middle."""
+    rows: dict[int, list[float]] = {}
+    ceil = math.ceil
+    for ring in rings:
+        px, py = ring[-1]
+        for x, y in ring:
+            if py != y:
+                x0, y0, x1, y1 = (px, py, x, y) if py < y else (x, y, px, py)
+                j0, j1 = ceil(y0 - 0.5), ceil(y1 - 0.5)  # the rows whose middle it crosses
+                if j0 < j1:
+                    dx = (x1 - x0) / (y1 - y0)
+                    for j in range(max(0, j0), min(n, j1)):
+                        rows.setdefault(j, []).append(x0 + (j + 0.5 - y0) * dx)
+            px, py = x, y
+    run = bytes([value]) * n
+    for j, xs in rows.items():
+        xs.sort()
+        base = j * n
+        for t in range(0, len(xs) - 1, 2):
+            i0, i1 = max(0, ceil(xs[t] - 0.5)), min(n, ceil(xs[t + 1] - 0.5))
+            if i0 < i1:
+                grid[base + i0:base + i1] = run[:i1 - i0]
+
+
+def _grid_edges(grid: bytearray, n: int, rings: list[list[tuple[float, float]]], value: int,
+                holes: bytearray | None = None) -> None:
+    """Set every cell the rings' edges pass through, so a band thinner than a cell still
+    shows; in ``holes`` (if given) also the cells of every ring but the first."""
+    for r, ring in enumerate(rings):
+        also = holes if r else None
+        px, py = ring[-1]
+        for x, y in ring:
+            dx, dy = x - px, y - py
+            if -0.5 < dx < 0.5 and -0.5 < dy < 0.5:  # most edges are shorter than a cell
+                if 0 <= x < n and 0 <= y < n:
+                    c = int(y) * n + int(x)
+                    grid[c] = value
+                    if also is not None:
+                        also[c] = 1
+            else:
+                steps = int(2 * max(abs(dx), abs(dy))) + 1
+                for s in range(1, steps + 1):
+                    cx, cy = px + dx * s / steps, py + dy * s / steps
+                    if 0 <= cx < n and 0 <= cy < n:
+                        c = int(cy) * n + int(cx)
+                        grid[c] = value
+                        if also is not None:
+                            also[c] = 1
+            px, py = x, y
+
+
+def _least_depth_cell(drval1: Any, drval2: Any) -> int:
+    """A depth area's value on sea_gaps's grid, from its least depth."""
+    d1 = _num(drval1)
+    if d1 is None:
+        d1 = 0 if _depth_band(drval1, drval2) <= 1 else 10
+    return 1 if d1 <= 0 else 2 if d1 < 3 else 3 if d1 < 6 else 4 if d1 < 10 else 5
+
+
+def _grow(rows: list[int], full: int) -> list[int]:
+    """Row bit masks grown by a cell every way (diagonals too)."""
+    n = len(rows)
+    out = []
+    for j in range(n):
+        v = rows[j] | (rows[j - 1] if j else 0) | (rows[j + 1] if j + 1 < n else 0)
+        out.append((v | v << 1 | v >> 1) & full)
+    return out
+
+
+def sea_gaps(bx: int, by: int, depth: Layer | None, tss: Layer | None = None,
+             cells: int = GAP_CELLS) -> list[tuple[int, int, int, int]]:
+    """The sea in a block that Traficom's depth areas stop short of (see above), as rects
+    (x0, y0, x1, y1) in block units."""
+    c = UNITS / cells
+    m = math.ceil(UNITS * TILE_BUFFER / EXTENT / c)  # the margin the depth areas reach past the block
+    n = cells + 2 * m
+    grid, shore = bytearray(n * n), bytearray(n * n)
+
+    def rings_of(layer: Layer, i: int) -> list[list[tuple[float, float]]]:
+        co = layer.co
+        return [[(co[2 * v] / c + m, co[2 * v + 1] / c + m) for v in range(layer.vo[r], layer.vo[r + 1])]
+                for r in layer.rings(i)]
+
+    if depth is not None:
+        values = [_least_depth_cell(*_pad(depth.props[depth.pi[i]], 2)[:2]) for i in range(depth.n)]
+        for i in sorted(range(depth.n), key=lambda i: -values[i]):
+            rings = rings_of(depth, i)
+            _grid_fill(grid, n, rings, values[i])
+            _grid_edges(grid, n, rings, values[i], shore)  # holes' edges: islands', which the sea keeps off
+    for i in range(tss.n if tss is not None else 0):
+        if tss.props[tss.pi[i]][0] in WATER_TSS:
+            rings = rings_of(tss, i)
+            _grid_fill(grid, n, rings, WATER_CELL)
+            _grid_edges(grid, n, rings, WATER_CELL)
+    # Natural Earth's land on the grid.
+    minx, miny, maxx, maxy = block_bounds(bx, by)
+    s = UNITS / (maxx - minx) / c  # cells a metre
+    pad = m / s
+    land = bytearray(n * n)
+    for (x0, y0, x1, y1), co in ne_land():
+        if x1 >= minx - pad and x0 <= maxx + pad and y1 >= miny - pad and y0 <= maxy + pad:
+            _grid_fill(land, n, [[((co[i] - minx) * s + m, (maxy - co[i + 1]) * s + m)
+                                  for i in range(0, len(co), 2)]], 1)
+    # The uncovered places: runs of empty cells in each row, joined to the runs they touch
+    # in the row above.
+    runs: list[tuple[int, int, int]] = []
+    parent: list[int] = []
+
+    def root(r: int) -> int:
+        while parent[r] != r:
+            parent[r] = parent[parent[r]]
+            r = parent[r]
+        return r
+
+    above: list[int] = []
+    for j in range(n):
+        row = []
+        for mt in _EMPTY_RUN.finditer(grid, j * n, (j + 1) * n):
+            row.append(len(runs))
+            parent.append(len(runs))
+            runs.append((j, mt.start() - j * n, mt.end() - j * n))
+        p = q = 0
+        while p < len(above) and q < len(row):
+            _, pa, pb = runs[above[p]]
+            _, qa, qb = runs[row[q]]
+            if pa < qb and qa < pb:
+                ra, rb = root(above[p]), root(row[q])
+                if ra != rb:
+                    parent[rb] = ra
+            if pb < qb:
+                p += 1
+            else:
+                q += 1
+        above = row
+    if not runs:
+        return []
+    # Each place's size, how much of it is on Natural Earth's land, the water along its edge
+    # (shore-side or deeper), and whether it reaches the grid's edge.
+    stats: dict[int, list] = {}
+    for r, (j, a, b) in enumerate(runs):
+        st = stats.setdefault(root(r), [0, 0, 0, 0, False])
+        base = j * n
+        st[0] += b - a
+        st[1] += land.count(1, base + a, base + b)
+        edge = bytearray()
+        if a > 0:
+            edge.append(grid[base + a - 1])
+        if b < n:
+            edge.append(grid[base + b])
+        if j > 0:
+            edge += grid[base - n + a:base - n + b]
+        if j + 1 < n:
+            edge += grid[base + n + a:base + n + b]
+        st[2] += sum(edge.count(v) for v in SHORE_CELLS)
+        st[3] += sum(edge.count(v) for v in DEEP_CELLS)
+        st[4] = st[4] or j == 0 or j == n - 1 or a == 0 or b == n
+
+    def is_land(size: int, on_land: int, shore: int, deep: int, open_edge: bool) -> bool:
+        if not open_edge or on_land >= NE_SHARE * size:  # an island, or Natural Earth's land
+            return True
+        if not shore and not deep:
+            return on_land > 0  # no water by it to tell from: Natural Earth's land or not
+        return shore > deep
+
+    sea = {r for r, st in stats.items() if not is_land(*st)}
+    if not sea:
+        return []
+    full = (1 << n) - 1
+    empty, sea_rows, land_rows = [0] * n, [0] * n, [0] * n
+    for r, (j, a, b) in enumerate(runs):
+        bits = ((1 << (b - a)) - 1) << a
+        empty[j] |= bits
+        if root(r) in sea:
+            sea_rows[j] |= bits
+        else:
+            land_rows[j] |= bits
+    # Grown a little into the water round it, but not next to land or onto an island's shore.
+    keep_off = _grow(land_rows, full)
+    for j in range(n):
+        for mt in _SET_RUN.finditer(shore, j * n, (j + 1) * n):
+            keep_off[j] |= ((1 << (mt.end() - mt.start())) - 1) << (mt.start() - j * n)
+    for _ in range(GAP_GROW):
+        grown = _grow(sea_rows, full)
+        sea_rows = [sea_rows[j] | (grown[j] & ~empty[j] & ~keep_off[j]) for j in range(n)]
+    # Rects of the block's own cells: each row's runs, joined down while they stay the same.
+    rects: list[tuple[int, int, int, int]] = []
+    open_runs: dict[tuple[int, int], int] = {}
+    inner = ((1 << cells) - 1) << m
+    for j in range(m, m + cells + 1):
+        spans = set()
+        if j < m + cells and sea_rows[j] & inner:
+            bits = bin((sea_rows[j] & inner) >> m)[2:][::-1]  # character i is cell i
+            spans = {(mt.start(), mt.end()) for mt in _ONE_RUN.finditer(bits)}
+        for span in [sp for sp in open_runs if sp not in spans]:
+            j0 = open_runs.pop(span)
+            rects.append((round(span[0] * c), round((j0 - m) * c), round(span[1] * c), round((j - m) * c)))
+        for span in spans:
+            open_runs.setdefault(span, j)
+    return rects
+
+
 def keep_blocks(area: tuple[float, float, float, float] = KEEP_AREA) -> list[tuple[int, int]]:
     """Blocks to keep on disk for an area, nearest the middle of the gulf first."""
     n = 2**BLOCK_Z
@@ -1305,10 +1561,10 @@ def _sub_line(pts: list, cum: list[float], t0: float, t1: float) -> list[tuple[f
 
 
 # Spar buoys and buoys may lean off their usual way, as on the paper chart, to keep clear of
-# each other and of the fairway; never past LEAN_MAX from upright. Worked out once, at
+# each other and of the fairway; never past LEAN_LIMIT from upright. Worked out once, at
 # zoom 14's scale, so a mark keeps its lean at every zoom.
 LEANING_AIDS = {"v": 0, "p": 23}  # type: its usual lean, degrees clockwise from upright
-LEAN_MAX = 50
+LEAN_LIMIT = 50  # (not LEAN_MAX, the byte limit of a feature read in parts)
 LEAN_STEPS = (0, 10, -10, 20, -20, 30, -30, 40, -40, 50, -50)  # tried in this order from the usual
 LEAN_REACH = 1150  # block units: a symbol's reach from its foot at zoom 14 (about 36 px)
 LEAN_CLEAR = 260  # block units: how close (about 8 px at zoom 14) another symbol or a fairway may come
@@ -1363,7 +1619,7 @@ def spar_leans(data: dict) -> dict[tuple[int, int], int]:
         best = None
         for step in LEAN_STEPS:
             a = usual + step
-            if abs(a) > LEAN_MAX:
+            if abs(a) > LEAN_LIMIT:
                 continue
             ux, uy = math.sin(math.radians(a)), -math.cos(math.radians(a))
             cost = abs(step) * 0.004  # the usual way when nothing is in it
@@ -1789,6 +2045,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     land_rects: list[tuple[float, float, float, float]] = []
     # Blocks at the sea border: (their rect, the islands in it), painted as sea (see below).
     sea_blocks: list[tuple[tuple[float, float, float, float], list]] = []
+    # The sea Traficom's depths stop short of elsewhere (see sea_gaps): per block, its rects
+    # in tile units, and whether the block is all inside FINNISH_WATERS.
+    gap_blocks: list[tuple[list[tuple[float, float, float, float]], bool]] = []
     seen_points: set = set()
     classes: dict[int, int] = {}  # fairway number -> class (1 main merchant fairway ... 6), from the routes
     depths: dict[int, float] = {}  # fairway number -> navigable depth, from the routes
@@ -1829,12 +2088,13 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
 
         depth = data.get("depth")
         islands = None
+        # The block's rect in the tile (1 unit of overlap hides the seam between blocks).
+        rect = (max(lo, -ox * k - 1), max(lo, -oy * k - 1),
+                min(hi, (UNITS - ox) * k + 1), min(hi, (UNITS - oy) * k + 1))
+        gaps = None
         if depth is not None and depth.n:
             # Land is painted only where this block's depths are, so a block that
-            # couldn't be fetched never shows up as solid land. (1 unit of overlap
-            # hides the seam between blocks.)
-            rect = (max(lo, -ox * k - 1), max(lo, -oy * k - 1),
-                    min(hi, (UNITS - ox) * k + 1), min(hi, (UNITS - oy) * k + 1))
+            # couldn't be fetched never shows up as solid land.
             if near_sea_border(bx, by):
                 # Out at the sea border there's no mainland, only islands, which are holes
                 # in the depth areas. The rest of Finnish waters there is sea, also where
@@ -1843,6 +2103,29 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 sea_blocks.append((rect, islands))
             else:
                 land_rects.append(rect)
+                gaps = data.get("_sea")
+                if gaps is None:
+                    gaps = sea_gaps(bx, by, depth, data.get("tss"),
+                                    GAP_CELLS if z >= BLOCK_MIN_Z else GAP_CELLS_OVERVIEW)
+        elif depth is not None:
+            # None of Traficom's depths here: open sea, unless it's on land.
+            gaps = data.get("_sea")
+            if gaps is None:
+                gaps = sea_gaps(bx, by, None, data.get("tss"), GAP_CELLS_OVERVIEW)
+        if gaps:
+            pieces = []
+            for gx0, gy0, gx1, gy1 in gaps:
+                if gx1 < bx0 or gx0 > bx1 or gy1 < by0 or gy0 > by1:
+                    continue
+                # At the block's edge, out to its rect (as the land under it reaches).
+                piece = (rect[0] if gx0 <= 0 else max(rect[0], (gx0 - ox) * k),
+                         rect[1] if gy0 <= 0 else max(rect[1], (gy0 - oy) * k),
+                         rect[2] if gx1 >= UNITS else min(rect[2], (gx1 - ox) * k),
+                         rect[3] if gy1 >= UNITS else min(rect[3], (gy1 - oy) * k))
+                if piece[0] < piece[2] and piece[1] < piece[3]:
+                    pieces.append(piece)
+            if pieces:
+                gap_blocks.append((pieces, block_in_finnish_waters(bx, by)))
 
         solids, on_lead = lead_marks(data) if z >= LAYER_MIN_Z["lead"] else ({}, {})
         leans = spar_leans(data) if z >= 12 and "aid" in data else {}
@@ -1961,7 +2244,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                         else:
                             out.append([p, flat, solid])
                             solid = []
-    if land_rects or sea_blocks:
+    if land_rects or sea_blocks or gap_blocks:
         # Land: the Finnish area, painted under the depth areas.
         minx, miny, maxx, maxy = _tile_mercator(z, x, y)
         k = EXTENT / (maxx - minx)
@@ -1974,6 +2257,13 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             if len(part) >= 3:
                 rows.setdefault("sea", []).append([_flat(part), *islands])
             land += islands
+        # Elsewhere the sea Traficom's depths stop short of (its rects don't overlap).
+        for pieces, inside in gap_blocks:
+            parts = ([(x0, y0), (x1, y0), (x1, y1), (x0, y1)] if inside else clip_ring(ring, x0, y0, x1, y1)
+                     for x0, y0, x1, y1 in pieces)
+            sea = [flat for flat in (_flat(part) for part in parts if len(part) >= 3) if len(flat) >= 6]
+            if sea:
+                rows.setdefault("sea", []).append(sea)
         if land:
             tile["land"] = land
     if rows.get("xland"):
@@ -2093,7 +2383,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
     - land: [ring, ...] the Finnish area where chart data is (painted under depths)
     - depth: [band, ...rings] band 0 drying, 1 0-3 m, 2 3-6 m, 3 6-10 m, 4 deeper, 5 unsurveyed;
       deep first. Dredged and unsurveyed areas are in here too (they also come as tss rows,
-      for their limits), and at the sea border the Finnish sea beyond Traficom's depths.
+      for their limits), and the Finnish sea Traficom's depths stop short of (see sea_gaps).
     - xdepth: [band, ...rings] outside Finland, nested: the water deeper than 0 m (band 1),
       3 m (2), 6 m (3) and 10 m (4), shallow first, each painted over the one before and
       all of them before (under) the Finnish depth rows
@@ -2702,6 +2992,7 @@ class VectorChart:
         self._filled: dict[str, float] = {}  # part "" file -> mtime it was seen without 0.16.5's drawn contours
         self._regions: OrderedDict[tuple[int, int], Layer] = OrderedDict()  # heritage, mercator metres
         self._coast: OrderedDict[tuple[int, int], tuple] = OrderedDict()  # block -> (region, coastal sites)
+        self._sea: dict[tuple[int, int], list] = {}  # block -> sea_gaps, from its zoomed-out level
         self._caps: dict[str, set[str]] = {}  # service -> type names (collection ids) it has
         self._caps_at: dict[str, float] = {}  # service -> when they were read
         self._caps_loaded = False
@@ -2757,6 +3048,7 @@ class VectorChart:
         freed = self._memory_bytes / 1e6
         self._forget()
         self._coast.clear()
+        self._sea.clear()
         self._regions.clear()
         self.foreign.forget()
         _LOGGER.debug("Chart not looked at for %s s: %.1f MB let go", IDLE_FORGET, freed)
@@ -3175,7 +3467,9 @@ class VectorChart:
             tasks = {part: self._ensure_task(bx, by, part) for part in parts}
             # Each is given a moment (enough to see it's fresh, or for a quick download), but
             # one already downloading for an earlier look isn't waited for again.
-            new = [asyncio.shield(t) for part, t in tasks.items() if part not in running]
+            # (asyncio.wait leaves them running when it times out; a shield round each would be
+            # a future of its own that nobody looks at, logged as an error when it fails.)
+            new = [t for part, t in tasks.items() if part not in running]
             if new:
                 await asyncio.wait(new, timeout=PART_WAIT)
             for part, task in tasks.items():
@@ -3246,7 +3540,35 @@ class VectorChart:
                         b.point(area.props[area.pi[i]], sum(area.co[2 * v] for v in range(v0, v1)) / (v1 - v0),
                                 sum(area.co[2 * v + 1] for v in range(v0, v1)) / (v1 - v0))
                 layers["rockctr"] = b.layer
+        depth = layers.get("depth")
+        if depth is not None and not (depth.n and near_sea_border(bx, by)):
+            layers["_sea"] = self._sea_gaps(bx, by, level, layers)
         return layers
+
+    def _sea_gaps(self, bx: int, by: int, level: int, layers: dict) -> list:
+        """The block's sea_gaps, worked out once from its zoomed-out level (quicker, and the
+        same at every zoom) and kept until the block changes."""
+        key = (bx, by)
+        sea = self._sea.get(key)
+        if sea is not None:
+            return sea
+        gen = self._gen.get(key, 0)
+        if level:
+            low: dict[str, Any] = {}
+            for part in ("", "tss"):
+                try:
+                    low.update(read_block(self._path(bx, by, part), 0)[1])
+                except (OSError, ValueError, EOFError):
+                    pass
+            layers = {**layers, **low}
+        depth = layers.get("depth")
+        found = depth is not None and depth.n > 0
+        sea = sea_gaps(bx, by, depth if found else None, layers.get("tss"), GAP_CELLS if found else GAP_CELLS_OVERVIEW)
+        if self._gen.get(key, 0) == gen:  # not if a part was written meanwhile
+            if len(self._sea) >= 4096:
+                self._sea.clear()
+            self._sea[key] = sea
+        return sea
 
     def _written(self, bx: int, by: int) -> None:
         """A part of a block was written: the copies of it in RAM are out of date."""
@@ -3254,6 +3576,7 @@ class VectorChart:
         for key in [k for k in self._memory if k[:2] == (bx, by)]:
             self._memory_bytes -= self._memory.pop(key)[1]
         self._coast.pop((bx, by), None)
+        self._sea.pop((bx, by), None)
 
     def _remember(self, key: tuple[int, int, int], layers: dict) -> None:
         size = sum(L.nbytes() for k, L in layers.items() if k[0] != "_")
@@ -3722,8 +4045,14 @@ class VectorChart:
         # Blocks that may hold Finnish data, and how many of them are there.
         near = await in_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
         got = sum(k in files for k in near)
+        def with_sea(blocks: Iterator[tuple[tuple[int, int], dict]]) -> Iterator[tuple[tuple[int, int], dict]]:
+            for key, layers in blocks:
+                if key in self._sea:
+                    layers["_sea"] = self._sea[key]  # finer than the overview level's own
+                yield key, layers
+
         async with self._cutting:
-            tile = await in_thread(make_tile, z, x, y, overview_blocks(files))
+            tile = await in_thread(make_tile, z, x, y, with_sea(overview_blocks(files)))
         if near:
             tile["cover"] = round(got / len(near), 2)
         complete = got == len(near)
