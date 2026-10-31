@@ -35,8 +35,9 @@ sidebar.
     through the Overpass API). There are no soundings there, and the depths
     are a smoothed model, so shoals can be shallower than shown. Sweden's and
     Estonia's own charts aren't open data, so they aren't used.
-    Out at sea Traficom's depths stop short in places; there the chart shows
-    plain deep water (white) with no depth figures.
+    Out at sea Traficom's depths stop short in places, and in places a shoal
+    comes without its own depth area; there the chart shows plain deep water
+    (white) with no depth figures. The soundings still show the depth there.
   - **Official** is Traficom's electronic chart (the S-57 data official ENCs
     are made from), drawn by Traficom's own S-57 view service: everything on
     the official chart, seamless.

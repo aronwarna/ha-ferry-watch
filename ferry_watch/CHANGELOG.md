@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.8
+
+- Fixes the made-up islands still left out at sea on the drawn chart (off Bogskär, south
+  of Åland). Out there Traficom's data sometimes has a deep area with a hole for a shoal
+  but not the shoal's own, shallower area, and no depth contours either, so nothing
+  covered the hole and the chart drew it as an island. Now a place is only land when the
+  water round it starts at the surface, as it does along every real shore. The rest is
+  drawn as deep water; the soundings there still give the depth.
+
 ## 0.26.7
 
 - Fixes made-up land out at sea on the drawn chart (the tan strips and patches south of

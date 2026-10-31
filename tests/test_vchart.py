@@ -168,10 +168,12 @@ def _wavy(y, x0=-3072, x1=68608, step=500, amp=300):
 
 def test_sea_where_traficoms_depths_stop_short():
     # Depths only over the north of the block, ending at a straight chart limit: the rest is
-    # sea, not land. An island in the depths stays land.
+    # sea, not land. An island in the depths (with a depth area from 0 m round it, as on any
+    # shore) stays land.
     island = [(20000, 10000), (24000, 10000), (24000, 14000), (20000, 14000)]
+    shore = [(19000, 9000), (25000, 9000), (25000, 15000), (19000, 15000)]
     deep = [(-3072, -3072), (68608, -3072), (68608, 30000), (-3072, 30000)]
-    rows = {"depth": [[[10, 20], None, [deep, island]]]}
+    rows = {"depth": [[[10, 20], None, [deep, shore]], [[0, 3], None, [shore, island]]]}
     layers = vchart.layers_from_rows(rows)
     gaps = vchart.sea_gaps(*EKENAS_SOUTH, layers["depth"])
     assert _in_rects(gaps, 30000, 50000) and _in_rects(gaps, 100, 65000) and _in_rects(gaps, 65000, 31000)
@@ -195,6 +197,27 @@ def test_a_shore_without_depths_beyond_stays_land():
         assert vchart.sea_gaps(*EKENAS_SOUTH, vchart.layers_from_rows(rows)["depth"]) == []
     rows = {"depth": [[[10, 20], None, [deep]], [[3, 6], None, [shallow]]]}  # no shore: a chart limit
     assert vchart.sea_gaps(*EKENAS_SOUTH, vchart.layers_from_rows(rows)["depth"])
+
+
+def test_a_shoal_without_its_own_depth_area_is_sea():
+    # Off Bogskär (ben's sample, Oct 2026): a hole in a 30-50 m area with no shallower area in
+    # it and no shore round it is open sea, not an island; a hole along a 0-3 m area is one.
+    deep = [(-3072, -3072), (68608, -3072), (68608, 68608), (-3072, 68608)]
+    shoal = _wavy(30000, 10000, 30000)[:-1] + [(x, y + 3000) for x, y in _wavy(30000, 10000, 30000)][::-1]
+    island = [(45000, 30000), (50000, 30000), (50000, 34000), (45000, 34000)]
+    shore = [(44000, 29000), (51000, 29000), (51000, 35000), (44000, 35000)]
+    rows = {"depth": [[[30, 50], None, [deep, shoal, shore]], [[0, 3], None, [shore, island]]]}
+    gaps = vchart.sea_gaps(*EKENAS_SOUTH, vchart.layers_from_rows(rows)["depth"])
+    assert _in_rects(gaps, 20000, 31500)  # the shoal
+    assert not _in_rects(gaps, 47500, 32000)  # the island
+    # ...painted right up under the deep area round it, so no black edge shows.
+    edge = vchart.make_tile(12, 2 * EKENAS_SOUTH[0], 2 * EKENAS_SOUTH[1],
+                            {EKENAS_SOUTH: vchart.layers_from_rows(rows)})
+    k = 2 * vchart.EXTENT / vchart.UNITS
+    sea = [rings for band, *rings in edge["depth"] if band == 4]
+    for x in range(10500, 29500, 1000):
+        y = 30000 + 300 * math.sin(x / 700)
+        assert vchart._in_water({"depth": [[4, *rings] for rings in sea]}, x * k, (y + 60) * k), x
 
 
 def test_natural_earths_land_stays_land():
@@ -1134,11 +1157,14 @@ def test_dredged_area_takes_the_band_of_its_least_depth():
 def test_sea_border_gap_is_sea_and_islands_land():
     # A block on the Gulf of Finland's sea border south of Porkkala, where Traficom's depths
     # stop short of FINNISH_WATERS's border: they cover the block's north half only, with an
-    # island in them.
+    # island in them (a depth area from 0 m round it) and a shoal that came without its own
+    # depth area (as south of Åland, Oct 2026).
     _, bx, by = tile_at(59.74, 24.3, vchart.BLOCK_Z)
     assert vchart.near_sea_border(bx, by)
     north, island = _square(0, 0, 65536, 30000), _square(20000, 10000, 26000, 16000)
-    layers = vchart.layers_from_rows({"depth": [[[20, 50], None, [north, island]]]})
+    shore, shoal = _square(19000, 9000, 27000, 17000), _square(40000, 10000, 46000, 16000)
+    layers = vchart.layers_from_rows({"depth": [[[20, 50], None, [north, shore, shoal]],
+                                                [[0, 3], None, [shore, island]]]})
     k = vchart.EXTENT / vchart.UNITS
     tile = vchart.make_tile(11, bx, by, {(bx, by): layers})
     # Find a spot in the gap that's inside FINNISH_WATERS (the border crosses the block).
@@ -1150,6 +1176,9 @@ def test_sea_border_gap_is_sea_and_islands_land():
     ix, iy = 23000 * k, 13000 * k
     assert not _covered(tile["depth"], ix, iy)
     assert any(_covered([[r]], ix, iy) for r in tile["land"])
+    sx, sy = 43000 * k, 13000 * k
+    assert [row[0] for row in _covered(tile["depth"], sx, sy)] == [4]
+    assert not any(_covered([[r]], sx, sy) for r in tile["land"])
     # Away from the border, land is the whole Finnish area under the depths, as before.
     assert not vchart.near_sea_border(*tile_at(60.1, 24.4, vchart.BLOCK_Z)[1:])
     assert not vchart.near_sea_border(*tile_at(65.8, 24.2, vchart.BLOCK_Z)[1:])  # Tornio
@@ -1267,8 +1296,9 @@ def test_lake_names_on_islands_wait_for_close_zooms():
     # An island (a hole in the depth area) with a lake on it: the lake's name doesn't take the
     # island's place until zoomed right in.
     island = [(20000, 20000), (40000, 20000), (40000, 40000), (20000, 40000)]
+    shore = [(19000, 19000), (41000, 19000), (41000, 41000), (19000, 41000)]
     box = [(0, 0), (65536, 0), (65536, 65536), (0, 65536)]
-    rows = {"depth": [[["10", "20"], None, [box, island]]],
+    rows = {"depth": [[["10", "20"], None, [box, shore]], [["0", "3"], None, [shore, island]]],
             "name": [[["Träsket", "swe", 36200], 30000.0, 28000.0],
                      [["Träskön eller Storlandet", "swe", None], 30000.0, 32000.0],
                      [["Kyrkfjärden", "swe", 36490], 25000.0, 18000.0]]}

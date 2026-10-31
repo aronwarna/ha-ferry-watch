@@ -130,7 +130,7 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 28  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 29  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -1055,17 +1055,23 @@ def block_in_finnish_waters(bx: int, by: int) -> bool:
 # Land is painted under the depth areas, so whatever no depth area covers shows as land. But
 # out at sea Traficom's depth areas stop at chart limits (straight or stepped edges), in
 # places well inside FINNISH_WATERS, and that made land of open sea (tan strips and patches
-# south of Ekenäs, Oct 2026). So the places in a block that no depth area covers are looked at
-# on a grid of the block and its margin: one with water all round (an island), one on Natural
-# Earth's land, or one along whose edge the depth areas mostly reach up to the surface (a
-# shore has one with a least depth of 0, or drying, along it; a chart limit runs through
-# deeper ones) is land. The
-# rest is sea that Traficom's depths stop short of, painted as deep water: a little past its
-# edge (under the depth areas, so no seam shows) but never onto the land beside it.
+# south of Ekenäs, Oct 2026). Nor do they always fill their own holes there: by a chart limit
+# and out at the sea border a deep area's hole (a shoal) may come without the shallower area
+# that fills it, and no contours either (30-100 m all round off Bogskär and south of Åland,
+# Oct 2026), which made made-up islands. So the places in a block that no depth area covers
+# are looked at on a grid of the block and its margin, by the water along their edge: a shore
+# always has a depth area from the surface (a least depth of 0, or drying) along it, so a
+# place with mostly such water by it is land (an island, or the mainland), and so is one on
+# Natural Earth's land. One with only deeper water by it is sea: open sea past a chart limit,
+# or a shoal missing its own area. The sea is painted as deep water, a little past its edge
+# (under the depth areas, so no seam shows) but never onto the land beside it.
 GAP_CELLS = 256  # grid cells across a block (about 40 m each)
 GAP_CELLS_OVERVIEW = 64  # for overview tiles, where a block is 32-64 px across
 NE_SHARE = 0.25  # a place this much on Natural Earth's land is land
 GAP_GROW = 2  # cells the sea is painted past its edge, under the depth areas
+# A place no depth area covers, with water all round, is an island if this share of the water
+# along its edge is a shore's (a quay can have deep water by it, so not all of it need be).
+ISLAND_SHORE = 0.1
 # Grid cell values: 0 no depth area; a depth area's least depth (DRVAL1) as 1 up to 0 m (drying
 # or from the surface: the kind along a shore), 2 under 3 m, 3 under 6, 4 under 10, 5 deeper,
 # the shallowest drawn last, so a shore's cells carry its own; WATER_CELL dredged and
@@ -1186,7 +1192,9 @@ def sea_gaps(bx: int, by: int, depth: Layer | None, tss: Layer | None = None,
         for i in sorted(range(depth.n), key=lambda i: -values[i]):
             rings = rings_of(depth, i)
             _grid_fill(grid, n, rings, values[i])
-            _grid_edges(grid, n, rings, values[i], shore)  # holes' edges: islands', which the sea keeps off
+            # A shore's holes' edges: islands', which the sea keeps off (a deeper area's holes
+            # are shoals, and may be sea themselves: see is_land).
+            _grid_edges(grid, n, rings, values[i], shore if values[i] in SHORE_CELLS else None)
     for i in range(tss.n if tss is not None else 0):
         if tss.props[tss.pi[i]][0] in WATER_TSS:
             rings = rings_of(tss, i)
@@ -1256,10 +1264,16 @@ def sea_gaps(bx: int, by: int, depth: Layer | None, tss: Layer | None = None,
         st[4] = st[4] or j == 0 or j == n - 1 or a == 0 or b == n
 
     def is_land(size: int, on_land: int, shore: int, deep: int, open_edge: bool) -> bool:
-        if not open_edge or on_land >= NE_SHARE * size:  # an island, or Natural Earth's land
+        if on_land >= NE_SHARE * size:  # Natural Earth's land
             return True
         if not shore and not deep:
-            return on_land > 0  # no water by it to tell from: Natural Earth's land or not
+            # No depths by it to tell from (dredged or unsurveyed areas): water all round is
+            # an island; otherwise Natural Earth's land or not.
+            return not open_edge or on_land > 0
+        if not open_edge:
+            # An island has a shore round it; a hole with only deeper water round it is a
+            # shoal whose own depth area didn't come.
+            return shore >= ISLAND_SHORE * (shore + deep)
         return shore > deep
 
     sea = {r for r, st in stats.items() if not is_land(*st)}
@@ -2096,9 +2110,11 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             # Land is painted only where this block's depths are, so a block that
             # couldn't be fetched never shows up as solid land.
             if near_sea_border(bx, by):
-                # Out at the sea border there's no mainland, only islands, which are holes
-                # in the depth areas. The rest of Finnish waters there is sea, also where
-                # Traficom's depths stop short of FINNISH_WATERS's rough border.
+                # Out at the sea border there's no mainland, only islands: the holes in the
+                # depth areas along a shore (from the surface, or drying; see sea_gaps). The
+                # rest of Finnish waters there is sea, also where Traficom's depths stop short
+                # of FINNISH_WATERS's rough border, and in a deeper area's hole that came
+                # without the shallower area filling it.
                 islands = []
                 sea_blocks.append((rect, islands))
             else:
@@ -2192,6 +2208,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 if layer.kind == "area":
                     rings = []
                     cut = own if key == "tss" and p[0] in TINTED_TSS else (lo, lo, hi, hi)
+                    shore_area = key == "depth" and islands is not None \
+                        and _least_depth_cell(*_pad(p, 2)[:2]) in SHORE_CELLS
                     for j, r in enumerate(layer.rings(i)):
                         pts = _run_pts(layer, layer.vo[r], layer.vo[r + 1], bx0, by0, bx1, by1)
                         part = simplify(clip_ring(conv(pts), *cut), tol)
@@ -2201,9 +2219,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                                 continue  # a speck at this zoom: its black edge would make it a dot
                         if len(part) >= 3:
                             rings.append(_flat(part))
-                            if j and key == "depth" and islands is not None \
-                                    and _in_finnish_waters(bx, by, layer.co[2 * layer.vo[r]],
-                                                           layer.co[2 * layer.vo[r] + 1]):
+                            if j and shore_area and _in_finnish_waters(bx, by, layer.co[2 * layer.vo[r]],
+                                                                       layer.co[2 * layer.vo[r] + 1]):
                                 island = clip_ring(part, *sea_blocks[-1][0])
                                 if len(island) >= 3:
                                     islands.append(_flat(island))
