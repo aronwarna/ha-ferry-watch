@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.27.2
+
+- Lit buoys, spar buoys and other lit marks now show on the drawn chart from zoom 10
+  (they waited for zoom 12), so a lone lit buoy out at sea is there when you zoom out, as
+  on the official chart. Lighthouses and sector lights still show furthest out; unlit
+  marks from zoom 13.
+
 ## 0.27.1
 
 - Fixes the zoomed-out drawn chart looking griddy: a fine grey grid showed all over the

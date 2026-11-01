@@ -61,9 +61,9 @@ def test_tiles_from_simulated_data(tmp_path):
         assert all(-vchart.TILE_BUFFER - 1 <= v <= vchart.EXTENT + vchart.TILE_BUFFER + 1 for r in rings for v in r)
     lighthouse = [a for a in t12["aid"] if a[2] == "m"]
     assert lighthouse and lighthouse[0][4] == 1 and lighthouse[0][5] == "Porkkala majakka"
-    # Soundings from zoom 12, sparser than at 13; zoomed out only the major lights.
+    # Soundings from zoom 12, sparser than at 13; at zoom 10 only the major lights and lit marks.
     assert "sounding" in t14 and 0 < len(t12["sounding"]) <= 36 and "sounding" not in t9  # one a 128-unit cell
-    assert all(a[2] in vchart.MAJOR_AIDS for a in t9["aid"])
+    assert all(a[2] in vchart.MAJOR_AIDS or a[4] for a in t9["aid"])
     assert chart.status()["blocks"] == 4  # the zoom-10 tile's four blocks (the others share them)
 
 
@@ -531,7 +531,11 @@ def test_unlit_marks_hidden_when_zoomed_out(tmp_path):
         chart = VectorChart(tmp_path, None, fake_chart_layer)
         z, x, y = tile_at(60.0, 24.4, 11)
         out, _ = await chart.tile(z, x, y)
-        assert out["aid"] and all(a[2] in vchart.MAJOR_AIDS for a in out["aid"])  # lighthouses, sector lights
+        # Lighthouses and sector lights, and from zoom 10 every lit mark (a lone lit buoy).
+        assert out["aid"] and all(a[2] in vchart.MAJOR_AIDS or a[4] == 1 for a in out["aid"])
+        assert any(a[2] not in vchart.MAJOR_AIDS for a in out["aid"])
+        z9, _ = await chart.tile(9, x >> 2, y >> 2)
+        assert all(a[2] in vchart.MAJOR_AIDS for a in z9.get("aid", []))
 
         async def children(z, x, y):
             return [a for i in (0, 1) for j in (0, 1)
@@ -543,6 +547,23 @@ def test_unlit_marks_hidden_when_zoomed_out(tmp_path):
         assert any(a[4] == 0 for a in nearer)  # unlit marks from zoom 13
 
     asyncio.run(run())
+
+
+def test_older_block_files_get_their_lit_marks_zoomed_out(tmp_path):
+    # Files written before the zoom-10/11 level kept the lit marks: read from the next level.
+    aids = [[["poiju", 1, "K", "Lit"], 30000, 30000], [["poiju", 1, "E", "Unlit"], 31000, 30000],
+            [["merimajakka", 99, "K", "Major"], 32000, 30000]]
+    full = vchart.layers_from_rows({"aid": aids, "depth": []})
+    old = [dict(full) for _ in vchart.LEVELS]
+    old[0]["aid"] = vchart.layers_from_rows({"aid": [aids[2]]})["aid"]  # as level 0 kept them then
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    path = chart._path(1, 1, "")
+    vchart.write_block(path, {"v": 2, "missing": [], "absent": []}, old)
+    got = chart._read_parts(1, 1, [""], 0)["aid"]
+    assert sorted(got.props[got.pi[i]][3] for i in range(got.n)) == ["Lit", "Major"]
+    vchart.write_block(path, {"v": 2, "missing": [], "absent": [], "lit": vchart.LIT_LEVEL}, old)
+    got = chart._read_parts(1, 1, [""], 0)["aid"]
+    assert [got.props[got.pi[i]][3] for i in range(got.n)] == ["Major"]  # a new file's own level
 
 
 def test_mml_features_are_projected_from_lonlat():

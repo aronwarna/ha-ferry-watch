@@ -134,7 +134,7 @@ OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 31  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 32  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -283,6 +283,13 @@ AID_TYPES = {
     "apuloisto": "a", "tutkamerkki": "u", "tutkamajakka": "t", "jääpoiju": "p",
 }
 MAJOR_AIDS = ("m", "s")  # all that is drawn zoomed out, as on overview charts
+# From this zoom every lit mark is drawn too (a lone lit buoy out at sea is what you look for;
+# ben, Nov 2026, comparing with the official chart), and the unlit ones from AID_ALL_Z.
+LIT_AID_Z = 10
+AID_ALL_Z = 13
+# Block files whose zoom-10/11 level has the lit marks (LIT_AID_Z) carry "lit": 1; older ones
+# get them from the next level when read (see VectorChart._read_parts).
+LIT_LEVEL = 1
 # Marks that stand on a leading line: the leading marks and lights (not buoys or edge marks).
 LEAD_AIDS = ("l", "s", "d", "a", "m", "b")
 LEAD_REACH = 170  # block units (about 25 m): a mark this close to a leading line stands on it
@@ -732,7 +739,8 @@ def _dp(co: array, v0: int, v1: int, tol: float) -> list[int]:
 def _point_shown(key: str, props: tuple, max_z: int) -> bool:
     """Whether a point could be drawn at or below a zoom (zoomed-out levels skip the rest)."""
     if key == "aid":
-        return max_z >= 12 or AID_TYPES.get(str(props[0] or "").lower()) in MAJOR_AIDS
+        return max_z >= 12 or AID_TYPES.get(str(props[0] or "").lower()) in MAJOR_AIDS \
+            or (max_z >= LIT_AID_Z and _pad(props, 3)[2] == "K")
     if key == "name":
         text = str(props[0] or "")
         code = _int(props[2]) if len(props) > 2 else None
@@ -865,11 +873,11 @@ def write_block(path: Path, meta: dict, levels: list[dict[str, Layer]],
     os.replace(tmp, path)
 
 
-def _read_section(f, keep: bool) -> tuple[dict, dict[str, Layer]]:
+def _read_section(f, keep: bool, only: Iterable[str] | None = None) -> tuple[dict, dict[str, Layer]]:
     head = json.loads(f.readline())
     layers: dict[str, Layer] = {}
     for key, spec in head.pop("layers").items():
-        if not keep:
+        if not keep or (only is not None and key not in only):
             f.seek(4 * sum(spec["n"]), 1)
             continue
         L = Layer(spec["k"])
@@ -884,14 +892,14 @@ def _read_section(f, keep: bool) -> tuple[dict, dict[str, Layer]]:
     return head, layers
 
 
-def read_block(path: Path, level: int) -> tuple[dict, dict[str, Layer]]:
-    """(meta, layers) of one level of a block file."""
+def read_block(path: Path, level: int, only: Iterable[str] | None = None) -> tuple[dict, dict[str, Layer]]:
+    """(meta, layers) of one level of a block file; ``only``: just those layers."""
     with gzip.open(path, "rb") as f:
         if f.read(len(MAGIC)) != MAGIC:
             raise ValueError(f"{path.name} is not a chart block")
         lvl = 0
         while True:
-            head, layers = _read_section(f, lvl == level)
+            head, layers = _read_section(f, lvl == level, only)
             if head.get("ov"):
                 continue  # the overview level
             if lvl == level:
@@ -2749,7 +2757,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
             letter = AID_TYPES.get(str(kind or "").lower(), "o")
             lit = 1 if lit == "K" else 0
             # Zoomed out, only the major lights; then lit marks; all from zoom 13, as on charts.
-            if (z <= 11 and letter not in MAJOR_AIDS) or (z == 12 and not lit and letter not in MAJOR_AIDS):
+            if letter not in MAJOR_AIDS and (z < LIT_AID_Z or (z < AID_ALL_Z and not lit)):
                 continue
             found = colours.get((px, py)) or next(
                 (colours[(px + dx, py + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (px + dx, py + dy) in colours),
@@ -3898,6 +3906,20 @@ class VectorChart:
                 from .foreign import merge_into
                 merge_into(layers, got)  # foreign rows add to the Finnish ones
                 continue
+            if part == "" and level == 0 and meta.get("lit", 0) < LIT_LEVEL and "aid" in got:
+                # Written before the zoom-10/11 level kept the lit marks: from the next level.
+                try:
+                    _, more = read_block(path, 1, ("aid",))
+                except (OSError, ValueError, EOFError):
+                    more = {}
+                aid = more.get("aid")
+                if aid is not None:
+                    b = LayerBuilder("point")
+                    for i in range(aid.n):
+                        props = aid.props[aid.pi[i]]
+                        if _point_shown("aid", props, LEVELS[0][0]):
+                            b.point(props, aid.co[2 * i], aid.co[2 * i + 1])
+                    got["aid"] = b.layer
             layers.update(got)
             if part == "mml" and level < len(LEVELS) - 1:
                 # Zoomed-out levels leave small rock clusters out: their middles, from the
@@ -4131,7 +4153,7 @@ class VectorChart:
         path = self._path(bx, by, part)
 
         def write() -> None:
-            meta = {"v": 2, "missing": missing, "absent": absent, "rev": PART_REV.get(part, 0)}
+            meta = {"v": 2, "missing": missing, "absent": absent, "rev": PART_REV.get(part, 0), "lit": LIT_LEVEL}
             write_block(path, meta, make_levels(built), make_overview(built))
 
         await in_thread(write)
