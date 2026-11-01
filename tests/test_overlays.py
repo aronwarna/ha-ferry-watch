@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import ferrywatch.overlays as ovmod
 import ferrywatch.web as webmod
+import ferrywatch.wind as wind_mod
 from ferrywatch.overlays import (Overlay, Overlays, bbox_3857, every, parse_duration, parse_instant,
                                  parse_time_dimension, step_of, tile_bounds)
 from ferrywatch import wind as windmod
@@ -289,7 +290,7 @@ def test_endpoints(tmp_path, monkeypatch):
             assert (await client.get("/api/overlay/rain-radar/soon/8/145/74.png")).status == 400
             assert (await client.get("/api/overlay/none/1/8/145/74.png")).status == 404
             frame = await (await client.get(f"/api/overlay/wind/{wind['times'][0]}")).json()
-            assert frame["fields"] == ["ms", "gust", "dir"] and len(frame["points"]) == 126
+            assert frame["fields"] == ["ms", "gust", "dir"] and len(frame["points"]) == len(wind_mod.GRID)
             assert (await client.get("/api/overlay/rain-radar/1")).status == 404  # tiles, not points
         finally:
             await client.close()

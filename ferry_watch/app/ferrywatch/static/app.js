@@ -110,8 +110,7 @@
   };
   let activeLayer = null;
 
-  // "drawn": the add-on's own seamless chart (vchart.js), with Traficom's overview chart
-  // when zoomed far out. "official": Traficom's electronic chart (S-57 view service), drawn
+  // "drawn": the add-on's own seamless chart (vchart.js), at every zoom. "official": Traficom's electronic chart (S-57 view service), drawn
   // by Traficom's server. "scanned": Traficom's scanned chart sheets.
   const CHART_STYLES = ["drawn", "official", "scanned"];
   let chartStyle = CHART_STYLES.includes(store.get("fw-chart-style")) ? store.get("fw-chart-style") : "drawn";
@@ -129,18 +128,16 @@
       ]);
     }
     if (chartStyle === "drawn") {
-      const overview = info?.layers?.find((l) => /250k/i.test(l.title || l.layer || ""));
-      // The drawn chart first, so its credit leads the line at the bottom.
+      // The drawn chart first, so its credit leads the line at the bottom. Drawn at every
+      // zoom (zoomed far out from Natural Earth's land and lakes where the chart has none
+      // yet), with no scanned chart under it.
       return L.layerGroup([
         FerryChart.layer({
-          attribution: "Chart © Traficom, Väylävirasto, Maanmittauslaitos · abroad: depths © EMODnet Bathymetry, "
-            + "coast and sea marks © OpenStreetMap contributors · not for navigation",
+          attribution: "Chart © Traficom, Väylävirasto, Maanmittauslaitos · base map: Natural Earth · abroad: depths © "
+            + "EMODnet Bathymetry, coast and sea marks © OpenStreetMap contributors · not for navigation",
           zIndex: 3,
         }),
         oceanBase(),
-        ...(overview ? [FerryChart.rasterLayer(`api/tiles/chart-${overview.id}/{z}/{x}/{y}.png`, {
-          minNativeZoom: overview.min_zoom, maxNativeZoom: overview.max_zoom, maxZoom: 9, zIndex: 2,
-        })] : []),
         // No OpenSeaMap tiles here: the drawn chart draws the sea marks abroad itself.
         oceanLabels(6),
       ]);
@@ -2004,13 +2001,16 @@
     $("chart-keep").checked = Boolean(keep);
     $("chart-foreign").checked = vc?.foreign !== false;
     $("chart-sample").checked = sampleOnPress;
-    let text = "Downloads the drawn chart of the whole Gulf of Finland once, so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
+    let text = "Downloads the drawn chart of all Finnish waters once (the Gulf of Finland first, then the Archipelago Sea and Åland, the Gulf of Bothnia and the charted lakes), so it opens quickly everywhere. Off: only the parts you look at are downloaded.";
     if (keep && keep.running) {
       const last = keep.last_ok ? ` Last area finished at ${clock(keep.last_ok)}.` : "";
       const failed = keep.failed ? ` ${keep.failed} areas failed and will be tried again in an hour.` : "";
-      text = `Downloading the Gulf of Finland: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.${last}${failed}`;
+      const what = keep.stage === "overview"
+        ? "Downloading Finnish waters for the zoomed-out chart"
+        : "Downloading the detailed chart of Finnish waters";
+      text = `${what}: ${keep.done} of ${keep.total} areas (${vc.mb} MB so far). The chart works meanwhile.${last}${failed}`;
     } else if (keep) {
-      text = `The whole Gulf of Finland is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
+      text = `The chart of all Finnish waters is on the NAS (${vc.mb} MB). It's refreshed monthly.`;
     }
     $("chart-keep-status").textContent = text;
     const bar = $("chart-keep-progress");

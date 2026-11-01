@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 import math
 import os
@@ -151,7 +152,11 @@ def test_failed_depths_give_no_land(tmp_path):
 
     chart = VectorChart(tmp_path, None, down)
     tile, ok = asyncio.run(chart.tile(*tile_at(60.005, 24.4, 12)))
-    assert not ok and "land" not in tile and "depth" not in tile
+    # Not the Finnish area as solid land: only the base map's coarse land and sea.
+    assert not ok and all(row[0] == 4 for row in tile.get("depth", ()))
+    z, x, y = tile_at(60.005, 24.4, 12)
+    finnish = vchart.make_tile(z, x, y, {})
+    assert "land" not in finnish and "depth" not in finnish
 
 
 EKENAS_SOUTH = (1157, 597)  # open sea south of Ekenäs, well inside Finnish waters (ben's tan strips)
@@ -257,7 +262,8 @@ def test_land_only_where_finland_is(tmp_path):
 
     chart = VectorChart(tmp_path, None, finnish_only)
     tile, _ = asyncio.run(chart.tile(*tile_at(59.5, 24.75, 12)))
-    assert "land" not in tile
+    # Only the base map's land (Natural Earth's), none of the Finnish area.
+    assert tile.get("land", []) == vchart.make_tile(*tile_at(59.5, 24.75, 12), {}, chart._base()).get("land", [])
     x, y = lonlat_to_mercator(24.4, 60.0)
     assert abs(x - 2716195.6) < 1 and abs(y - 8399737.9) < 1
 
@@ -275,7 +281,7 @@ def test_only_fetches_near_finland(tmp_path):
     assert near_finland(block_bounds(fx, fy))
     chart = VectorChart(tmp_path, None, fetch)
     tile, ok = asyncio.run(chart.tile(11, bx, by))
-    assert ok and asked == [] and "land" not in tile
+    assert ok and asked == [] and tile.get("land", []) == vchart.make_tile(11, bx, by, {}, chart._base()).get("land", [])
 
 
 def test_oversized_response_is_refused(tmp_path, monkeypatch):
@@ -436,10 +442,16 @@ def test_dropped_connection_is_asked_again(tmp_path, monkeypatch):
     assert len(calls) == 3
 
 
-def test_keep_area_size():
+def test_keep_blocks_cover_finnish_waters():
     blocks = vchart.keep_blocks()
-    assert 200 < len(blocks) < 500
-    assert vchart.blocks_for(12, *tile_at(60.0, 24.4, 12)[1:])[0] in blocks
+    assert 2000 < len(blocks) < 3500 and len(set(blocks)) == len(blocks)
+    # The Gulf of Finland first (as kept before), then the rest of the coast and the lakes.
+    gulf = set(vchart.area_blocks())
+    first = blocks[:len(gulf)]
+    assert len(set(first) & gulf) > 0.9 * len(gulf)
+    for lat, lon in ((60.0, 24.4), (60.3, 21.5), (60.1, 19.9), (63.1, 21.4), (65.0, 25.2), (61.2, 28.6)):
+        assert tile_at(lat, lon, 11)[1:] in blocks  # Porkkala, the Archipelago Sea, Åland, Vaasa, Oulu, Saimaa
+    assert tile_at(64.0, 26.0, 11)[1:] not in blocks  # dry land
 
 
 def test_rocks_wrecks_names_and_lights(tmp_path):
@@ -899,7 +911,8 @@ def test_depths_are_never_taken_for_absent(tmp_path):
     fetch.catalog = lambda service: [n for n in fake_chart_layer.catalog(service) if not n.endswith("DepthArea_A")]
     chart = VectorChart(tmp_path, None, fetch)
     tile, ok = _tiles(chart, (12, 60.005, 24.4))[0]
-    assert not ok and "depth" not in tile and "depth" in chart.errors  # tried again later, not a blank block
+    # Tried again later, not a blank block (just the base map's sea and land meanwhile).
+    assert not ok and all(row[0] == 4 for row in tile.get("depth", ())) and "depth" in chart.errors
 
 
 def test_capabilities_parsing_and_matching():
@@ -947,8 +960,11 @@ def test_overview_tiles(tmp_path, monkeypatch):
             assert key not in t
     assert "Suomenlahti" in [n[2] for n in t8["name"]]  # (at 59.80, south of the zoom-9 tile)
     assert not ok9 and not ok8  # not every block of them is there yet
-    assert empty == {"e": 512, "cover": 0} and not ok_empty  # nothing fetched up north
-    assert sea == {"e": 512} and ok_sea  # nothing Finnish out there at all
+    # Nothing fetched up north: only the base map (Natural Earth's land, lakes and sea).
+    assert empty["cover"] == 0 and not ok_empty
+    assert set(empty) <= {"e", "cover", "land", "depth", "lake"} and all(row[0] == 4 for row in empty.get("depth", ()))
+    # Nothing Finnish out there at all: the base map's sea.
+    assert ok_sea and set(sea) <= {"e", "depth", "land", "lake"} and [row[0] for row in sea["depth"]] == [4]
     assert list((tmp_path / "overview").iterdir())
     assert not chart._memory_bytes or len(chart._memory) <= vchart.MEMORY_BLOCKS  # nothing kept for overviews
     # Kept, and read back from disk after a restart.
@@ -1675,3 +1691,98 @@ def test_openstreetmap_stands_in_for_cables_and_reserves(tmp_path):
     chart._caps[vchart.TRAFICOM_OPEN_WFS] = set()
     targets, _ = chart._targets("cable")
     assert [n for _, n, _ in targets] == ["rajoitettu:CableSubmarine_L", "osm:pipe"]
+
+
+# --- all of Finland: the base map, zoomed far out (Nov 2026) ---------------------------------
+
+def _ring_box(x0, y0, x1, y1):
+    return [x0, y0, x1, y0, x1, y1, x0, y1]
+
+
+def test_merge_tiles_halves_children_into_their_quarters():
+    def child(depth_band):
+        return {"e": 512, "cover": 0.5,
+                "land": [_ring_box(100, 100, 200, 200)],
+                "depth": [[depth_band, _ring_box(-24, -24, 536, 536), _ring_box(100, 100, 200, 200)]],
+                "contour": [[50, [-24, 300, 536, 310]],  # a long one, across the child
+                            [50, [250, 250, 260, 250, 260, 260, 250, 260, 250, 250]],  # a small ring
+                            [20, [-24, 400, 536, 400]]],  # too shallow this far out
+                "aid": [[300, 300, "m", 1, 1, "Kallbådan", "W"], [310, 310, "s", 1, 1, "x", ""]],
+                "name": [[256, 256, "Suomenlahti", "w"], [100, 100, "Kirkkonummi", "s"]]}
+
+    children = [(dx, dy, child(4 if dx else 1)) for dy in (0, 1) for dx in (0, 1)]
+    tile = vchart.merge_tiles(6, iter(children))
+    assert tile["e"] == 512 and tile["cover"] == 0.5
+    # Each child's land square, halved into its quarter.
+    assert sorted(_bbox_flat(r) for r in tile["land"]) == [(50, 50, 100, 100), (50, 306, 100, 356),
+                                                          (306, 50, 356, 100), (306, 306, 356, 356)]
+    assert [row[0] for row in tile["depth"]] == [4, 4, 1, 1]  # deep first
+    # Areas reach a unit past where the quarters meet (no seam), and the buffer at the edges.
+    assert _bbox_flat(tile["depth"][-1][1])[2] == 257 and min(_bbox_flat(r[1])[0] for r in tile["depth"]) == -12
+    # The 50 m lines kept, end to end at the middle; the small ring and the 20 m line not.
+    assert {row[0] for row in tile["contour"]} == {50} and len(tile["contour"]) == 4
+    assert sorted(_bbox_flat(r[1])[0] for r in tile["contour"]) == [-12, -12, 256, 256]
+    assert "aid" not in tile  # no marks this far out
+    assert [n[2] for n in tile["name"]] == ["Suomenlahti"] * 4 and tile["name"][0][:2] == [128, 128]
+    closer = vchart.merge_tiles(7, iter(children))
+    assert {a[2] for a in closer["aid"]} == {"m"} and "Kirkkonummi" in [n[2] for n in closer["name"]]
+    assert {row[0] for row in closer["contour"]} == {20, 50}
+
+
+def _bbox_flat(flat):
+    xs, ys = flat[0::2], flat[1::2]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def test_zoomed_far_out_tiles_are_made_from_their_children(tmp_path, monkeypatch):
+    chart = VectorChart(tmp_path, None, fake_chart_layer, mml_key="test")
+    chart.set_foreign(False)  # (quicker: 64 zoom-8 tiles go into a zoom-5 one)
+    _tiles(chart, *[(10, lat, lon) for lat in (59.95, 60.05) for lon in (24.1, 24.4)])
+
+    async def run():
+        z7 = await chart.tile_gz(*tile_at(60.0, 24.4, 7))
+        z5 = await chart.tile_gz(*tile_at(60.0, 24.4, 5))
+        again = await chart.tile_gz(*tile_at(60.0, 24.4, 5))
+        return z7, z5, again
+
+    (b7, ok7), (b5, ok5), (again, _) = asyncio.run(run())
+    t7, t5 = json.loads(gzip.decompress(b7)), json.loads(gzip.decompress(b5))
+    assert not ok7 and not ok5  # most of their blocks aren't there yet
+    assert t7["depth"] and t7["land"] and t7["lake"] and {r[0] for r in t7.get("contour", ())} <= {20, 50, 100, 200}
+    assert t5["land"] and t5["lake"] and t5["depth"] and "aid" not in t5
+    assert again == b5  # kept on disk, served as it is
+    kept = list((tmp_path / "overview").rglob("*.gz"))
+    assert {p.parent.name for p in kept} >= {"5", "6", "7", "8"}
+    # Older than PYRAMID_RECUT: shown as it was, while it's made again behind.
+    monkeypatch.setattr(vchart, "PYRAMID_RECUT", 0)
+    (stale, ok), = [asyncio.run(chart.tile_gz(*tile_at(60.0, 24.4, 5)))]
+    assert stale == b5 and not ok
+
+
+def test_base_map_where_the_chart_has_nothing():
+    # Inland (Saimaa, zoom 8): Natural Earth's land and its lakes, no sea.
+    saimaa = vchart.make_tile(*tile_at(61.3, 28.5, 8), {}, vchart.BASE_ALL)
+    assert saimaa["land"] and len(saimaa["lake"]) >= 3 and "depth" not in saimaa
+    # Off Tallinn, outside Finnish waters: the sea only with the foreign side off (with it on,
+    # the depth model draws it); land and lakes either way.
+    z, x, y = tile_at(59.5, 24.9, 10)
+    off = vchart.make_tile(z, x, y, {}, vchart.BASE_ALL)
+    on = vchart.make_tile(z, x, y, {}, vchart.BASE_FINNISH)
+    assert [row[0] for row in off["depth"]] == [4] and "depth" not in on
+    assert off["land"] == on["land"]
+    # A block with depth areas covers its part: no base map there.
+    rows = {"depth": [[[10, 20], None, [[(-3072, -3072), (68608, -3072), (68608, 68608), (-3072, 68608)]]]]}
+    key = blocks_for(11, *tile_at(60.0, 24.4, 11)[1:])[0]
+    tile = vchart.make_tile(11, *key, {key: vchart.layers_from_rows(rows)}, vchart.BASE_ALL)
+    assert [row[0] for row in tile["depth"]] == [4] and "lake" not in tile
+
+
+def test_zoomed_out_contours_leave_out_single_shoals():
+    small = [(30000, 45000), (31000, 45000), (31000, 46000), (30000, 46000), (30000, 45000)]
+    long_line = [(-3072, 40000), (68608, 41000)]
+    rows = {"contour": [[[20], None, small], [[20], None, long_line]]}
+    key = blocks_for(11, *tile_at(60.0, 24.4, 11)[1:])[0]
+    z9 = vchart.make_tile(9, key[0] >> 2, key[1] >> 2, {key: vchart.layers_from_rows(rows)})
+    assert len(z9["contour"]) == 1
+    z12 = vchart.make_tile(12, key[0] * 2, key[1] * 2 + 1, {key: vchart.layers_from_rows(rows)})
+    assert len(z12["contour"]) == 2  # closer in, every one

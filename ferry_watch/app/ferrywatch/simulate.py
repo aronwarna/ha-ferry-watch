@@ -521,6 +521,10 @@ SIM_MAINLAND = [(23.96, 60.10), (24.20, 60.10), (24.25, 60.074), (24.33, 60.071)
 SIM_TSS_WEST, SIM_TSS_EAST = 23.75, 24.92
 # Where the made-up Finnish depths stop short of the sea border: (west, east, south) degrees.
 SIM_DATA_SOUTH = (23.9, 24.9, 59.80)
+
+
+def _lat_m(y: float) -> float:
+    return math.degrees(2 * math.atan(math.exp(y / 20037508.342789244 * math.pi)) - math.pi / 2)
 SIM_LANE_NORTH = (59.905, 59.935)  # westbound
 SIM_TSS_ZONE = (59.89, 59.905)
 SIM_LANE_SOUTH = (59.86, 59.89)  # eastbound
@@ -587,6 +591,34 @@ async def fake_chart_layer(key: str, bbox) -> list[dict]:
     return feats
 
 
+def _fake_finland(key: str, bbox) -> list[dict]:
+    """FW_FAKE_FINLAND=1: depths for all of Finland's waters from the base map (Natural
+    Earth's sea in FINNISH_WATERS as 10-50 m, its lakes as 3-6 m) instead of the made-up
+    gulf, to look at the whole country zoomed out."""
+    from .vchart import clip_ring, ne_base
+    minx, miny, maxx, maxy = bbox
+    feats = []
+    if key != "depth":
+        return feats
+    base = ne_base()
+    for kind, d1, d2 in (("fi_sea", 10, 50), ("lakes", 3, 6)):
+        polys = []  # one feature of them all, as the base map's pieces meet edge to edge
+        for (x0, y0, x1, y1), poly in base[kind]:
+            if x1 < minx or x0 > maxx or y1 < miny or y0 > maxy:
+                continue
+            rings = []
+            for co in poly:
+                part = clip_ring([(co[i], co[i + 1]) for i in range(0, len(co), 2)], minx, miny, maxx, maxy)
+                if len(part) >= 3:
+                    rings.append([list(p) for p in part] + [list(part[0])])
+            if rings:
+                polys.append(rings)
+        if polys:
+            feats.append({"geometry": {"type": "MultiPolygon", "coordinates": polys},
+                          "properties": {"DRVAL1": d1, "DRVAL2": d2}})
+    return feats
+
+
 def _fake_chart_layer(key: str, bbox) -> list[dict]:
     import random
     from . import simscene
@@ -594,6 +626,9 @@ def _fake_chart_layer(key: str, bbox) -> list[dict]:
     b = SIM_BANDS
     bands = [(0, 3, b[0], b[1]), (3, 6, b[1], b[2]), (6, 10, b[2], b[3])]
     feats: list[dict] = []
+    if os.environ.get("FW_FAKE_FINLAND") and not (23.6 <= (minx + maxx) / 2 * 180 / 20037508.342789244 <= 25.0
+                                                  and 59.7 <= _lat_m((miny + maxy) / 2) <= 60.2):
+        return _fake_finland(key, bbox)
     if key == "depth":
         # Traficom's depths end at the Finnish sea border (the Estonian side is drawn from
         # the foreign stand-ins below).

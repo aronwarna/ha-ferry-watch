@@ -20,7 +20,7 @@ from .ais import HEADERS
 _LOGGER = logging.getLogger(__name__)
 
 URL = "https://meri.digitraffic.fi/api/aton/v1/faults"
-AREA = (22.7, 59.45, 28.2, 60.75)  # lon/lat box: the Gulf of Finland, as on the drawn chart
+AREA = (19.0, 59.3, 31.6, 70.1)  # lon/lat box: all of Finland's waters, sea and lakes, as on the drawn chart
 CACHE_SECONDS = 30 * 60
 RETRY = 5 * 60
 TIMEOUT = 20

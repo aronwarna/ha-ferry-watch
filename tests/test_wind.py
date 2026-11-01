@@ -20,21 +20,27 @@ T0 = 1792929600  # 2026-10-25 12:00:00 UTC
 
 
 def test_grid_and_request():
-    assert len(wind.GRID) == 126 and wind.GRID[0] == (59.0, 21.0) and wind.GRID[-1] == (60.8, 30.35)
-    assert wind.BOUNDS == (59.0, 21.0, 60.8, 30.35)
+    # The Gulf of Finland's grid as before (Hanko and the Estonian islands to Vyborg Bay), now
+    # with the Åland Sea, the Archipelago Sea and the Gulf of Bothnia up to Tornio.
+    old = [(round(59.0 + 0.3 * i, 2), round(21.0 + 0.55 * j, 2)) for i in range(7) for j in range(18)]
+    assert set(old) <= set(wind.GRID) and 250 < len(wind.GRID) < 320 and len(set(wind.GRID)) == len(wind.GRID)
+    assert wind.GRID[0] == (59.0, 19.35) and wind.GRID[-1][0] == 65.9
+    assert (63.2, 20.45) in wind.GRID and (65.0, 25.4) in wind.GRID  # Kvarken, off Oulu
+    assert (62.3, 26.0) not in wind.GRID  # inland
+    assert wind.BOUNDS == (59.0, 17.15, 65.9, 30.35)
     params = wind.request_params(wind.QUERIES[0], wind.GRID[:3], T0 + 1500)
     q = dict(params)
     assert q["storedquery_id"] == "fmi::forecast::harmonie::surface::point::multipointcoverage"
     assert q["parameters"] == "WindSpeedMS,WindGust,WindDirection" and q["timestep"] == "60"
     assert q["starttime"] == "2026-10-25T12:00:00Z" and q["endtime"] == "2026-10-27T12:00:00Z"
-    assert [v for k, v in params if k == "latlon"] == ["59.00,21.00", "59.00,21.55", "59.00,22.10"]
+    assert [v for k, v in params if k == "latlon"] == ["59.00,19.35", "59.00,19.90", "59.00,20.45"]
 
 
 def test_forecast_answer_parses_with_the_station_parser():
     text = simsea.fake_forecast(wind.request_params(wind.QUERIES[0], wind.GRID[:2], T0))
     fields, rows = parse_coverage(text, wind.PARAMS)
     assert fields == ["windspeedms", "windgust", "winddirection"]
-    assert len(rows) == 2 * 49 and rows[0][:3] == (59.0, 21.0, T0) and len(rows[0][3]) == 3
+    assert len(rows) == 2 * 49 and rows[0][:3] == (59.0, 19.35, T0) and len(rows[0][3]) == 3
     # The station parser, now sharing the coverage code, still reads the stations' answers.
     sites, series, sfields = parse_multipoint(simsea.fake_multipoint(
         {"storedquery_id": "fmi::observations::weather::multipointcoverage", "parameters": "windspeedms,winddirection",
@@ -81,13 +87,15 @@ def test_whole_grid_in_batches_and_meps_fallback():
 
     queries = list(wind.QUERIES)
     run = asyncio.run(wind.fetch_run(None, T0, fetch, queries))
-    assert len(run["points"]) == 126 and len(run["times"]) == 49 and run["times"][0] == T0
-    assert all(len(rows) == 126 and all(r[0] is not None for r in rows) for rows in run["values"].values())
-    assert asked == [(wind.QUERIES[0], 42), (wind.QUERIES[1], 42), (wind.QUERIES[1], 42), (wind.QUERIES[1], 42)]
+    n = len(wind.GRID)
+    batches = [min(42, n - i) for i in range(0, n, 42)]
+    assert len(run["points"]) == n and len(run["times"]) == 49 and run["times"][0] == T0
+    assert all(len(rows) == n and all(r[0] is not None for r in rows) for rows in run["values"].values())
+    assert asked == [(wind.QUERIES[0], 42)] + [(wind.QUERIES[1], b) for b in batches]
     assert queries[0] == wind.QUERIES[1]  # MEPS first from now on
     asked.clear()
     asyncio.run(wind.fetch_run(None, T0, fetch, queries))
-    assert [q for q, _ in asked] == [wind.QUERIES[1]] * 3
+    assert [q for q, _ in asked] == [wind.QUERIES[1]] * len(batches)
 
     async def down(params):
         raise aiohttp.ClientResponseError(None, (), status=503, message="Service Unavailable")
@@ -133,7 +141,7 @@ def test_listing_carries_the_check(tmp_path):
 
     off, on = asyncio.run(run())
     assert off["times"] is None and off["check"] is None
-    assert len(on["times"]) == 49 and on["check"].startswith("Wind forecast against 11 FMI stations")
+    assert len(on["times"]) == 49 and on["check"].startswith("Wind forecast against ") and " FMI stations" in on["check"]
     stations.fetched = now - 2 * 3600  # old readings aren't compared
     assert asyncio.run(overlays.listing({"wind"}, now))[0]["check"] is None
 

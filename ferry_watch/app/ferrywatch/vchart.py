@@ -91,7 +91,8 @@ OSM_QUERIES = {
 
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
 BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks' levels, below it from their overview levels
-MIN_Z = 8  # below this the panel shows Traficom's overview chart
+MIN_Z = 5  # the lowest zoom the chart is drawn at
+OVERVIEW_MIN_Z = 8  # overview tiles from this zoom are cut from the blocks; below it see merge_tiles
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
@@ -130,11 +131,14 @@ IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
 # being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
 OVERVIEW_RECUT = 60
-TILE_REV = 29  # bump when tiles change, so browsers don't keep drawing cached old ones
+# s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
+# it's made again, in the background.
+PYRAMID_RECUT = 600
+TILE_REV = 30  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
-TILE_CACHE_BYTES = 64 * 1024 * 1024
+TILE_CACHE_BYTES = 512 * 1024 * 1024  # disk is plenty on the NAS; RAM isn't
 HALF = 20037508.342789244  # half the web-mercator world, in metres
 
 # Levels of detail in each block file: (highest zoom it serves, simplification in block
@@ -371,6 +375,14 @@ LAYER_MIN_Z = {"depth": MIN_Z, "contour": MIN_Z, "sounding": 11, "farea": 11, "f
                "lake": 10, "height": 12, "road": 12, "rail": 12, "building": 13, "buildarea": 13, "landmark": 12,
                "xland": MIN_Z, "xdepth": MIN_Z}
 XDEPTH_MIN_RING = 2.0  # tile units: foreign depth rings smaller than this aren't drawn (islets and specks)
+# Zoomed out (overview tiles), a contour smaller than this (tile units, a closed one round a
+# single shoal, or a stray bit) is left out, and the rest are smoothed: the deep contours'
+# shapes, not every shoal's ring (ben, Nov 2026: "no need to show exactly all of them"; in
+# the Archipelago Sea a zoom-8 tile had over 3000, nearly all of them such rings).
+CONTOUR_MIN = 16
+CONTOUR_MIN_AT = {8: 32}  # zoomed further out, bigger
+HOLE_MIN = 1.5  # tile units: zoomed out, a hole in a depth area smaller than this (an islet) is filled
+LINE_MARGIN = UNITS * TILE_BUFFER // EXTENT  # block units lines are kept past a block's edge (see build_into)
 
 
 CHART_THREADS = 2  # worker threads for the chart's parsing, building and cutting
@@ -513,10 +525,32 @@ def simplify(pts: list, tol: float) -> list:
     return [p for p, k in zip(pts, keep) if k]
 
 
+def chaikin(pts: list, tol: float, rounds: int = 2) -> list:
+    """A line's corners cut (Chaikin's corner cutting, keeping the end points), then
+    simplified again: smooth curves where a simplified line has sharp kinks."""
+    if len(pts) < 3:
+        return pts
+    for _ in range(rounds):
+        out = [pts[0]]
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            out.append((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by))
+            out.append((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by))
+        out.append(pts[-1])
+        pts = out
+    return simplify(pts, tol)
+
+
 def _bbox(pts) -> tuple[float, float, float, float]:
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
     return min(xs), min(ys), max(xs), max(ys)
+
+
+def _flat_area(flat: list, signed: bool = False) -> float:
+    """A flat ring's area (shoelace), in its own units; ``signed``: negative one way round."""
+    n = len(flat)
+    a = sum(flat[i] * flat[(i + 3) % n] - flat[(i + 2) % n] * flat[i + 1] for i in range(0, n, 2)) / 2
+    return a if signed else abs(a)
 
 
 def _flat(pts) -> list[int]:
@@ -1013,11 +1047,17 @@ def near_finland(bounds: tuple[float, float, float, float]) -> bool:
     return False
 
 
-# Kept on the NAS when "Keep chart on NAS" is on: the Gulf of Finland, Hanko to the
-# eastern border (lon/lat). Blocks in it with no Finnish waters nearby are left out.
+# The Gulf of Finland, Hanko to the eastern border (lon/lat): what "Keep chart on NAS" kept
+# before all of Finnish waters (it still comes first).
 KEEP_AREA = (22.7, 59.45, 28.2, 60.75)
 KEEP_PAUSE = 1.0  # s between downloads, to be gentle on Traficom and Väylävirasto
 KEEP_RECHECK = 6 * 3600  # s between passes that refresh blocks older than MAX_AGE
+PRECUT_EVERY = 25  # blocks fetched (for the overview) between making the zoomed-out tiles again
+# The blocks "Keep chart on NAS" keeps: every zoom-11 block with Finnish water in it, sea or
+# lake (built by tools/build_ne_base.py from Natural Earth and FINNISH_WATERS), the Gulf of
+# Finland first, then the Archipelago Sea and Åland, the Bothnian Sea, the Bay of Bothnia and
+# the lakes.
+KEEP_FILE = Path(__file__).parent / "keep_blocks.json"
 
 
 # FINNISH_WATERS's sea border away from the mainland, from the Bothnian Bay round Åland and
@@ -1082,24 +1122,164 @@ WATER_CELL = 7
 _EMPTY_RUN = re.compile(rb"\x00+")
 _SET_RUN = re.compile(rb"\x01+")
 _ONE_RUN = re.compile(r"1+")
-# Natural Earth's land and minor islands at 1:10m (public domain, naturalearthdata.com),
-# clipped to 19-31.6°E 59.2-70.2°N and simplified to 0.002°: [lon, lat, lon, lat, ...] rings.
-# Only good to a few hundred metres, which is plenty to tell the mainland from open sea.
-NE_LAND_FILE = Path(__file__).parent / "ne_land.json"
-_ne_land: list | None = None
+# Natural Earth's land, minor islands and lakes at 1:10m (public domain, naturalearthdata.com),
+# 5-40°E 53-75°N, simplified to 0.002° (built by tools/build_ne_base.py): only good to a few
+# hundred metres, which is plenty to tell the mainland from open sea, and for the base map
+# drawn where no chart data is (see add_base). Each kind is a list of polygons [outer, hole,
+# ...], rings flat [lon, lat, ...], outer rings anticlockwise and holes clockwise; "fi_sea" is
+# FINNISH_WATERS less the land. Land and sea come cut on a 1° by 0.5° grid, so a tile clips
+# only the pieces near it.
+NE_BASE_FILE = Path(__file__).parent / "ne_base.json"
+NE_KINDS = ("land", "lakes", "fi_sea")
+_ne_base: dict | None = None
 
 
-def ne_land() -> list[tuple[tuple[float, float, float, float], array]]:
-    """Natural Earth's land round Finland as web-mercator rings [x0, y0, x1, y1, ...], each
-    with its bounding box (about 100 kB kept)."""
-    global _ne_land
-    if _ne_land is None:
-        rings = []
-        for flat in json.loads(NE_LAND_FILE.read_text()):
-            pts = [lonlat_to_mercator(flat[i], flat[i + 1]) for i in range(0, len(flat) - 1, 2)]
-            rings.append((_bbox(pts), array("d", [v for p in pts for v in p])))
-        _ne_land = rings
-    return _ne_land
+def ne_base() -> dict[str, list[tuple[tuple[float, float, float, float], list[array]]]]:
+    """The base map as web-mercator polygons: per kind [(bbox, [ring, ...]), ...], rings as
+    float32 [x0, y0, x1, y1, ...] (about 0.6 MB kept, read on first use)."""
+    global _ne_base
+    if _ne_base is None:
+        data = json.loads(NE_BASE_FILE.read_text())
+        out = {}
+        for kind in NE_KINDS:
+            polys = []
+            for poly in data.get(kind, ()):
+                rings = []
+                for flat in poly:
+                    ring = array("f")
+                    for i in range(0, len(flat) - 1, 2):
+                        ring.extend(lonlat_to_mercator(flat[i], flat[i + 1]))
+                    rings.append(ring)
+                xs, ys = rings[0][0::2], rings[0][1::2]
+                polys.append(((min(xs), min(ys), max(xs), max(ys)), rings))
+            out[kind] = polys
+        del data
+        _ne_base = out
+    return _ne_base
+
+
+def ne_land() -> list[tuple[tuple[float, float, float, float], list[array]]]:
+    """Natural Earth's land (see ne_base)."""
+    return ne_base()["land"]
+
+
+# --- the base map ----------------------------------------------------------------------
+# Where a tile has no Finnish chart data (blocks not fetched yet, or with no depth areas, as
+# inland), it gets Natural Earth's land, lakes and sea instead of a hole, so the chart reads
+# as one map at every zoom: no tan rectangles round the blocks that have data, no other map
+# showing through. With the foreign side on, the sea is only Finland's there (the depth model
+# draws the rest, and Natural Earth's coarse sea would cover its islands); land and lakes go
+# under everything, so they're drawn everywhere.
+BASE_ALL, BASE_FINNISH = "all", "fi"
+
+
+def _rects_without(rect: tuple[float, float, float, float],
+                   cut: tuple[float, float, float, float]) -> list[tuple[float, float, float, float]]:
+    """A rect less another, as up to four rects."""
+    x0, y0, x1, y1 = rect
+    cx0, cy0, cx1, cy1 = max(x0, cut[0]), max(y0, cut[1]), min(x1, cut[2]), min(y1, cut[3])
+    if cx0 >= cx1 or cy0 >= cy1:
+        return [rect]
+    out = [(x0, y0, x1, cy0), (x0, cy1, x1, y1), (x0, cy0, cx0, cy1), (cx1, cy0, x1, cy1)]
+    return [r for r in out if r[0] < r[2] and r[1] < r[3]]
+
+
+def _uncovered_rects(z: int, x: int, y: int, covered: set) -> list[tuple[float, float, float, float]]:
+    """The parts of a tile (with its buffer) whose blocks aren't in ``covered``, as rects in
+    tile units overlapping a unit where they meet (so no seam shows)."""
+    lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
+    keys = blocks_for(z, x, y)
+    if z >= BLOCK_Z:
+        return [] if keys[0] in covered else [(lo, lo, hi, hi)]
+    n = 2 ** (BLOCK_Z - z)
+    size = EXTENT / n
+    bx0, by0 = keys[0]
+    rects: list[tuple[float, float, float, float]] = []
+    open_runs: dict[tuple[int, int], int] = {}
+    for j in range(n + 1):
+        spans = set()
+        if j < n:
+            i = 0
+            while i < n:
+                if (bx0 + i, by0 + j) in covered:
+                    i += 1
+                    continue
+                i0 = i
+                while i < n and (bx0 + i, by0 + j) not in covered:
+                    i += 1
+                spans.add((i0, i))
+        for span in [sp for sp in open_runs if sp not in spans]:
+            j0 = open_runs.pop(span)
+            rects.append((lo if span[0] == 0 else span[0] * size - 1, lo if j0 == 0 else j0 * size - 1,
+                          hi if span[1] == n else span[1] * size + 1, hi if j == n else j * size + 1))
+        for span in spans:
+            open_runs.setdefault(span, j)
+    return rects
+
+
+def add_base(rows: dict[str, list], land: list, z: int, x: int, y: int, covered: set, mode: str,
+             own_lakes: set = frozenset()) -> None:
+    """The base map (see above) into a tile's rows ("lake" and "sea") and its land rings,
+    in the parts whose blocks aren't ``covered``. ``own_lakes``: blocks with the Land Survey's
+    lakes, which are better than Natural Earth's."""
+    rects = _uncovered_rects(z, x, y, covered)
+    if not rects:
+        return
+    minx, miny, maxx, maxy = _tile_mercator(z, x, y)
+    k = EXTENT / (maxx - minx)
+    tol = 0.5 if z < BLOCK_MIN_Z else 0.35
+    base = ne_base()
+    finnish: tuple[float, float, float, float] | None = None
+    if mode == BASE_FINNISH:
+        from .foreign import FOREIGN_AREA
+        (fx0, fy1), (fx1, fy0) = lonlat_to_mercator(*FOREIGN_AREA[:2]), lonlat_to_mercator(*FOREIGN_AREA[2:])
+        finnish = ((fx0 - minx) * k, (maxy - fy0) * k, (fx1 - minx) * k, (maxy - fy1) * k)
+
+    def clipped(kind: str, rect: tuple[float, float, float, float]) -> Iterator[list[list[int]]]:
+        """Each polygon of a kind cut to a rect (tile units), as flat rings."""
+        r0, r1 = minx + rect[0] / k, minx + rect[2] / k
+        r2, r3 = maxy - rect[3] / k, maxy - rect[1] / k
+        for (px0, py0, px1, py1), poly in base[kind]:
+            if px1 < r0 or px0 > r1 or py1 < r2 or py0 > r3:
+                continue
+            rings = []
+            for co in poly:
+                pts = [((co[i] - minx) * k, (maxy - co[i + 1]) * k) for i in range(0, len(co), 2)]
+                part = simplify(clip_ring(pts, *rect), tol)
+                if len(part) >= 3:
+                    flat = _flat(part)
+                    if len(flat) >= 6:
+                        rings.append(flat)
+            if rings:
+                yield rings
+
+    if own_lakes and z >= BLOCK_Z and blocks_for(z, x, y)[0] in own_lakes:
+        lake_rects = []
+    elif own_lakes:
+        lake_rects = _uncovered_rects(z, x, y, covered | set(own_lakes))
+    else:
+        lake_rects = rects
+    for rect in rects:
+        rect_land = [ring for rings in clipped("land", rect) for ring in rings]
+        land += rect_land
+        # The sea: the rect less the land, or Finland's own where the foreign side draws the rest.
+        outside = [rect] if finnish is None else _rects_without(rect, finnish)
+        for part in outside:
+            ring = _flat([(part[0], part[1]), (part[2], part[1]), (part[2], part[3]), (part[0], part[3])])
+            inner = rect_land if part == rect else \
+                [ring for rings in clipped("land", part) for ring in rings]
+            # (The land pieces don't overlap, and holes in them wind the other way.)
+            if _flat_area(ring) - abs(sum(_flat_area(r, True) for r in inner)) > 1:
+                rows.setdefault("sea", []).append([ring, *inner])
+        if finnish is not None:
+            inside = (max(rect[0], finnish[0]), max(rect[1], finnish[1]), min(rect[2], finnish[2]), min(rect[3], finnish[3]))
+            if inside[0] < inside[2] and inside[1] < inside[3]:
+                sea = [ring for rings in clipped("fi_sea", inside) for ring in rings]
+                if sea:
+                    rows.setdefault("sea", []).append(sea)
+    for rect in lake_rects:
+        for rings in clipped("lakes", rect):
+            rows.setdefault("lake", []).append([None, *rings])
 
 
 def _grid_fill(grid: bytearray, n: int, rings: Iterable[list[tuple[float, float]]], value: int) -> None:
@@ -1205,10 +1385,10 @@ def sea_gaps(bx: int, by: int, depth: Layer | None, tss: Layer | None = None,
     s = UNITS / (maxx - minx) / c  # cells a metre
     pad = m / s
     land = bytearray(n * n)
-    for (x0, y0, x1, y1), co in ne_land():
+    for (x0, y0, x1, y1), poly in ne_land():
         if x1 >= minx - pad and x0 <= maxx + pad and y1 >= miny - pad and y0 <= maxy + pad:
             _grid_fill(land, n, [[((co[i] - minx) * s + m, (maxy - co[i + 1]) * s + m)
-                                  for i in range(0, len(co), 2)]], 1)
+                                  for i in range(0, len(co), 2)] for co in poly], 1)
     # The uncovered places: runs of empty cells in each row, joined to the runs they touch
     # in the row above.
     runs: list[tuple[int, int, int]] = []
@@ -1313,8 +1493,13 @@ def sea_gaps(bx: int, by: int, depth: Layer | None, tss: Layer | None = None,
     return rects
 
 
-def keep_blocks(area: tuple[float, float, float, float] = KEEP_AREA) -> list[tuple[int, int]]:
-    """Blocks to keep on disk for an area, nearest the middle of the gulf first."""
+def keep_blocks() -> list[tuple[int, int]]:
+    """The blocks to keep on disk (see KEEP_FILE), in the order they're fetched."""
+    return [(bx, by) for bx, by in json.loads(KEEP_FILE.read_text())]
+
+
+def area_blocks(area: tuple[float, float, float, float] = KEEP_AREA) -> list[tuple[int, int]]:
+    """The blocks of an area (lon0, lat0, lon1, lat1) that could hold Finnish chart data."""
     n = 2**BLOCK_Z
     (x0, y1), (x1, y0) = lonlat_to_mercator(area[0], area[1]), lonlat_to_mercator(area[2], area[3])
     size = 2 * HALF / n
@@ -1388,7 +1573,7 @@ def build_into(b: LayerBuilder, bx: int, by: int, key: str, features: Iterable[d
     else:
         project = to_b
     kind, wanted = SOURCES[key][2], SOURCES[key][3]
-    margin = UNITS * TILE_BUFFER / EXTENT  # a block-sized tile's buffer, the largest needed
+    margin = LINE_MARGIN  # a block-sized tile's buffer, the largest needed
     lo, hi = -margin, UNITS + margin
     pm = POINT_MARGINS.get(key, BLOCK_POINT_MARGIN)
     plo, phi = -pm, UNITS + pm
@@ -2048,11 +2233,15 @@ def _run_pts(layer: Layer, v0: int, v1: int, x0: float, y0: float, x1: float, y1
     return out
 
 
-def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None] | Iterable[tuple]) -> dict[str, Any]:
+def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None] | Iterable[tuple],
+              base: str | None = None) -> dict[str, Any]:
     """The chart features for one map tile, in tile units (0..EXTENT, y down). ``blocks``
     may also be (key, data) pairs made as they're needed, so that overview tiles never
-    hold more than one block's data at a time."""
+    hold more than one block's data at a time. ``base``: BASE_ALL or BASE_FINNISH for the
+    base map where blocks have no depths (see add_base)."""
     tile: dict[str, Any] = {"e": EXTENT}
+    covered: set[tuple[int, int]] = set()  # blocks with depth areas
+    own_lakes: set[tuple[int, int]] = set()  # blocks with the Land Survey's lakes
     rows: dict[str, list] = {}  # layer -> [props, geometry...] or [x, y, props], before formatting
     lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
     tol = 0.35 if z >= 12 else 0.5
@@ -2106,7 +2295,10 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
         rect = (max(lo, -ox * k - 1), max(lo, -oy * k - 1),
                 min(hi, (UNITS - ox) * k + 1), min(hi, (UNITS - oy) * k + 1))
         gaps = None
+        if data.get("lake") is not None and data["lake"].n:
+            own_lakes.add((bx, by))
         if depth is not None and depth.n:
+            covered.add((bx, by))
             # Land is painted only where this block's depths are, so a block that
             # couldn't be fetched never shows up as solid land.
             if near_sea_border(bx, by):
@@ -2123,8 +2315,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 if gaps is None:
                     gaps = sea_gaps(bx, by, depth, data.get("tss"),
                                     GAP_CELLS if z >= BLOCK_MIN_Z else GAP_CELLS_OVERVIEW)
-        elif depth is not None:
-            # None of Traficom's depths here: open sea, unless it's on land.
+        elif depth is not None and not base:
+            # None of Traficom's depths here: open sea, unless it's on land (with the base
+            # map, Natural Earth's land and sea instead).
             gaps = data.get("_sea")
             if gaps is None:
                 gaps = sea_gaps(bx, by, None, data.get("tss"), GAP_CELLS_OVERVIEW)
@@ -2217,6 +2410,10 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                             rx0, ry0, rx1, ry1 = _bbox(part)
                             if rx1 - rx0 < XDEPTH_MIN_RING and ry1 - ry0 < XDEPTH_MIN_RING:
                                 continue  # a speck at this zoom: its black edge would make it a dot
+                        if j and key == "depth" and z < BLOCK_MIN_Z and len(part) >= 3:
+                            rx0, ry0, rx1, ry1 = _bbox(part)
+                            if rx1 - rx0 < HOLE_MIN and ry1 - ry0 < HOLE_MIN:
+                                continue  # an islet too small to see: water rather than a black dot
                         if len(part) >= 3:
                             rings.append(_flat(part))
                             if j and shore_area and _in_finnish_waters(bx, by, layer.co[2 * layer.vo[r]],
@@ -2236,10 +2433,18 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                             cy = sum(co[2 * v + 1] for v in range(v0, v1)) / (v1 - v0)
                             rows.setdefault("rockpt", []).append([round((cx - ox) * k), round((cy - oy) * k), p])
                     continue
+                smooth = False
                 if key == "contour":
                     d = _num(p[0])
                     if d not in CONTOURS or (z < 12 and d < 10):
                         continue
+                    if z < BLOCK_MIN_Z:
+                        # Zoomed out, only contours that make a shape: no rings round single
+                        # shoals (a piece reaching the block's margin is part of a longer one).
+                        if max(fx1 - fx0, fy1 - fy0) * k < CONTOUR_MIN_AT.get(z, CONTOUR_MIN) and fx0 > -LINE_MARGIN + 1 \
+                                and fy0 > -LINE_MARGIN + 1 and fx1 < UNITS + LINE_MARGIN - 1 and fy1 < UNITS + LINE_MARGIN - 1:
+                            continue
+                        smooth = True
                 if key == "fline" and z < 11 and p[0] is None:
                     continue  # boat routes only once zoomed in
                 if key == "height" and z < 15 and not _multiple(_height_m(p[0]), HEIGHT_STEP.get(z, 20)):
@@ -2254,13 +2459,16 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     solid = [_flat(simplify(piece, tol)) for stretch in solids[i]
                              for piece in clip_line(conv(stretch), lo, lo, hi, hi) if len(piece) >= 2]
                 for part in clip_line(conv(pts), lo, lo, hi, hi):
-                    flat = _flat(simplify(part, tol))
+                    flat = _flat(chaikin(simplify(part, tol), tol) if smooth else simplify(part, tol))
                     if len(flat) >= 4:
                         if solid is None:
                             out.append([p, flat])
                         else:
                             out.append([p, flat, solid])
                             solid = []
+    base_land: list = []
+    if base:
+        add_base(rows, base_land, z, x, y, covered, base, own_lakes)
     if land_rects or sea_blocks or gap_blocks:
         # Land: the Finnish area, painted under the depth areas.
         minx, miny, maxx, maxy = _tile_mercator(z, x, y)
@@ -2283,6 +2491,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                 rows.setdefault("sea", []).append(sea)
         if land:
             tile["land"] = land
+    if base_land:
+        tile["land"] = base_land + tile.get("land", [])
     if rows.get("xland"):
         # Land outside Finland, under the foreign depth areas (see foreign.py).
         tile["land"] = tile.get("land", []) + [ring for _, *rings in rows["xland"] for ring in rings]
@@ -2980,6 +3190,115 @@ def overview_blocks(files: dict[tuple[int, int], list[Path]]) -> Iterator[tuple[
         yield key, layers
 
 
+# --- zoomed far out (zooms 5-7) --------------------------------------------------------
+# Tiles below OVERVIEW_MIN_Z are made from their four children (zoom 7 from four zoom-8
+# overview tiles, and so on), each halved and cut to its quarter: one child at a time, so a
+# zoom-5 tile over half of Finland never holds more than itself and one child, and it reads
+# no blocks. Further out fewer contours, smoother, and only the major lights and the seas'
+# names, as on small-scale charts. Made tiles are kept on disk (see VectorChart._overview_body).
+PYRAMID_Z = OVERVIEW_MIN_Z - 1  # the closest of them: coastal towns named too
+PYRAMID_CONTOURS = {7: (20, 50, 100, 200), 6: (50, 100, 200), 5: (50, 100, 200)}
+PYRAMID_AIDS = {7: ("m",)}  # aid types kept (from MAJOR_AIDS); none further out
+POINT_REACH = 32  # tile units a point (a label) is kept past the tile's edge
+
+
+def _halved(flat: list, ox: float, oy: float) -> list[tuple[float, float]]:
+    return [(ox + flat[i] / 2, oy + flat[i + 1] / 2) for i in range(0, len(flat) - 1, 2)]
+
+
+def merge_tiles(z: int, children: Iterable[tuple[int, int, dict]]) -> dict[str, Any]:
+    """A tile from its four children's tiles (quarter dx, dy in 0..1, and the tile), each
+    halved into its quarter (see above). The children are read as they come."""
+    lo, hi = -TILE_BUFFER, EXTENT + TILE_BUFFER
+    half = EXTENT / 2
+    tol = 0.5
+    out: dict[str, list] = {}
+    covers: list[float] = []
+    contours = set(PYRAMID_CONTOURS.get(z, OVERVIEW_CONTOURS))
+    aids = PYRAMID_AIDS.get(z, ())
+    for dx, dy, child in children:
+        ox, oy = dx * half, dy * half
+        # The child's quarter: areas a unit past where children meet (no seam shows), lines
+        # just to it (they meet end to end), and out to the buffer at the tile's own edges.
+        area = (lo if dx == 0 else half - 1, lo if dy == 0 else half - 1,
+                half + 1 if dx == 0 else hi, half + 1 if dy == 0 else hi)
+        line = (lo if dx == 0 else half, lo if dy == 0 else half, half if dx == 0 else hi, half if dy == 0 else hi)
+        point = (-POINT_REACH if dx == 0 else half, -POINT_REACH if dy == 0 else half,
+                 half if dx == 0 else EXTENT + POINT_REACH, half if dy == 0 else EXTENT + POINT_REACH)
+        ce = child.get("e", EXTENT)
+        clo, chi = -TILE_BUFFER + 1, ce + TILE_BUFFER - 1
+
+        def rings_of(rings: list) -> list:
+            kept = []
+            for flat in rings:
+                if not isinstance(flat, list) or len(flat) < 6:
+                    continue
+                part = simplify(clip_ring(_halved(flat, ox, oy), *area), tol)
+                if len(part) < 3:
+                    continue
+                x0, y0, x1, y1 = _bbox(part)
+                if x1 - x0 < 1 and y1 - y0 < 1:
+                    continue  # smaller than a pixel
+                f = _flat(part)
+                if len(f) >= 6:
+                    kept.append(f)
+            return kept
+
+        def lines_of(flat: list, smooth: bool = False) -> list:
+            pieces = []
+            for part in clip_line(_halved(flat, ox, oy), *line):
+                f = _flat(chaikin(simplify(part, tol), tol) if smooth else simplify(part, tol))
+                if len(f) >= 4:
+                    pieces.append(f)
+            return pieces
+
+        if "cover" in child:
+            covers.append(child["cover"])
+        for key, value in child.items():
+            if key in ("e", "cover") or not isinstance(value, list):
+                continue
+            target = out.setdefault(key, [])
+            if key == "land":
+                target += rings_of(value)
+            elif key == "lake":
+                target += [r for r in (rings_of(rings) for rings in value) if r]
+            elif key in ("depth", "xdepth"):
+                target += [[row[0], *r] for row in value if (r := rings_of(row[1:]))]
+            elif key == "tss":
+                target += [[row[0], row[1], *r] for row in value if (r := rings_of(row[2:]))]
+            elif key == "contour":
+                for depth, flat in value:
+                    if depth not in contours:
+                        continue
+                    xs, ys = flat[0::2], flat[1::2]
+                    # A small one wholly inside the child (not cut at its edge) is left out.
+                    if max(max(xs) - min(xs), max(ys) - min(ys)) / 2 < CONTOUR_MIN \
+                            and min(xs) > clo and min(ys) > clo and max(xs) < chi and max(ys) < chi:
+                        continue
+                    target += [[depth, f] for f in lines_of(flat, True)]
+            elif key in ("fline", "tssline"):
+                target += [[*row[:-1], f] for row in value for f in lines_of(row[-1])]
+            elif key in ("aid", "name"):
+                for row in value:
+                    if key == "aid" and row[2] not in aids:
+                        continue
+                    if key == "name" and (row[2] not in BIG_WATERS if z < PYRAMID_Z else
+                                          row[2] not in BIG_WATERS and row[2] not in COASTAL_TOWNS):
+                        continue
+                    px, py = ox + row[0] / 2, oy + row[1] / 2
+                    if point[0] <= px < point[2] and point[1] <= py < point[3]:
+                        target.append([round(px), round(py), *row[2:]])
+        del child
+    tile: dict[str, Any] = {"e": EXTENT, **{k: v for k, v in out.items() if v}}
+    if "depth" in tile:
+        tile["depth"].sort(key=lambda row: -row[0])  # deep first
+    if "xdepth" in tile:
+        tile["xdepth"].sort(key=lambda row: row[0])  # shallow first
+    if covers:
+        tile["cover"] = round(sum(covers) / len(covers), 2)
+    return tile
+
+
 class VectorChart:
     def __init__(self, directory: Path, session: aiohttp.ClientSession | None,
                  fetch_layer: Callable[[str, tuple[float, float, float, float]], Any] | None = None,
@@ -3132,6 +3451,10 @@ class VectorChart:
             sum(hit[1].nbytes() for hit in self._coast.values())
         return {"blocks": self._memory_bytes, "heritage": heritage, "grids": self.foreign.grid_bytes()}
 
+    def _base(self) -> str:
+        """The base map's kind (see add_base): Finland's sea only, where the foreign side draws."""
+        return BASE_FINNISH if self.foreign.enabled else BASE_ALL
+
     def _rev(self) -> str:
         """Changes whenever tiles would: a new tile format, or parts added or dropped."""
         return f"{TILE_REV}{''.join(p[:1] for p in self._parts())}"
@@ -3269,61 +3592,97 @@ class VectorChart:
             return
         self._set_caps(service, names)
 
-    def _fresh(self, key: tuple[int, int]) -> bool:
-        for part in self._parts():
+    def _fresh(self, key: tuple[int, int], parts: Iterable[str] | None = None) -> bool:
+        for part in self._parts() if parts is None else parts:
             age = _age(self._path(*key, part))
             if age is None or age >= MAX_AGE or self._path(*key, part, OLD_SUFFIX).exists():
                 return False
         return True
 
-    def _settled(self, key: tuple[int, int]) -> bool:
+    def _settled(self, key: tuple[int, int], parts: Iterable[str] | None = None) -> bool:
         """Fresh, or whatever isn't failed recently and will be tried again later: what the
         download progress counts, so one service being down doesn't hold it at nought."""
         now = time.time()
-        for part in self._parts():
+        for part in self._parts() if parts is None else parts:
             age = _age(self._path(*key, part))
             if (age is None or age >= MAX_AGE) and now - self._failed.get((*key, part), 0) >= FAILED_RETRY:
                 return False
         return True
 
     async def keep(self, blocks: list[tuple[int, int]] | None = None) -> None:
-        """Download every block of KEEP_AREA to disk, one at a time, and keep them fresh.
+        """Download every block of Finnish waters (keep_blocks) to disk, one at a time, and
+        keep them fresh: first the parts the zoomed-out chart is drawn from, everywhere (so
+        the whole country's overview fills in within hours), then the rest.
 
         Runs until cancelled. Panel requests still go first: they queue for the same
         one-download-at-a-time lock, and this only asks for its next block after the
-        previous one is done. Nothing is read into memory here.
+        previous one is done. Nothing is read into memory here. Zoomed-out tiles are made
+        again as blocks come in (see precut), so zooming out stays quick.
         """
         blocks = keep_blocks() if blocks is None else blocks
         try:
             while True:
-                done = sum(self._settled(key) for key in blocks)
-                self.keep_status = {"total": len(blocks), "done": done, "running": done < len(blocks),
-                                    "failed": 0, "last_ok": self.keep_status and self.keep_status.get("last_ok")}
-                failures = 0
-                for key in blocks:
-                    await self._ensure_heritage(*key)
-                    if self._fresh(key):
-                        if await self._gap_filled(self._path(*key)):
-                            await self._ensure_part(*key, "")  # fetched again without them
-                            await asyncio.sleep(KEEP_PAUSE)
-                        continue
-                    self._wanted[key] = math.inf  # never skipped as "the map moved on"
-                    ok = True
-                    for part in self._parts():
-                        ok = await self._ensure_part(*key, part) and ok
-                    ok = ok and self._fresh(key)
-                    self.keep_status["done"] = sum(self._settled(k) for k in blocks)
-                    self.keep_status["failed"] = sum(not self._fresh(k) and self._settled(k) for k in blocks)
-                    if ok:
-                        self.keep_status["last_ok"] = time.time()
-                    failures = 0 if ok else failures + 1
-                    # Several failures in a row back off, so a service that's down isn't hammered;
-                    # one failed area just moves on to the next.
-                    await asyncio.sleep(KEEP_PAUSE if failures < 3 else min(600, 60 * (failures - 2)))
+                for stage in ("overview", "detail"):
+                    await self._keep_stage(blocks, stage)
                 self.keep_status["running"] = False
+                await self.precut(blocks)
                 await asyncio.sleep(KEEP_RECHECK)
         finally:
             self.keep_status = None
+
+    async def _keep_stage(self, blocks: list[tuple[int, int]], stage: str) -> None:
+        def parts() -> list[str]:
+            return [p for p in self._parts() if p in OVERVIEW_PARTS] if stage == "overview" else self._parts()
+
+        settled = set(await in_thread(lambda: [k for k in blocks if self._settled(k, parts())]))
+        failed: set[tuple[int, int]] = set()
+        self.keep_status = {"total": len(blocks), "done": len(settled), "running": len(settled) < len(blocks),
+                            "stage": stage, "failed": 0,
+                            "last_ok": self.keep_status and self.keep_status.get("last_ok")}
+        failures = 0
+        since_precut = 0
+        for key in blocks:
+            if stage == "detail":
+                await self._ensure_heritage(*key)
+            if self._fresh(key, parts()):
+                if await self._gap_filled(self._path(*key)):
+                    await self._ensure_part(*key, "")  # fetched again without them
+                    await asyncio.sleep(KEEP_PAUSE)
+                continue
+            self._wanted[key] = math.inf  # never skipped as "the map moved on"
+            ok = True
+            for part in parts():
+                ok = await self._ensure_part(*key, part) and ok
+            ok = ok and self._fresh(key, parts())
+            settled.add(key) if self._settled(key, parts()) else settled.discard(key)
+            failed.discard(key) if ok else failed.add(key)
+            self.keep_status["done"] = len(settled)
+            self.keep_status["failed"] = len(failed & settled)
+            if ok:
+                self.keep_status["last_ok"] = time.time()
+            failures = 0 if ok else failures + 1
+            since_precut += 1
+            if stage == "overview" and since_precut >= PRECUT_EVERY:
+                since_precut = 0
+                await self.precut(blocks)
+            # Several failures in a row back off, so a service that's down isn't hammered;
+            # one failed area just moves on to the next.
+            await asyncio.sleep(KEEP_PAUSE if failures < 3 else min(600, 60 * (failures - 2)))
+        if since_precut:
+            await self.precut(blocks)
+
+    async def precut(self, blocks: list[tuple[int, int]]) -> None:
+        """Make the zoomed-out tiles over these blocks again where blocks in them changed,
+        closest first (the farther-out ones are made from those), so zooming out finds
+        them made. Only tiles whose blocks changed are cut; the rest are a few file checks."""
+        for z in range(OVERVIEW_MIN_Z + 1, MIN_Z - 1, -1):
+            s = BLOCK_Z - z
+            for x, y in sorted({(bx >> s, by >> s) for bx, by in blocks}):
+                if z >= OVERVIEW_MIN_Z:
+                    await self._overview_body(z, x, y, None)
+                else:
+                    await self._merge_children(z, x, y)  # only made again if a child was
+                await asyncio.sleep(0)
 
     async def tile(self, z: int, x: int, y: int,
                    wait: float | None = None) -> tuple[dict[str, Any], bool] | None:
@@ -3368,7 +3727,7 @@ class VectorChart:
             blocks[key] = data
         read_at = time.time()  # each part written since was dropped from RAM (see _written)
         async with self._cutting:  # one tile cut at a time keeps the web server responsive
-            tile = await in_thread(make_tile, z, x, y, blocks)
+            tile = await in_thread(make_tile, z, x, y, blocks, self._base())
         return tile, regions_ok and all(b is not None and b["_complete"] for b in loaded), read_at
 
     async def tile_gz(self, z: int, x: int, y: int,
@@ -3376,8 +3735,8 @@ class VectorChart:
         """The tile as gzipped JSON, and whether it's complete: from the disk cache when the
         blocks it's cut from haven't changed since, else cut (see ``tile``)."""
         if z < BLOCK_MIN_Z:
-            result = await self.tile(z, x, y, wait)
-            return None if result is None else (await in_thread(_gzip_json, result[0]), result[1])
+            self._touch()
+            return await self._overview_body(z, x, y, wait)
         self._touch()
         path = self._tile_path(z, x, y)
         sources = self._tile_sources(z, x, y)
@@ -4011,10 +4370,21 @@ class VectorChart:
 
     async def _overview_tile(self, z: int, x: int, y: int,
                              wait: float | None) -> tuple[dict[str, Any], bool] | None:
+        result = await self._overview_body(z, x, y, wait)
+        if result is None:
+            return None
+        body, complete = result
+        return await in_thread(lambda: json.loads(gzip.decompress(body))), complete
+
+    async def _overview_body(self, z: int, x: int, y: int,
+                             wait: float | None) -> tuple[bytes, bool] | None:
+        """A zoomed-out tile (below BLOCK_MIN_Z) as gzipped JSON, as kept on disk (served as
+        it is, so zooming out stays quick), and whether it's complete."""
         key = ("overview", z, x, y)
         task = self._fetching.get(key)
         if task is None:
-            task = asyncio.create_task(self._make_overview_tile(z, x, y))
+            make = self._make_overview_tile if z >= OVERVIEW_MIN_Z else self._make_pyramid_tile
+            task = asyncio.create_task(make(z, x, y))
             self._fetching[key] = task
             task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
         if not task.done():
@@ -4023,11 +4393,46 @@ class VectorChart:
                 return None
         return task.result()
 
-    async def _make_overview_tile(self, z: int, x: int, y: int) -> tuple[dict[str, Any], bool]:
+    def _overview_path(self, z: int, x: int, y: int) -> Path:
+        """Where a zoomed-out tile is kept (gzipped JSON); what it was made from is in the
+        .json next to it."""
+        return self.dir / "overview" / self._rev() / str(z) / f"{x}_{y}.gz"
+
+    async def _overview_kept(self, z: int, x: int, y: int, body: bool = True) -> tuple[bytes, dict] | None:
+        """A kept zoomed-out tile and what it was made from (with ``body`` False, just that)."""
+        path = self._overview_path(z, x, y)
+
+        def read() -> tuple[bytes, dict] | None:
+            try:
+                meta = json.loads(path.with_suffix(".json").read_text())
+                return path.read_bytes() if body else b"", meta
+            except (OSError, ValueError):
+                return None
+
+        return await in_thread(read)
+
+    async def _keep_overview(self, z: int, x: int, y: int, body: bytes | None, meta: dict) -> None:
+        """Keep a zoomed-out tile on disk (with ``body`` None, only what it was made from)."""
+        path = self._overview_path(z, x, y)
+
+        def write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            if body is not None:
+                tmp.write_bytes(body)
+                os.replace(tmp, path)
+            tmp.write_text(json.dumps(meta))
+            os.replace(tmp, path.with_suffix(".json"))
+
+        try:
+            await in_thread(write)
+        except OSError as err:
+            _LOGGER.warning("Could not store chart overview tile %s/%s/%s: %s", z, x, y, err)
+
+    async def _make_overview_tile(self, z: int, x: int, y: int) -> tuple[bytes, bool]:
         """The tile stored on disk while none of its blocks changed (or it was cut less
         than OVERVIEW_RECUT ago), else cut again from the blocks' overview levels."""
         parts = [p for p in self._parts() if p in OVERVIEW_PARTS]
-        rev = self._rev()
 
         def scan() -> tuple[dict[tuple[int, int], list[Path]], float]:
             files: dict[tuple[int, int], list[Path]] = {}
@@ -4049,16 +4454,13 @@ class VectorChart:
 
         files, newest = await in_thread(scan)
         have = [list(k) for k in files]
-        path = self.dir / "overview" / f"{z}_{x}_{y}.json.gz"
-        try:
-            cached = await in_thread(_read_json, path)
-        except (OSError, ValueError, EOFError):
-            cached = None
-        if cached is not None and cached.get("rev") == rev:
-            fresh = cached.get("newest", 0) >= newest and cached.get("have") == have \
-                and cached.get("foreign", True)  # a depth model that couldn't be had is asked for again
-            if fresh or time.time() - cached.get("made", 0) < OVERVIEW_RECUT:
-                return cached["tile"], cached["complete"] and fresh
+        kept = await self._overview_kept(z, x, y)
+        if kept is not None:
+            body, meta = kept
+            fresh = meta.get("newest", 0) >= newest and meta.get("have") == have \
+                and meta.get("foreign", True)  # a depth model that couldn't be had is asked for again
+            if fresh or time.time() - meta.get("made", 0) < OVERVIEW_RECUT:
+                return body, meta.get("complete", False) and fresh
         # Blocks that may hold Finnish data, and how many of them are there.
         near = await in_thread(lambda: [k for k in blocks_for(z, x, y) if near_finland(block_bounds(*k))])
         got = sum(k in files for k in near)
@@ -4069,7 +4471,7 @@ class VectorChart:
                 yield key, layers
 
         async with self._cutting:
-            tile = await in_thread(make_tile, z, x, y, with_sea(overview_blocks(files)))
+            tile = await in_thread(make_tile, z, x, y, with_sea(overview_blocks(files)), self._base())
         if near:
             tile["cover"] = round(got / len(near), 2)
         complete = got == len(near)
@@ -4078,14 +4480,56 @@ class VectorChart:
         foreign, foreign_ok = await self.foreign.overview(z, x, y)
         add_overview(tile, foreign)
         complete = complete and foreign_ok
-        if files or foreign:
-            try:
-                await in_thread(_write_json, path, {"rev": rev, "newest": newest, "have": have,
-                                                            "made": time.time(), "tile": tile,
-                                                            "complete": complete, "foreign": foreign_ok})
-            except OSError as err:
-                _LOGGER.warning("Could not store chart overview tile %s/%s/%s: %s", z, x, y, err)
-        return tile, complete
+        body = await in_thread(_gzip_json, tile)
+        del tile
+        await self._keep_overview(z, x, y, body, {"newest": newest, "have": have, "made": time.time(),
+                                                  "complete": complete, "foreign": foreign_ok})
+        return body, complete
+
+    async def _make_pyramid_tile(self, z: int, x: int, y: int) -> tuple[bytes, bool]:
+        """A tile below OVERVIEW_MIN_Z (see merge_tiles): as kept on disk while it's less than
+        PYRAMID_RECUT old; older, it's shown as it was while it's made again behind."""
+        kept = await self._overview_kept(z, x, y)
+        if kept is not None:
+            body, meta = kept
+            if time.time() - meta.get("made", 0) >= PYRAMID_RECUT:
+                key = ("remake", z, x, y)
+                if key not in self._fetching:
+                    task = asyncio.create_task(self._merge_children(z, x, y))
+                    self._fetching[key] = task
+                    task.add_done_callback(lambda _t, key=key: self._fetching.pop(key, None))
+                return body, False
+            return body, meta.get("complete", False)
+        return await self._merge_children(z, x, y)
+
+    async def _merge_children(self, z: int, x: int, y: int) -> tuple[bytes, bool]:
+        """Make a tile from its children (see merge_tiles), unless none of them was made
+        again since it was (then it's kept as it is, for another PYRAMID_RECUT)."""
+        kept = await self._overview_kept(z, x, y)
+        complete = True
+        children = []
+        newest = 0.0
+        for dy in (0, 1):
+            for dx in (0, 1):
+                cx, cy = 2 * x + dx, 2 * y + dy
+                body, ok = await self._overview_body(z + 1, cx, cy, None)
+                meta = await self._overview_kept(z + 1, cx, cy, body=False)
+                complete = complete and ok
+                newest = max(newest, meta[1].get("made", 0) if meta else time.time())
+                children.append((dx, dy, body))
+        if kept is not None and kept[1].get("newest", 0) >= newest and kept[1].get("complete") == complete:
+            await self._keep_overview(z, x, y, None, {**kept[1], "made": time.time()})
+            return kept[0], complete
+
+        def merge() -> bytes:
+            tile = merge_tiles(z, ((dx, dy, json.loads(gzip.decompress(body))) for dx, dy, body in children))
+            return _gzip_json(tile)
+
+        async with self._cutting:
+            body = await in_thread(merge)
+        del children
+        await self._keep_overview(z, x, y, body, {"made": time.time(), "newest": newest, "complete": complete})
+        return body, complete
 
     # --- heritage sites ---
 
@@ -4236,7 +4680,7 @@ class VectorChart:
 
     def prune(self) -> None:
         """Drop blocks nobody has looked at for two refresh periods."""
-        for root in (self.dir / "blocks", self.dir / "heritage", self.dir / "overview"):
+        for root in (self.dir / "blocks", self.dir / "heritage"):
             if not root.exists():
                 continue
             for p in root.iterdir():
@@ -4245,6 +4689,16 @@ class VectorChart:
                         p.unlink()
                 except FileNotFoundError:
                     pass
+        # Zoomed-out tiles: those of other revisions (and of the old one-file format) go.
+        root = self.dir / "overview"
+        rev = self._rev()
+        for p in root.iterdir() if root.exists() else ():
+            if p.name == rev:
+                continue
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
         self._prune_tiles()
         # Foreign OpenStreetMap answers are only kept while their blocks are being built.
         from .foreign import OSM_MAX_AGE

@@ -102,7 +102,7 @@
   };
 
   const options = { heritage: true };
-  let serverMinZoom = 8; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
+  let serverMinZoom = 5; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
 
   // --- drawing helpers ------------------------------------------------------------
 
@@ -148,6 +148,23 @@
     ctx.setLineDash(dash || []);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  // An area's outline without the straight edges where it was cut (at a tile's or a block's
+  // edge, or where the base map's pieces meet), which would show as lines across it.
+  function strokeOutline(ctx, rings, color, width) {
+    ctx.beginPath();
+    for (const ring of rings) {
+      for (let i = 0, n = ring.length; i < n; i += 2) {
+        const x0 = ring[i], y0 = ring[i + 1], x1 = ring[(i + 2) % n], y1 = ring[(i + 3) % n];
+        if (x0 === x1 || y0 === y1) continue;
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+      }
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
   }
 
   function strokeRings(ctx, rings, color, width, dash) {
@@ -1713,7 +1730,7 @@
     for (const rings of data.lake || []) {
       if (!Array.isArray(rings) || !rings.length) continue;
       fillRings(ctx, rings, C.lake);
-      strokeRings(ctx, rings, C.contour, 0.8 * unit);
+      strokeOutline(ctx, rings, C.contour, (overview ? 0.6 : 0.8) * unit);
     }
     const heightsLabelled = new Set();
     for (const [metres, line] of data.height || []) {
@@ -2435,7 +2452,7 @@
   const layers = new Set();
 
   const ChartLayer = L.GridLayer.extend({
-    options: { minZoom: 8, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
+    options: { minZoom: 5, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
 
     createTile(coords, done) {
       const dpr = pixelRatio();

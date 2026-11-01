@@ -17,11 +17,17 @@ sidebar.
     data, like the Luotsi app: Traficom's depth areas, contours and soundings,
     and Väylävirasto's fairways, buoys, beacons, lights and light sectors, in
     the colours and symbols of Finnish paper charts. It is seamless, with no
-    sheet edges. Tap a buoy, beacon or light to see what it is. Zoomed far
-    out it shows Traficom's overview chart. The first time you look at an
-    area the add-on downloads its data, so it takes a moment to appear;
-    **Keep chart on the NAS** (menu → Settings → Chart storage) downloads the whole Gulf
-    of Finland ahead. With a free Land Survey (Maanmittauslaitos) API key,
+    sheet edges. Tap a buoy, beacon or light to see what it is. It is drawn at
+    every zoom, all of Finland at once included: zoomed out it shows fewer and
+    smoother depth contours, only the major lights and the seas' names, as
+    small-scale charts do, and where the chart has no data yet (or none at all,
+    inland) the land, islands and lakes come from Natural Earth's world map, so
+    there are no gaps or squares. The first time you look at an area the add-on
+    downloads its data, so it takes a moment to appear; **Keep chart on the
+    NAS** (menu → Settings → Chart storage) downloads all Finnish waters ahead:
+    the Gulf of Finland first, then the Archipelago Sea and Åland, the Gulf of
+    Bothnia and the charted lakes, first what the zoomed-out chart needs
+    everywhere and then the detail. With a free Land Survey (Maanmittauslaitos) API key,
     pasted in the same place, it also shows rocks, rock clusters, wrecks and
     place names.
     Outside Finnish waters (the Estonian coast, the Åland Sea and the Swedish
@@ -261,8 +267,9 @@ remembered by each browser or phone on its own. A layer whose source can't be
 reached says so under its switch and in Settings, and tries again a few
 minutes later.
 
-**Wind forecast** shows FMI's HARMONIE forecast for the Gulf of Finland (Hanko and
-the Estonian islands to Vyborg Bay) for the next 48 hours, hour by hour on the time
+**Wind forecast** shows FMI's HARMONIE forecast over Finnish waters (the Gulf of
+Finland from the Estonian islands to Vyborg Bay, the Åland Sea and the Archipelago Sea,
+and the Gulf of Bothnia up to Tornio) for the next 48 hours, hour by hour on the time
 bar. An arrow at each forecast point, about 30 km apart, points where the wind blows
 and is coloured by speed like the weather stations; from zoom 9 the speed is written
 beside it, from zoom 10 with the gust in brackets. Moving wind lines follow the wind
@@ -416,7 +423,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 64 MB. Weather layers are only fetched for the layers switched on while the panel is open (the wind forecast as three requests to FMI at most every 3 hours, kept as a 100 kB file and in memory only while in use); their tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
+(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 512 MB (the zoomed-out ones, about 10 MB for all of Finland, are kept apart and served as they are). Weather layers are only fetched for the layers switched on while the panel is open (the wind forecast as seven requests to FMI at most every 3 hours, kept as a 250 kB file and in memory only while in use); their tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
 
 ## If a ship never shows up
 
@@ -437,8 +444,8 @@ by name.
   digital terrain model (EMODnet Bathymetry Consortium, CC BY 4.0); coastline, sea marks, lights, routeing
   and names © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, with
   [OpenSeaMap](https://www.openseamap.org)'s sea mark tagging, via the Overpass API.
-- Drawn chart, telling land from open sea where Traficom's depths stop short: [Natural Earth](https://www.naturalearthdata.com)
-  1:10m land (public domain).
+- Drawn chart, the base map (land, islands and lakes where the chart has no data) and telling land from open sea where Traficom's depths stop short: [Natural Earth](https://www.naturalearthdata.com)
+  1:10m land, minor islands and lakes (public domain).
 - Aircraft: [adsb.fi](https://adsb.fi) open data (personal, non-commercial use).
 - Maps, ocean map and imagery © Esri, GEBCO, NOAA, HERE, Garmin, © OpenStreetMap contributors; sea marks © OpenSeaMap;
   nautical chart and depth data © Traficom (Traficom hydrographic data

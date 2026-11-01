@@ -19,16 +19,17 @@ def test_parse_keeps_open_faults_in_the_area():
     data = {"features": [
         feature(24.36, 59.92),
         feature(24.4, 59.9, id=8, fixed=True),  # fixed already
-        feature(21.0, 60.4, id=9),  # Archipelago Sea, outside
+        feature(18.0, 59.3, id=9),  # off Stockholm, outside
+        feature(21.0, 60.4, id=11),  # the Archipelago Sea, inside since the chart covers all of Finland
         feature(24.5, 59.95, id=10, aton_name_fi="Kallbådan", aton_name_sv="Kallbådan grund"),
         {"type": "Feature", "geometry": None, "properties": {}},
     ]}
     rows = parse_faults(data)
-    assert [r["id"] for r in rows] == [7, 10]
+    assert [r["id"] for r in rows] == [7, 11, 10]
     first = rows[0]
     assert first["name"] == "Rönnskär" and first["fairway"] == "Porkkalan väylä" and first["type"] == "Unlit"
     assert first["since"] == 1791007920.0
-    assert rows[1]["name"] == "Kallbådan / Kallbådan grund"
+    assert rows[2]["name"] == "Kallbådan / Kallbådan grund"
     assert parse_faults(None) == [] and parse_faults({}) == []
 
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.27.0
+
+- The drawn chart now covers all of Finland and is drawn at every zoom, down to the
+  whole country on one screen. The scanned overview chart no longer shows under it when
+  zoomed out.
+- Zoomed out, the chart looks like a small-scale chart: fewer depth contours (no rings
+  round every single shoal), smoothed, deeper ones only as you zoom further out, and only
+  the major lights and the seas' names.
+- Where the chart has no data yet, or none at all (inland), the land, islands and lakes
+  are drawn from Natural Earth's world map. So there are no tan squares round the areas
+  already downloaded, no other map showing through, and the lakes are blue.
+- **Keep chart on the NAS** now downloads all Finnish waters: the Gulf of Finland first
+  (what was kept before), then the Archipelago Sea and Åland, the Bothnian Sea, the Bay of
+  Bothnia and the charted lakes, 2,645 areas in all. It first fetches what the zoomed-out
+  chart needs everywhere, so the whole country fills in within hours, then the detail. The
+  first full download takes a day or so; the chart works meanwhile.
+- Zooming out stays quick: the zoomed-out tiles are made in the background as areas come
+  in and kept on the NAS (about 10 MB for all of Finland), and sent as they are. More
+  disk for drawn tiles you've viewed (512 MB, was 64 MB); RAM use is unchanged.
+- Aid-to-navigation faults, the wind forecast and rescue aircraft now cover the whole
+  coast too, not just the Gulf of Finland.
+
 ## 0.26.8
 
 - Fixes the made-up islands still left out at sea on the drawn chart (off Bogskär, south

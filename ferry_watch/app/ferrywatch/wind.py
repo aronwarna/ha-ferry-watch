@@ -1,15 +1,15 @@
-"""The wind forecast as a map overlay (card T5): Windy-style wind over the Gulf of Finland
-for the next 48 hours.
+"""The wind forecast as a map overlay (card T5): Windy-style wind over Finnish waters (the
+Gulf of Finland, the Archipelago Sea and Åland, the Gulf of Bothnia) for the next 48 hours.
 
 FMI's HARMONIE forecast (run by FMI and its Nordic partners as MEPS) from the open WFS:
-a point query (multipointcoverage) on a regular grid of 126 points, about 30 km apart,
+a point query (multipointcoverage) on a regular grid of about 300 points, 30 km apart,
 asking wind speed, gust and direction for every hour of the next two days. One run is
 fetched at most every 3 hours, only while a panel has the layer on, and kept as a small
-file on disk (about 100 KB). The panel draws an arrow per point and animated wind lines
+file on disk (about 250 KB). The panel draws an arrow per point and animated wind lines
 interpolated between them.
 
-The grid is asked for in three requests of 42 points, so no answer is big (about 150 KB
-of XML each). If FMI doesn't know the HARMONIE stored query any more, the MEPS one (its
+The grid is asked for in requests of 42 points, one after the other, so no answer is big
+(about 150 KB of XML each). If FMI doesn't know the HARMONIE stored query any more, the MEPS one (its
 newer name, same model) is tried.
 
 The forecast is checked against FMI's coastal stations when they have been read anyway
@@ -45,13 +45,32 @@ MAX_BYTES = 2 * 1024 * 1024  # per answer; 42 points x 49 hours is about 150 KB
 MATCH = 0.06  # degrees: an answer's point this close to an asked one is that one
 ATTRIBUTION = "Wind forecast: Finnish Meteorological Institute, HARMONIE (CC BY 4.0)"
 
-# The grid: 7 rows of 18 points, south to north and west to east, from Hanko and the
-# Estonian islands to Vyborg Bay (about 30 km apart: 0.3 degrees of latitude, 0.55 of
-# longitude).
-LATS = [round(59.0 + 0.3 * i, 2) for i in range(7)]
-LONS = [round(21.0 + 0.55 * i, 2) for i in range(18)]
-GRID = [(lat, lon) for lat in LATS for lon in LONS]
-BOUNDS = (LATS[0], LONS[0], LATS[-1], LONS[-1])
+# The grid: points about 30 km apart (0.3 degrees of latitude, 0.55 of longitude), south to
+# north and west to east, over Finnish waters: the Gulf of Finland and the Estonian islands
+# to Vyborg Bay, the Åland Sea and the Archipelago Sea, and up the Gulf of Bothnia between
+# the Swedish and the Finnish coast to Tornio. Points well inland are left out (the panel
+# draws the grid with gaps).
+LATS = [round(59.0 + 0.3 * i, 2) for i in range(24)]
+LONS = [round(17.15 + 0.55 * i, 2) for i in range(25)]
+# The Gulf of Bothnia's coasts, roughly (latitude, Swedish coast's longitude, Finnish coast's).
+BOTHNIA = ((60.8, 17.2, 21.4), (61.5, 17.2, 21.5), (62.0, 17.4, 21.2), (62.5, 17.6, 21.0),
+           (63.0, 18.5, 21.6), (63.5, 19.3, 22.5), (64.0, 20.6, 23.4), (64.5, 21.4, 24.4),
+           (65.0, 21.6, 25.4), (65.5, 22.3, 25.2), (65.9, 23.5, 24.6))
+
+
+def _over_water(lat: float, lon: float) -> bool:
+    """Whether a grid point is over Finnish waters (or near enough)."""
+    if lat <= 60.8:
+        return lon >= 19.3  # the Åland Sea and east of it
+    for (la0, w0, e0), (la1, w1, e1) in zip(BOTHNIA, BOTHNIA[1:]):
+        if la0 <= lat <= la1:
+            t = (lat - la0) / (la1 - la0)
+            return w0 + t * (w1 - w0) - 0.3 <= lon <= e0 + t * (e1 - e0) + 0.6
+    return False
+
+
+GRID = [(lat, lon) for lat in LATS for lon in LONS if _over_water(lat, lon)]
+BOUNDS = (LATS[0], min(lon for _, lon in GRID), LATS[-1], max(lon for _, lon in GRID))
 
 CHECK_WINDOW = 5400  # s: station readings and forecast hours this far apart are compared
 CHECK_STATIONS_AGE = 3600  # s: older station readings aren't used

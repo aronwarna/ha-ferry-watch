@@ -21,8 +21,9 @@ from .config import USER_AGENT
 
 _LOGGER = logging.getLogger(__name__)
 
-# The Gulf of Finland and the Archipelago Sea, 160 nautical miles around Porkkala.
-API_URL = "https://opendata.adsb.fi/api/v2/lat/60.0/lon/23.6/dist/160"
+# All of the Finnish coast, from the Gulf of Finland to Tornio, and Åland: 250 nautical miles
+# (adsb.fi's widest) around the middle of the Gulf of Bothnia's coast.
+API_URL = "https://opendata.adsb.fi/api/v2/lat/62.0/lon/24.0/dist/250"
 POLL_SECONDS = 10
 BACKGROUND_SECONDS = 30  # with no panel open, only for the history
 TRAIL_POINTS = 60  # about 10 minutes
