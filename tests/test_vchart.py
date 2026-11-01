@@ -1777,6 +1777,28 @@ def test_base_map_where_the_chart_has_nothing():
     assert [row[0] for row in tile["depth"]] == [4] and "lake" not in tile
 
 
+def test_base_sea_is_its_own_polygons():
+    # Not a box with the land as holes: Natural Earth's land comes in pieces, and the panel's
+    # hairline round water areas would draw the edge where two meet across the land.
+    tile = vchart.make_tile(*tile_at(60.1, 24.9, 8), {}, vchart.BASE_ALL)
+    sea = [ring for band, *rings in tile["depth"] for ring in rings]
+    assert sea and tile["land"]
+    assert not any(ring in tile["land"] for ring in sea)
+
+
+def test_zoomed_out_depth_areas_end_at_their_blocks_edge():
+    # Zoomed out, a block's water areas reach a unit past its edge inside the tile (where the
+    # next block's take over), and out to the buffer at the tile's own edges: the panel can
+    # tell those cuts from the areas' own straight edges.
+    square = [(-3072, -3072), (68608, -3072), (68608, 68608), (-3072, 68608)]
+    layers = vchart.layers_from_rows({"depth": [[[10, 20], None, [square]]]})
+    z, x, y = tile_at(60.0, 24.4, 10)
+    left, right = blocks_for(z, x, y)[:2]
+    tile = vchart.make_tile(z, x, y, {left: layers, right: layers})
+    boxes = sorted((min(r[0::2]), min(r[1::2]), max(r[0::2]), max(r[1::2])) for _, r in tile["depth"])
+    assert boxes == [(-12, -12, 257, 257), (255, -12, 524, 257)]  # the blocks' margin is 12 units here
+
+
 def test_zoomed_out_contours_leave_out_single_shoals():
     small = [(30000, 45000), (31000, 45000), (31000, 46000), (30000, 46000), (30000, 45000)]
     long_line = [(-3072, 40000), (68608, 41000)]

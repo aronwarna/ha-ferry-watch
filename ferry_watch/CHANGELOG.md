@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.27.1
+
+- Fixes the zoomed-out drawn chart looking griddy: a fine grey grid showed all over the
+  shallows, from thin seams where neighbouring depth areas meet along straight edges.
+  Those edges now get the same seam cover as the others; only the edges where an area
+  was cut to its chart block are left alone, and there the next block's area overlaps.
+- At zoom 10 the depth contours are thinned out as further out (no rings round single
+  shoals), and a little more at zoom 9.
+- The base map's sea is drawn from its own shapes, so no thin line can show across the
+  land where its pieces meet.
+
 ## 0.27.0
 
 - The drawn chart now covers all of Finland and is drawn at every zoom, down to the

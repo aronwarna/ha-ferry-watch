@@ -6,11 +6,13 @@ downloads (ferrywatch/keep_blocks.json). Not part of the add-on: run by hand wit
 <natural-earth-dir> holds Natural Earth's 1:10m GeoJSON (public domain, naturalearthdata.com):
 ne_10m_land, ne_10m_minor_islands, ne_10m_lakes and ne_10m_lakes_europe (.geojson).
 
-ne_base.json: {"land": [...], "lakes": [...], "fi_sea": [...]},
+ne_base.json: {"land": [...], "lakes": [...], "sea": [...], "fi_sea": [...]},
 each a list of polygons [outer, hole, ...] with rings as flat [lon, lat, ...] (3 decimals),
-outer rings anticlockwise and holes clockwise. "land" and "lakes" cover 5-40°E 53-75°N; fi_sea
-is FINNISH_WATERS less the land. Land and sea
-come cut on a 1° by 0.5° grid (lakes are outlined, so they stay whole).
+outer rings anticlockwise and holes clockwise. "land" and "lakes" cover 5-40°E 53-75°N; "sea"
+is that box less the land, fi_sea FINNISH_WATERS less the land (the same simplified land, so
+their shores meet it). Land and sea come cut on a 1° by 0.5° grid (lakes are outlined, so they
+stay whole). The sea is its own polygons rather than a box with the land as holes: where two
+pieces of land meet along a cut, a hole's edge there would be drawn across the land.
 
 keep_blocks.json: [[bx, by], ...] zoom-11 blocks with Finnish water (sea, or a lake) in them,
 the Gulf of Finland first, then the Archipelago Sea and Åland, the Bothnian Sea, the Bay of
@@ -82,9 +84,10 @@ def split(g, dx: float = 1.0, dy: float = 0.5):
     return pieces
 
 
-def export(g, cut: bool = False) -> list:
+def export(g, cut: bool = False, simplified: bool = False) -> list:
     out = []
-    g = g.simplify(TOL, preserve_topology=True)
+    if not simplified:
+        g = g.simplify(TOL, preserve_topology=True)
     for p in split(g) if cut else polys(g):
         p = orient(p, 1.0)  # outer rings anticlockwise, holes clockwise: filled nonzero, holes stay
 
@@ -120,11 +123,13 @@ def main() -> None:
     fw = Polygon(FINNISH_WATERS)
     land = unary_union([load(ne, "ne_10m_land"), load(ne, "ne_10m_minor_islands")])
     lakes = unary_union([load(ne, "ne_10m_lakes"), load(ne, "ne_10m_lakes_europe")])
+    land = land.simplify(TOL, preserve_topology=True)
     sea = fw.difference(land)
     data = {
-        "land": export(land, True),
+        "land": export(land, True, True),
         "lakes": export(lakes),
-        "fi_sea": export(sea, True),
+        "sea": export(BOX.difference(land), True, True),
+        "fi_sea": export(sea, True, True),
     }
     out = APP / "ne_base.json"
     out.write_text(json.dumps(data, separators=(",", ":")))

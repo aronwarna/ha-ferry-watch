@@ -112,7 +112,7 @@
     if (close) ctx.closePath();
   }
 
-  function fillRings(ctx, rings, color) {
+  function fillRings(ctx, rings, color, cutAt) {
     ctx.beginPath();
     for (const ring of rings) path(ctx, ring, true);
     ctx.fillStyle = color;
@@ -121,11 +121,15 @@
     // the straight edges where a piece was cut at a chart block's edge: there an island
     // cut in two has its edge on top of the area's own, and a hairline would show as a
     // thin channel across the land (zoomed out, where block edges fall inside tiles).
+    // ``cutAt(c)`` tells those lines apart; without it every straight edge is taken for
+    // one. (Edges are on the tile's whole units, so many short ones are straight too: left
+    // unlined, their seams showed as a fine grey grid all over the shallows.)
     ctx.beginPath();
     for (const ring of rings) {
       for (let i = 0, n = ring.length; i < n; i += 2) {
         const x0 = ring[i], y0 = ring[i + 1], x1 = ring[(i + 2) % n], y1 = ring[(i + 3) % n];
-        if (x0 === x1 || y0 === y1) continue;
+        if (x0 === x1 && (!cutAt || cutAt(x0))) continue;
+        if (y0 === y1 && (!cutAt || cutAt(y0))) continue;
         ctx.moveTo(x0, y0);
         ctx.lineTo(x1, y1);
       }
@@ -136,6 +140,18 @@
     ctx.lineWidth = 0.6;
     ctx.stroke();
     ctx.lineCap = cap;
+  }
+
+  // Where a tile's water areas were cut (see fillRings): outside the tile, and zoomed out
+  // where the chart's blocks (zoom-11 tiles) meet, the pieces reaching a unit past it. Tiles
+  // further out than zoom 8 are made from four halved ones: there the blocks' edges are on
+  // the grid, and the quarters meet a unit either side of the middle.
+  function cutLines(zoom, e) {
+    if (zoom >= 11) return (c) => c <= 0 || c >= e;
+    const step = e / 2 ** (11 - zoom);
+    const near = (c, d) => Math.abs(c - Math.round(c / d) * d) <= 1;
+    if (zoom >= 8) return (c) => c <= 0 || c >= e || near(c, step);
+    return (c) => c <= 0 || c >= e || c % step === 0 || near(c, e / 2);
   }
 
   // A line, optionally left out between two distances along it (where a label goes).
@@ -1759,8 +1775,9 @@
       const water = scratch(0, size);
       const w = water.getContext("2d");
       w.setTransform(k, 0, 0, k, 0, 0);
-      for (const [band, ...rings] of data.xdepth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4]);
-      for (const [band, ...rings] of data.depth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4]);
+      const cut = cutLines(zoom, e);
+      for (const [band, ...rings] of data.xdepth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut);
+      for (const [band, ...rings] of data.depth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut);
       const edge = scratch(1, size);
       const g = edge.getContext("2d");
       const d = Math.max(1, Math.round(0.9 * dpr));

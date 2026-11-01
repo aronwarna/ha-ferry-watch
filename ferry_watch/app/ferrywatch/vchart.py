@@ -134,7 +134,7 @@ OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 30  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 31  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -380,7 +380,7 @@ XDEPTH_MIN_RING = 2.0  # tile units: foreign depth rings smaller than this aren'
 # shapes, not every shoal's ring (ben, Nov 2026: "no need to show exactly all of them"; in
 # the Archipelago Sea a zoom-8 tile had over 3000, nearly all of them such rings).
 CONTOUR_MIN = 16
-CONTOUR_MIN_AT = {8: 32}  # zoomed further out, bigger
+CONTOUR_MIN_AT = {9: 20, 8: 32}  # zoomed further out, bigger
 HOLE_MIN = 1.5  # tile units: zoomed out, a hole in a depth area smaller than this (an islet) is filled
 LINE_MARGIN = UNITS * TILE_BUFFER // EXTENT  # block units lines are kept past a block's edge (see build_into)
 
@@ -544,13 +544,6 @@ def _bbox(pts) -> tuple[float, float, float, float]:
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
     return min(xs), min(ys), max(xs), max(ys)
-
-
-def _flat_area(flat: list, signed: bool = False) -> float:
-    """A flat ring's area (shoelace), in its own units; ``signed``: negative one way round."""
-    n = len(flat)
-    a = sum(flat[i] * flat[(i + 3) % n] - flat[(i + 2) % n] * flat[i + 1] for i in range(0, n, 2)) / 2
-    return a if signed else abs(a)
 
 
 def _flat(pts) -> list[int]:
@@ -1126,11 +1119,11 @@ _ONE_RUN = re.compile(r"1+")
 # 5-40°E 53-75°N, simplified to 0.002° (built by tools/build_ne_base.py): only good to a few
 # hundred metres, which is plenty to tell the mainland from open sea, and for the base map
 # drawn where no chart data is (see add_base). Each kind is a list of polygons [outer, hole,
-# ...], rings flat [lon, lat, ...], outer rings anticlockwise and holes clockwise; "fi_sea" is
-# FINNISH_WATERS less the land. Land and sea come cut on a 1° by 0.5° grid, so a tile clips
-# only the pieces near it.
+# ...], rings flat [lon, lat, ...], outer rings anticlockwise and holes clockwise; "sea" is
+# the box less the land, "fi_sea" FINNISH_WATERS less the land. Land and sea come cut on a 1°
+# by 0.5° grid, so a tile clips only the pieces near it.
 NE_BASE_FILE = Path(__file__).parent / "ne_base.json"
-NE_KINDS = ("land", "lakes", "fi_sea")
+NE_KINDS = ("land", "lakes", "sea", "fi_sea")
 _ne_base: dict | None = None
 
 
@@ -1260,17 +1253,15 @@ def add_base(rows: dict[str, list], land: list, z: int, x: int, y: int, covered:
     else:
         lake_rects = rects
     for rect in rects:
-        rect_land = [ring for rings in clipped("land", rect) for ring in rings]
-        land += rect_land
-        # The sea: the rect less the land, or Finland's own where the foreign side draws the rest.
+        land += [ring for rings in clipped("land", rect) for ring in rings]
+        # The sea, or Finland's own where the foreign side draws the rest. Its own polygons,
+        # not the rect with the land as holes: the land comes in pieces, and the edge where two
+        # meet would be drawn across the land (the panel draws a hairline round water areas).
         outside = [rect] if finnish is None else _rects_without(rect, finnish)
         for part in outside:
-            ring = _flat([(part[0], part[1]), (part[2], part[1]), (part[2], part[3]), (part[0], part[3])])
-            inner = rect_land if part == rect else \
-                [ring for rings in clipped("land", part) for ring in rings]
-            # (The land pieces don't overlap, and holes in them wind the other way.)
-            if _flat_area(ring) - abs(sum(_flat_area(r, True) for r in inner)) > 1:
-                rows.setdefault("sea", []).append([ring, *inner])
+            sea = [ring for rings in clipped("sea", part) for ring in rings]
+            if sea:
+                rows.setdefault("sea", []).append(sea)
         if finnish is not None:
             inside = (max(rect[0], finnish[0]), max(rect[1], finnish[1]), min(rect[2], finnish[2]), min(rect[3], finnish[3]))
             if inside[0] < inside[2] and inside[1] < inside[3]:
@@ -2282,12 +2273,16 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
             return [((px - ox) * k, (py - oy) * k) for px, py in pts]
 
         # The block's own part of the tile (with the buffer where its edge is the tile's).
+        # The water's areas zoomed out: the same, but a unit past the block's edges inside the
+        # tile, where the next block's take over (see below).
         if z < BLOCK_Z:
             ex0, ey0, ex1, ey1 = -ox * k, -oy * k, (UNITS - ox) * k, (UNITS - oy) * k
             own = (lo if ex0 <= 0 else ex0, lo if ey0 <= 0 else ey0,
                    hi if ex1 >= EXTENT else ex1, hi if ey1 >= EXTENT else ey1)
+            wet = (lo if ex0 <= 0 else ex0 - 1, lo if ey0 <= 0 else ey0 - 1,
+                   hi if ex1 >= EXTENT else ex1 + 1, hi if ey1 >= EXTENT else ey1 + 1)
         else:
-            own = (lo, lo, hi, hi)
+            own = wet = (lo, lo, hi, hi)
 
         depth = data.get("depth")
         islands = None
@@ -2400,7 +2395,11 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     continue  # small buildings are squares up to zoom 13
                 if layer.kind == "area":
                     rings = []
-                    cut = own if key == "tss" and p[0] in TINTED_TSS else (lo, lo, hi, hi)
+                    # Zoomed out, the water's areas are cut where the block's own part of the
+                    # tile ends (a unit past it): the panel then knows where they were cut, and
+                    # draws its seam-hiding hairline round every other edge (see fillRings).
+                    cut = own if key == "tss" and p[0] in TINTED_TSS \
+                        else wet if key in ("depth", "xdepth") else (lo, lo, hi, hi)
                     shore_area = key == "depth" and islands is not None \
                         and _least_depth_cell(*_pad(p, 2)[:2]) in SHORE_CELLS
                     for j, r in enumerate(layer.rings(i)):
@@ -2438,7 +2437,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     d = _num(p[0])
                     if d not in CONTOURS or (z < 12 and d < 10):
                         continue
-                    if z < BLOCK_MIN_Z:
+                    if z < BLOCK_Z:
                         # Zoomed out, only contours that make a shape: no rings round single
                         # shoals (a piece reaching the block's margin is part of a longer one).
                         if max(fx1 - fx0, fy1 - fy0) * k < CONTOUR_MIN_AT.get(z, CONTOUR_MIN) and fx0 > -LINE_MARGIN + 1 \
