@@ -219,24 +219,41 @@ chart. Tap one to see what it is.
 ## Measure and plan a route
 
 The ruler button (top, next to the menu button) turns on route mode. Tap the
-map to add points; each leg shows its distance in nautical miles and its true
-bearing, and the panel shows the total and the time and ETA at the speed you
-enter (25 kn to start with). Drag a point to move it, tap it to remove it;
-**Undo** (or Ctrl+Z) and the bin button take back or clear. Escape or the ✕
-leaves route mode; the route you were drawing is kept in the browser until you
-come back. On a phone the panel is a small sheet above the ship chips, on a
-computer a list on the left.
+map to add points, or find a harbour by name with the magnifier button; each
+leg shows its distance in nautical miles and its true bearing, and the panel
+shows the total and the time and ETA at the speed you enter (25 kn to start
+with). Drag a point to move it, tap it for a menu to remove it; **Undo** (or Ctrl+Z) and
+the bin button take back or clear. Escape or the ✕ leaves route mode; the route
+you were drawing is kept in the browser until you come back. On a phone the
+panel is a small sheet above the ship chips, on a computer a list on the left.
 
-**Auto** plans a route along the marked fairways: enter your draught (1.5 m to
-start with, remembered), tap the start and the end (or use the first and last
-point) and press **Plan along fairways**. The add-on follows the fairway centre
-lines of the drawn chart, skips fairways whose design depth is less than your
-draught plus 0.3 m, and fills the panel with a route you can edit. It plans up
-to about 50 NM at a time and uses the chart areas along the way, downloading
-the missing ones first (it says so when they're still on their way). It is for
-planning only, not for navigation: check it on the chart.
+**Straight / Along fairways** at the top of the panel says how new legs go.
+With **Along fairways**, enter your draught (1.5 m to start with, remembered)
+and tap the start and the end: the add-on plans the leg along the fairway
+centre lines of the drawn chart, skipping fairways whose design depth is less
+than your draught plus 0.3 m. A fairway leg has a white line down its middle and
+a small dot at each turn. Every further tap adds another leg the same way, so
+you can mix straight legs and fairway legs.
 
-Give a route a name and **Save** it to keep it in the add-on. Saved routes show
+To change part of the route:
+
+- **Drag the dot halfway along a leg** to pull the route through a new point
+  there; a fairway leg is planned again through it, from both sides.
+- **Tap a leg** (on the map, or in the panel's list) for **Make it straight** /
+  **Follow the fairways**, **Add a point here**, and for a fairway leg **Make
+  its turns movable**, which turns its turns into ordinary points you can drag
+  or remove one by one.
+- Moving or removing a point only plans again the fairway legs next to it, so
+  the stretches you changed by hand stay as they are. Changing the draught plans
+  all fairway legs again.
+
+Automatic planning works up to about 50 NM per leg and uses the chart areas
+along the way, downloading the missing ones first (it says so when they're
+still on their way). It is for planning only, not for navigation: check it on
+the chart.
+
+Give a route a name and **Save** it to keep it in the add-on; its fairway and
+straight legs are kept, so **Edit** opens it as you drew it. Saved routes show
 as dashed lines with their name; tap one for its distance and **Edit route**.
 **On the map → Routes** lists them with a switch to show or hide each, **Edit**
 and **Delete**. There is no navigation guidance.

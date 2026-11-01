@@ -14,6 +14,7 @@ import asyncio
 import gzip
 import json
 import logging
+import math
 import re
 import time
 from pathlib import Path
@@ -207,8 +208,8 @@ class Harbours:
         else:
             self._idle_timer = asyncio.get_running_loop().call_later(IDLE - idle, self._release)
 
-    def in_view(self, south: float, west: float, north: float, east: float) -> dict[str, Any]:
-        """Harbours inside a box, and whether a download is under way."""
+    def _ready(self) -> None:
+        """The harbours in memory, and a download started when they're old."""
         self._touch()
         if self.rows is None:
             self._load()
@@ -216,6 +217,28 @@ class Harbours:
         stale = now - self.updated > REFRESH
         if stale and (self._task is None or self._task.done()) and now - self._failed > RETRY:
             self._task = asyncio.create_task(self._download())
+
+    def search(self, query: str, lat: float, lon: float, limit: int = 8) -> dict[str, Any]:
+        """Harbours whose name has every word of the query, those starting with it first,
+        then the nearest to (lat, lon)."""
+        self._ready()
+        words = query.casefold().split()[:5]
+        if not words:
+            return {"harbours": [], "pending": False}
+        whole = " ".join(words)
+        kx = math.cos(math.radians(lat))
+        found = []
+        for r in self.rows:
+            name = (r[3] or "").casefold()
+            if name and all(w in name for w in words):
+                d = (r[1] - lat) ** 2 + ((r[2] - lon) * kx) ** 2
+                found.append((not name.startswith(whole), d, r))
+        found.sort(key=lambda f: f[:2])
+        return {"harbours": [f[2] for f in found[:limit]], "pending": bool(self._task and not self._task.done())}
+
+    def in_view(self, south: float, west: float, north: float, east: float) -> dict[str, Any]:
+        """Harbours inside a box, and whether a download is under way."""
+        self._ready()
         rows = [r for r in self.rows if south <= r[1] <= north and west <= r[2] <= east]
         return {"harbours": rows[:MAX_ROWS], "pending": bool(self._task and not self._task.done()),
                 "error": self.error, "updated": self.updated or None}

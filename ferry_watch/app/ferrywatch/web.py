@@ -51,7 +51,7 @@ async def ingress_only(request: web.Request, handler):
 
 ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
 MAX_ROUTES = 100
-MAX_ROUTE_POINTS = 200
+MAX_ROUTE_POINTS = 500
 
 
 def _points(value: Any, minimum: int) -> list[list[float]]:
@@ -64,6 +64,22 @@ def _points(value: Any, minimum: int) -> list[list[float]]:
     if not all(-90 <= lat <= 90 and -180 <= lon <= 180 for lat, lon in points):
         raise web.HTTPBadRequest(text="Point out of range")
     return points
+
+
+def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
+    """A saved route's plan: wp, the indexes of its stops among the points (first and last
+    included, rising), and fw, 1 for each leg between stops that follows the fairways. None
+    for none, or one that doesn't fit the points."""
+    if not isinstance(value, dict):
+        return None
+    wp, fw = value.get("wp"), value.get("fw")
+    if not isinstance(wp, list) or not isinstance(fw, list) or len(wp) < 2 or len(fw) != len(wp) - 1:
+        return None
+    if not all(type(v) is int for v in wp) or not all(v in (0, 1) and type(v) is int for v in fw):
+        return None
+    if wp[0] != 0 or wp[-1] != n - 1 or any(b <= a for a, b in zip(wp, wp[1:])):
+        return None
+    return {"wp": wp, "fw": fw} if any(fw) else None
 
 
 def _mmsi(request: web.Request) -> int:
@@ -142,7 +158,7 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/vchart.js", "static/navmath.js", "static/app.js", "static/app.css",
+        for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js",
                      "static/overlays.js", "static/wind.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
@@ -570,6 +586,13 @@ class Web:
             if len(points) > MAX_ROUTE_POINTS:
                 raise web.HTTPBadRequest(text=f"At most {MAX_ROUTE_POINTS} points")
             route["points"] = [[round(lat, 6), round(lon, 6)] for lat, lon in points]
+            # Which points are the user's stops and which legs follow the fairways, so the
+            # route tool can open it for editing as it was drawn.
+            plan = _route_plan(body.get("plan"), len(points))
+            if plan:
+                route["plan"] = plan
+            else:
+                route.pop("plan", None)
         if "name" in body or "name" not in route:
             route["name"] = str(body.get("name") or "").strip()[:60] or f"Route {route['id']}"
         if "speed" in body:
@@ -632,6 +655,13 @@ class Web:
         return web.json_response({"points": points})
 
     async def harbours(self, request: web.Request) -> web.Response:
+        """Harbours in a box (bbox=west,south,east,north), or by name (q=..., near=lat,lon)."""
+        if "q" in request.query:  # by name, nearest first
+            try:
+                lat, lon = (float(v) for v in request.query.get("near", "60.1,24.9").split(","))
+            except ValueError:
+                raise web.HTTPBadRequest(text="near=lat,lon") from None
+            return web.json_response(self.fw.harbours.search(request.query["q"], lat, lon))
         try:
             west, south, east, north = (float(v) for v in request.query["bbox"].split(","))
         except (KeyError, ValueError):

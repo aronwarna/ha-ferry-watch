@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.28.0
+
+- Route tool: a **Straight / Along fairways** switch at the top of the panel replaces the
+  Auto button. With Along fairways, tap the start and the end and the leg is planned
+  along the marked fairways right away; each further tap adds another fairway leg.
+- Easy to change part of the route: drag the dot halfway along a leg to pull the route
+  through a new point there, or tap a leg (on the map or in the panel) to make it
+  straight, follow the fairways again, add a point, or turn its turns into points you can
+  move. Only the legs you touch are planned again, so stretches you moved off the
+  fairways stay put.
+- Find a harbour by name (magnifier button) to start or end the route there.
+- Saved routes keep which legs follow the fairways, so Edit opens them as drawn. Routes
+  can have up to 500 points (was 200).
+- Tapping a route point now opens a small menu with Remove, instead of removing it
+  straight away.
+
 ## 0.27.2
 
 - Lit buoys, spar buoys and other lit marks now show on the drawn chart from zoom 10

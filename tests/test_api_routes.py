@@ -47,7 +47,7 @@ def test_routes_saved_changed_and_deleted(tmp_path):
         assert hidden["shown"] is False and hidden["points"] == pts and hidden["name"] == "To Rönnskär"
         assert [r["id"] for r in await (await client.get("/api/routes")).json()] == [1, 2]
         for bad in ({"points": [[59.9, 24.4]]}, {"points": [[95, 24], [59, 24]]}, {"points": pts, "speed": 0},
-                    {"points": [[60, 24]] * 201}, {"name": "x"}, [1, 2]):
+                    {"points": [[60, 24]] * 501}, {"name": "x"}, [1, 2]):
             assert (await client.post("/api/routes", json=bad)).status == 400, bad
         assert (await client.post("/api/routes", json={"id": 9, "shown": True})).status == 404
         assert (await client.delete("/api/routes/1")).status == 200
@@ -114,5 +114,43 @@ def test_passages_filtered_paged_and_as_csv(tmp_path):
         assert (await client.get("/api/passages?mmsi=x")).status == 400
         csv = await (await client.get("/api/passages.csv?mmsi=2")).text()
         assert len(csv.strip().splitlines()) == 3  # the header and ship 2's two
+
+    run_with_client(tmp_path, body)
+
+
+def test_route_plan_saved_with_the_points(tmp_path):
+    async def body(client, fw):
+        pts = [[59.98, 24.42], [59.97, 24.40], [59.95, 24.38], [59.93, 24.30]]
+        plan = {"wp": [0, 2, 3], "fw": [1, 0]}
+        route = await (await client.post("/api/routes", json={"points": pts, "plan": plan})).json()
+        assert route["plan"] == plan
+        # Only the shown switch changes: the plan stays.
+        shown = await (await client.post("/api/routes", json={"id": route["id"], "shown": False})).json()
+        assert shown["plan"] == plan
+        # New points without a plan, or with one that doesn't fit them: no plan kept.
+        for bad in (None, {"wp": [0, 5], "fw": [1]}, {"wp": [0, 2, 3], "fw": [1]}, {"wp": [0, 0, 3], "fw": [1, 1]},
+                    {"wp": [0, 2, 3], "fw": [0, 0]}, {"wp": [0, 2, 3], "fw": [True, 0]}, "x"):
+            r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts, "plan": bad})).json()
+            assert "plan" not in r, bad
+        assert (await client.post("/api/routes", json={"points": [[60, 24]] * 500})).status == 200
+
+    run_with_client(tmp_path, body)
+
+
+def test_harbours_by_name(tmp_path):
+    async def body(client, fw):
+        await client.get("/api/harbours?bbox=24.3,59.9,24.6,60.1")
+        await fw.harbours._task
+        data = await (await client.get("/api/harbours?q=satama&near=60.1,24.0")).json()
+        names = [r[3] for r in data["harbours"]]
+        assert set(names) >= {"Kantvikin venesatama", "Upinniemen satama"}
+        dist = [(r[1] - 60.1) ** 2 + ((r[2] - 24.0) * 0.5) ** 2 for r in data["harbours"]]
+        assert dist == sorted(dist)  # nearest first
+        assert [r[3] for r in (await (await client.get("/api/harbours?q=rönn")).json())["harbours"]] == ["Rönnskär"]
+        # Names starting with the words come first, whatever the distance.
+        first = (await (await client.get("/api/harbours?q=kantvik&near=59.9,24.5")).json())["harbours"]
+        assert first[0][3] == "Kantvikin venesatama"
+        assert not (await (await client.get("/api/harbours?q=%20")).json())["harbours"]
+        assert (await client.get("/api/harbours?q=x&near=bad")).status == 400
 
     run_with_client(tmp_path, body)

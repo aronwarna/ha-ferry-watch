@@ -201,12 +201,19 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
+    <div class="route-mode">
+      <div id="route-modes" class="segmented route-modes" role="group" aria-label="New legs">
+        <button type="button" data-mode="line" aria-pressed="true">Straight</button>
+        <button type="button" data-mode="fw" aria-pressed="false">Along fairways</button>
+      </div>
+      <label id="route-draught-box" class="route-draught small" title="The boat's draught: fairways shallower than this plus 0.3 m are left out" hidden>Draught <input id="route-draught" type="number" inputmode="decimal" min="0" max="15" step="0.1" aria-label="Draught in metres"> m</label>
+    </div>
+    <div id="route-find" class="route-find" hidden>
+      <input id="route-find-input" type="search" placeholder="Harbour to start from" autocomplete="off" enterkeyhint="search" aria-label="Find a harbour by name">
+      <ul id="route-find-results" class="route-find-results" aria-label="Harbours"></ul>
+    </div>
     <ol id="route-points" class="route-points" aria-label="Points and legs"></ol>
     <p id="route-hint" class="small muted route-hint" role="status"></p>
-    <div id="route-auto" class="route-auto" hidden>
-      <label class="small">Draught <input id="route-draught" type="number" inputmode="decimal" min="0" max="15" step="0.1" aria-label="Draught in metres"> m</label>
-      <button type="button" id="route-plan" class="primary">Plan along fairways</button>
-    </div>
     <div class="route-actions">
       <button type="button" id="route-undo" class="icon-button" aria-label="Undo" title="Undo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
@@ -214,7 +221,9 @@
       <button type="button" id="route-clear" class="icon-button" aria-label="Clear the route" title="Clear">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13"/></svg>
       </button>
-      <button type="button" id="route-auto-button" class="route-auto-button" aria-expanded="false" title="Plan automatically along the marked fairways">Auto</button>
+      <button type="button" id="route-find-button" class="icon-button" aria-expanded="false" aria-label="Find a harbour by name" title="Find a harbour by name">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
+      </button>
       <input id="route-name" type="text" placeholder="Route name" maxlength="60" autocomplete="off" aria-label="Route name">
       <button type="button" id="route-save" class="primary">Save</button>
     </div>
@@ -394,6 +403,7 @@
   <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/vchart.js"></script>
   <script src="static/navmath.js"></script>
+  <script src="static/routeplan.js"></script>
   <script src="static/playback.js"></script>
   <script src="static/history.js"></script>
   <script src="static/weather-stats.js"></script>

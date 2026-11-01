@@ -3610,27 +3610,47 @@
   }
 
   // --- measure and plan a route: nautical miles, true bearings, ETA ------------------------
-  // Tap the map to add points, drag one to move it, tap it to remove it. Not a navigation
-  // tool: no guidance, just planning and measuring. The route being drawn is kept in this
-  // browser between visits; saved routes are kept by the add-on.
+  // Tap the map to add stops (or find a harbour by name). Each new leg goes straight or
+  // along the marked fairways, as the switch at the top of the panel says; the add-on plans
+  // fairway legs from the drawn chart's fairway lines. Drag a stop to move it, drag the dot
+  // halfway along a leg to add a stop there (a fairway leg is planned again through it),
+  // tap a leg to make it straight or follow the fairways, tap a stop to remove it. Only the
+  // legs touched are planned again, so a stretch moved off the fairways stays put. Not a
+  // navigation tool. The route being drawn is kept in this browser between visits; saved
+  // routes are kept by the add-on.
 
   const NavM = window.NavMath;
+  const Plan = window.RoutePlan;
   const ROUTE_COLOR = "#c026d3";
-  const ROUTE_MAX_POINTS = 200;
-  const route = { on: false, points: [], undo: [], id: null, name: "", auto: false, status: null };
+  const ROUTE_ERROR = "#dc2626";
+  const ROUTE_MAX_POINTS = 500;
+  const route = { on: false, stops: [], legs: [], points: [], undo: [], id: null, name: "", status: null, dragging: false };
+  let routeMode = store.get("fw-route-mode") === "fw" ? "fw" : "line"; // for new legs
   let routeSpeed = Number(store.get("fw-route-speed")) || 25;
   let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
-  let routeLayer = null; // { group, casing, line, labels, markers }
+  let routeLayer = null; // { group, casing, legs, labels, handles, markers }
+  let routePopup = null, routePopupWasOpen = false;
   const routeMarkers = [];
   let savedRoutes = [];
   const savedLayer = L.layerGroup().addTo(map);
+
+  const legState = (l) => ({ fw: Boolean(l.fw), path: Array.isArray(l.path) ? l.path : [], planned: Boolean(l.planned),
+    error: l.error || null, note: l.note || "" });
   try {
     const draft = JSON.parse(store.get("fw-route-draft") || "null");
-    if (Array.isArray(draft?.points)) Object.assign(route, { points: draft.points, id: draft.id ?? null, name: draft.name || "" });
+    if (Array.isArray(draft?.stops) && Array.isArray(draft.legs) && draft.legs.length === Math.max(0, draft.stops.length - 1)) {
+      route.stops = draft.stops;
+      route.legs = draft.legs.map(legState);
+    } else if (Array.isArray(draft?.points)) { // saved by an older version: straight legs
+      Object.assign(route, Plan.fromSaved(draft.points, null));
+    }
+    if (draft) Object.assign(route, { id: draft.id ?? null, name: draft.name || "" });
   } catch { /* no draft */ }
+  route.points = Plan.points(route.stops, route.legs);
 
   const round6 = (v) => Math.round(v * 1e6) / 1e6;
   const latLngOf = (ll) => [round6(ll.lat), round6(((ll.lng + 540) % 360) - 180)];
+  const legPending = (l) => l.fw && (l.busy || !l.planned);
 
   function setRouteMode(on) {
     if (on === route.on) return;
@@ -3642,7 +3662,8 @@
       clearReplay();
       map.closePopup();
     } else {
-      setAuto(false);
+      showFind(false);
+      routePopup?.remove();
     }
     $("route").hidden = !on;
     $("route-button").setAttribute("aria-pressed", String(on));
@@ -3651,7 +3672,9 @@
     $("route-speed").value = String(routeSpeed);
     $("route-draught").value = String(routeDraught);
     $("route-name").value = route.name;
-    drawRoute();
+    renderRouteModes();
+    if (on) planLegs(route.legs.map((l, i) => (l.fw && !l.planned ? i : -1)).filter((i) => i >= 0));
+    else drawRoute();
     renderSavedRoutes(); // not clickable while measuring, and the one being edited isn't drawn twice
   }
 
@@ -3659,46 +3682,130 @@
     const kind = i === 0 ? " start" : i === n - 1 ? " end" : "";
     return L.divIcon({ className: "rp-icon", html: `<span class="rp${kind}">${i + 1}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] });
   }
+  const midIcon = L.divIcon({ className: "rp-mid-icon", html: '<span class="rp-mid"></span>', iconSize: [32, 32], iconAnchor: [16, 16] });
+
+  function snapshot() {
+    return JSON.stringify({ stops: route.stops, legs: route.legs.map((l) => legState({ ...l, planned: l.planned && !l.busy })) });
+  }
 
   function pushUndo() {
-    route.undo.push(JSON.stringify(route.points));
+    route.undo.push(snapshot());
     if (route.undo.length > 60) route.undo.shift();
   }
 
   function undoRoute() {
     if (!route.undo.length) return;
-    route.points = JSON.parse(route.undo.pop());
+    const back = JSON.parse(route.undo.pop());
+    route.stops = back.stops;
+    route.legs = back.legs.map(legState);
     route.status = null;
-    drawRoute();
+    routePopup?.remove();
+    planLegs(route.legs.map((l, i) => (l.fw && !l.planned ? i : -1)).filter((i) => i >= 0));
   }
 
   function addRoutePoint(ll) {
     if (route.points.length >= ROUTE_MAX_POINTS) return;
     pushUndo();
-    route.points.push(latLngOf(ll));
-    if (route.auto && route.points.length === 2) planAuto();
-    else drawRoute();
+    route.status = null;
+    const todo = Plan.addStop(route.stops, route.legs, latLngOf(ll), routeMode === "fw");
+    planLegs(todo, { fit: route.stops.length === 2 });
+  }
+
+  // Fairway legs are planned one at a time by the add-on. A leg changed meanwhile is a new
+  // leg object, so an answer for the old one is dropped.
+  let planChain = Promise.resolve();
+  let planSeq = 0;
+  function planLegs(list, { fit = false } = {}) {
+    for (const i of list) {
+      const leg = route.legs[i];
+      if (!leg?.fw) continue;
+      Object.assign(leg, { busy: true, planned: false, path: [], error: null, note: "", seq: ++planSeq });
+      const seq = leg.seq;
+      planChain = planChain.then(() => planLeg(leg, seq, fit)).catch(console.error);
+    }
+    drawRoute();
+  }
+
+  async function planLeg(leg, seq, fit) {
+    const i = route.legs.indexOf(leg);
+    if (i < 0 || leg.seq !== seq) return;
+    const a = route.stops[i], b = route.stops[i + 1];
+    let res;
+    try {
+      res = await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}`);
+    } catch (err) {
+      res = { error: String(err.message || err) };
+    }
+    if (!route.legs.includes(leg) || leg.seq !== seq) return;
+    leg.busy = false;
+    leg.planned = true;
+    if (res.error) {
+      leg.error = res.error;
+    } else {
+      leg.path = (res.points || []).slice(1, -1);
+      leg.note = [...(res.warnings || []), res.downloading ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
+        .filter(Boolean).join(" ");
+    }
+    drawRoute();
+    if (fit && !res.error && route.legs.length === 1) map.fitBounds(L.latLngBounds(route.points), { ...routePadding(), maxZoom: 13 });
   }
 
   function makeRouteMarker() {
     const m = L.marker([0, 0], { draggable: true, keyboard: false, zIndexOffset: 2000, autoPan: true });
-    m.on("dragstart", () => { pushUndo(); m.dragged = true; });
+    let touched = new Set();
+    m.on("dragstart", () => { pushUndo(); m.dragged = true; touched = new Set(); routeDragStart(); routePopup?.remove(); });
     m.on("drag", () => {
       const i = routeMarkers.indexOf(m);
-      if (i >= 0) route.points[i] = latLngOf(m.getLatLng());
+      if (i < 0) return;
+      for (const k of Plan.moveStop(route.stops, route.legs, i, latLngOf(m.getLatLng()))) touched.add(k);
       scheduleRouteDraw();
     });
-    // Leaflet may still send a click when a drag ends; that must not delete the point.
-    m.on("dragend", () => { setTimeout(() => { m.dragged = false; }, 60); drawRoute(); });
+    // Leaflet may still send a click when a drag ends; that must not open the menu.
+    m.on("dragend", () => {
+      setTimeout(() => { m.dragged = false; }, 60);
+      routeDragEnd();
+      planLegs([...touched]);
+    });
     m.on("click", () => {
       if (m.dragged) return;
       const i = routeMarkers.indexOf(m);
-      if (i < 0) return;
-      pushUndo();
-      route.points.splice(i, 1);
-      drawRoute();
+      if (i >= 0) stopMenu(i);
     });
     return m;
+  }
+
+  // The dot halfway along a leg: drag it to add a stop there and bend the leg through it.
+  function makeHandle(i, at) {
+    const h = L.marker(at, { icon: midIcon, draggable: true, keyboard: false, zIndexOffset: 1500, autoPan: true, title: "Drag to move this leg" });
+    let stop = -1;
+    h.on("dragstart", () => {
+      pushUndo();
+      h.dragged = true;
+      routePopup?.remove();
+      Plan.insertStop(route.stops, route.legs, i, latLngOf(h.getLatLng()));
+      stop = i + 1;
+      routeDragStart();
+    });
+    h.on("drag", () => {
+      Plan.moveStop(route.stops, route.legs, stop, latLngOf(h.getLatLng()));
+      scheduleRouteDraw();
+    });
+    h.on("dragend", () => {
+      setTimeout(() => { h.dragged = false; }, 60);
+      routeDragEnd();
+      planLegs([stop - 1, stop]);
+    });
+    h.on("click", () => { if (!h.dragged) legMenu(i, h.getLatLng()); });
+    return h;
+  }
+
+  function routeDragStart() {
+    route.dragging = true;
+    map.getContainer().classList.add("route-dragging");
+  }
+  function routeDragEnd() {
+    route.dragging = false;
+    map.getContainer().classList.remove("route-dragging");
   }
 
   let routeFrame = 0;
@@ -3707,8 +3814,10 @@
   }
 
   function drawRoute() {
+    route.points = Plan.points(route.stops, route.legs);
     if (!route.on) {
       routeLayer?.group.remove();
+      store.set("fw-route-draft", JSON.stringify({ stops: route.stops, legs: route.legs.map(legState), id: route.id, name: route.name }));
       return;
     }
     if (!routeLayer) {
@@ -3716,17 +3825,22 @@
       routeLayer = {
         group,
         casing: L.polyline([], { color: "#fff", weight: 7, opacity: 0.85, interactive: false }).addTo(group),
-        line: L.polyline([], { color: ROUTE_COLOR, weight: 3.5, opacity: 1, interactive: false }).addTo(group),
+        legs: L.layerGroup().addTo(group),
         labels: L.layerGroup().addTo(group),
+        handles: L.layerGroup().addTo(group),
         markers: L.layerGroup().addTo(group),
       };
     }
     if (!map.hasLayer(routeLayer.group)) routeLayer.group.addTo(map);
-    const pts = route.points;
-    routeLayer.casing.setLatLngs(pts);
-    routeLayer.line.setLatLngs(pts);
-    while (routeMarkers.length > pts.length) routeMarkers.pop().remove();
-    pts.forEach((p, i) => {
+    routeLayer.casing.setLatLngs(route.points);
+    drawLegLines();
+    if (route.dragging) { // the marker being dragged must stay; the rest catches up on dragend
+      renderRoutePanel();
+      return;
+    }
+    const stops = route.stops;
+    while (routeMarkers.length > stops.length) routeMarkers.pop().remove();
+    stops.forEach((p, i) => {
       let m = routeMarkers[i];
       if (!m) {
         m = makeRouteMarker();
@@ -3735,30 +3849,157 @@
       }
       const ll = m.getLatLng();
       if (ll.lat !== p[0] || ll.lng !== p[1]) m.setLatLng(p);
-      const key = `${i}/${pts.length}`;
-      if (m.iconKey !== key) { m.iconKey = key; m.setIcon(routeIcon(i, pts.length)); }
+      const key = `${i}/${stops.length}`;
+      if (m.iconKey !== key) { m.iconKey = key; m.setIcon(routeIcon(i, stops.length)); }
     });
-    drawLegLabels();
+    drawHandlesAndLabels();
     renderRoutePanel();
-    store.set("fw-route-draft", JSON.stringify({ points: pts, id: route.id, name: route.name }));
+    store.set("fw-route-draft", JSON.stringify({ stops, legs: route.legs.map(legState), id: route.id, name: route.name }));
   }
 
-  // "2.2 NM · 214°" on each leg long enough on screen to hold it.
-  function drawLegLabels() {
-    if (!routeLayer) return;
-    routeLayer.labels.clearLayers();
-    const pts = route.points;
-    for (let i = 1; i < pts.length; i++) {
-      const a = map.latLngToContainerPoint(pts[i - 1]), b = map.latLngToContainerPoint(pts[i]);
-      if (a.distanceTo(b) < 120) continue;
-      const leg = NavM.legs([pts[i - 1], pts[i]])[0];
-      L.marker(map.containerPointToLatLng(a.add(b).divideBy(2)), {
-        interactive: false, keyboard: false,
-        icon: L.divIcon({ className: "leg-label", html: `<span>${NavM.nm(leg.nm)} · ${NavM.degrees(leg.bearing)}</span>`, iconSize: null }),
-      }).addTo(routeLayer.labels);
-    }
+  // Each leg: straight, along the fairways (a white line down its middle and a dot at each
+  // turn), still being planned (dashed) or not plannable (dashed red). A wide see-through
+  // line over each takes the taps.
+  function drawLegLines() {
+    const group = routeLayer.legs;
+    group.clearLayers();
+    route.legs.forEach((leg, i) => {
+      const pts = Plan.legPoints(route.stops, route.legs, i);
+      if (leg.fw && leg.error) {
+        L.polyline(pts, { color: ROUTE_ERROR, weight: 3, dashArray: "5 7", interactive: false }).addTo(group);
+      } else if (legPending(leg)) {
+        L.polyline(pts, { color: ROUTE_COLOR, weight: 3, opacity: 0.75, dashArray: "5 7", interactive: false }).addTo(group);
+      } else {
+        L.polyline(pts, { color: ROUTE_COLOR, weight: leg.fw ? 4.5 : 3.5, opacity: 1, interactive: false }).addTo(group);
+        if (leg.fw) {
+          L.polyline(pts, { color: "#fff", weight: 1.3, opacity: 0.95, interactive: false }).addTo(group);
+          for (const p of leg.path) {
+            L.circleMarker(p, { radius: 2.6, color: "#fff", weight: 1.2, fillColor: ROUTE_COLOR, fillOpacity: 1, interactive: false }).addTo(group);
+          }
+        }
+      }
+      if (!route.dragging) {
+        const hit = L.polyline(pts, { color: "#000", opacity: 0, weight: 24, interactive: true, bubblingMouseEvents: false }).addTo(group);
+        hit.on("click", (e) => { L.DomEvent.stop(e); legMenu(i, e.latlng); });
+      }
+    });
   }
-  map.on("zoomend", () => { if (route.on) drawLegLabels(); });
+
+  const screenLength = (pts) => {
+    let px = 0;
+    for (let k = 1; k < pts.length; k++) px += map.latLngToContainerPoint(pts[k - 1]).distanceTo(map.latLngToContainerPoint(pts[k]));
+    return px;
+  };
+
+  function legLabel(leg, pts) {
+    const nm = NavM.nm(NavM.totalNm(pts));
+    if (!leg.fw) return `${nm} · ${NavM.degrees(NavM.legs(pts)[0].bearing)}`;
+    if (leg.error) return "No fairway way";
+    if (legPending(leg)) return "Planning…";
+    return `${nm} · fairway`;
+  }
+
+  // "2.2 NM · 214°" on each leg long enough on screen to hold it, and the dot to drag it by.
+  function drawHandlesAndLabels() {
+    routeLayer.labels.clearLayers();
+    routeLayer.handles.clearLayers();
+    route.legs.forEach((leg, i) => {
+      const pts = Plan.legPoints(route.stops, route.legs, i);
+      const px = screenLength(pts);
+      if (px < 56) return;
+      const mid = halfway(pts);
+      makeHandle(i, mid).addTo(routeLayer.handles);
+      if (px < 130) return;
+      // The label just beside the dot, along the leg.
+      const along = halfwayAt(pts, 0.5 + Math.min(0.25, 52 / px));
+      L.marker(along, {
+        interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "leg-label", html: `<span${leg.fw && leg.error ? ' class="error"' : ""}>${esc(legLabel(leg, pts))}</span>`, iconSize: null }),
+      }).addTo(routeLayer.labels);
+    });
+  }
+  map.on("zoomend", () => { if (route.on && !route.dragging) drawHandlesAndLabels(); });
+
+  // The point a share of the way along a line, by distance.
+  function halfwayAt(points, share) {
+    const legs = NavM.legs(points);
+    let left = NavM.totalNm(points) * share;
+    for (let i = 0; i < legs.length; i++) {
+      if (left <= legs[i].nm && legs[i].nm > 0) {
+        const t = left / legs[i].nm, a = points[i], b = points[i + 1];
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      }
+      left -= legs[i].nm;
+    }
+    return points[points.length - 1];
+  }
+
+  // --- the little menus for a stop and a leg ---
+  function openRoutePopup(at, el, offset = [0, -6]) {
+    routePopup?.remove();
+    routePopup = L.popup({ className: "fw-popup aid-popup route-popup", offset, autoPanPaddingTopLeft: [20, 90] })
+      .setLatLng(at).setContent(el).openOn(map);
+  }
+
+  function menuButton(text, onClick, primary = false) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = primary ? "primary" : "";
+    b.textContent = text;
+    b.addEventListener("click", (e) => { e.stopPropagation(); routePopup?.remove(); onClick(); });
+    return b;
+  }
+
+  function stopMenu(i) {
+    const n = route.stops.length;
+    const el = document.createElement("div");
+    el.className = "rp-menu";
+    const title = document.createElement("strong");
+    title.textContent = i === 0 ? "Start" : i === n - 1 ? "End" : `Point ${i + 1}`;
+    const where = document.createElement("div");
+    where.className = "small muted";
+    where.textContent = NavM.position(...route.stops[i]);
+    el.append(title, where, menuButton(i === 0 ? "Remove the start" : i === n - 1 ? "Remove the end" : "Remove this point", () => {
+      pushUndo();
+      planLegs(Plan.removeStop(route.stops, route.legs, i));
+    }));
+    openRoutePopup(route.stops[i], el, [0, -14]);
+  }
+
+  function legMenu(i, at) {
+    const leg = route.legs[i];
+    if (!leg) return;
+    const pts = Plan.legPoints(route.stops, route.legs, i);
+    const el = document.createElement("div");
+    el.className = "rp-menu";
+    const title = document.createElement("strong");
+    title.textContent = `Leg ${i + 1}–${i + 2} · ${NavM.nm(NavM.totalNm(pts))}`;
+    const sub = document.createElement("div");
+    sub.className = "small muted";
+    sub.textContent = !leg.fw ? `Straight, ${NavM.degrees(NavM.legs(pts)[0].bearing)}`
+      : leg.error ? leg.error : legPending(leg) ? "Planning along the marked fairways…"
+        : `Along the marked fairways for ${routeDraught} m draught`;
+    if (leg.fw && leg.error) sub.classList.add("error");
+    el.append(title, sub);
+    const where = latLngOf(L.latLng(at));
+    el.append(menuButton(leg.fw ? "Make it straight" : "Follow the fairways", () => {
+      pushUndo();
+      planLegs(Plan.setLegMode(route.legs, i, !leg.fw));
+    }, true));
+    if (leg.fw && (leg.error || leg.note)) el.append(menuButton("Plan it again", () => planLegs([i])));
+    el.append(menuButton("Add a point here", () => {
+      pushUndo();
+      planLegs(Plan.insertStop(route.stops, route.legs, i, where));
+    }));
+    if (leg.fw && leg.planned && !leg.busy && leg.path.length) {
+      el.append(menuButton("Make its turns movable", () => {
+        pushUndo();
+        Plan.unpackLeg(route.stops, route.legs, i);
+        drawRoute();
+      }));
+    }
+    openRoutePopup(at, el);
+  }
 
   function routeSummary(points, speed) {
     const total = NavM.totalNm(points);
@@ -3766,34 +4007,56 @@
     return { total, eta, text: `${NavM.nm(total)} · ${points.length - 1} ${points.length === 2 ? "leg" : "legs"}${eta != null ? ` · ${NavM.duration(eta)} at ${speed} kn` : ""}` };
   }
 
+  function routeHint() {
+    if (route.status) return route.status;
+    const legs = route.legs;
+    if (legs.some((l) => l.fw && l.busy)) return { text: "Planning along the marked fairways…" };
+    const bad = legs.findIndex((l) => l.fw && l.error);
+    if (bad >= 0) return { text: `Leg ${bad + 1}–${bad + 2}: ${legs[bad].error} Tap it to make it straight.`, error: true };
+    const notes = [...new Set(legs.filter((l) => l.fw && l.note).map((l) => l.note))];
+    if (route.stops.length < 2) {
+      return { text: routeMode === "fw" ? "Tap the start, then the end, or find a harbour by name. The route follows the marked fairways."
+        : "Tap the map to add points. Drag a point to move it, tap it to remove it." };
+    }
+    if (legs.some((l) => l.fw)) {
+      return { text: [`Fairway legs for ${routeDraught} m draught, planning only: check them on the chart.`, ...notes,
+        "Drag a leg's dot to move it, tap a leg to make it straight."].join(" ") };
+    }
+    return null;
+  }
+
   function renderRoutePanel() {
-    const pts = route.points;
-    const legs = NavM.legs(pts);
+    const pts = route.points, stops = route.stops;
     const { total, eta } = routeSummary(pts, routeSpeed);
     setText($("route-total"), pts.length > 1 ? NavM.nm(total) : pts.length ? "1 point" : "Route");
     setText($("route-eta"), pts.length > 1 && eta != null ? `${NavM.duration(eta)} · ETA ${clock(now() + eta)}` : "");
-    let hint = "";
-    if (route.status) hint = route.status.text;
-    else if (route.auto) hint = pts.length < 2 ? "Tap the start, then the end." : "From the first point to the last, along the marked fairways. Planning only, not for navigation.";
-    else if (pts.length < 2) hint = "Tap the map to add points. Drag a point to move it, tap it to remove it.";
-    setText($("route-hint"), hint);
+    const hint = routeHint();
+    setText($("route-hint"), hint?.text || "");
     $("route-hint").hidden = !hint;
-    $("route-hint").classList.toggle("error", Boolean(route.status?.error));
+    $("route-hint").classList.toggle("error", Boolean(hint?.error));
 
     const items = [];
-    pts.forEach((p, i) => {
+    stops.forEach((p, i) => {
       if (i > 0) {
-        const leg = legs[i - 1];
+        const leg = route.legs[i - 1];
+        const legPts = Plan.legPoints(stops, route.legs, i - 1);
+        const nm = NavM.totalNm(legPts);
         const li = document.createElement("li");
-        li.className = "rp-leg";
-        const t = NavM.etaSeconds(leg.nm, routeSpeed);
-        li.innerHTML = `<span class="leg-n">${i}–${i + 1}</span><strong>${NavM.nm(leg.nm)}</strong><span>${NavM.degrees(leg.bearing)}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
+        li.className = `rp-leg${leg.fw ? " fw" : ""}${leg.fw && leg.error ? " error" : ""}${legPending(leg) ? " busy" : ""}`;
+        li.tabIndex = 0;
+        li.title = "Change this leg";
+        const t = NavM.etaSeconds(nm, routeSpeed);
+        const how = !leg.fw ? NavM.degrees(NavM.legs(legPts)[0].bearing) : leg.error ? "no fairway" : legPending(leg) ? "planning…" : "fairway";
+        li.innerHTML = `<span class="leg-n">${i}–${i + 1}</span><strong>${NavM.nm(nm)}</strong><span class="leg-how">${how}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
+        const open = () => { const mid = halfway(legPts); map.panInside(mid, routePadding()); legMenu(i - 1, mid); };
+        li.addEventListener("click", open);
+        li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
         items.push(li);
       }
       const li = document.createElement("li");
       li.className = "rp-row";
       const n = document.createElement("span");
-      n.className = `rp${i === 0 ? " start" : i === pts.length - 1 && i > 0 ? " end" : ""}`;
+      n.className = `rp${i === 0 ? " start" : i === stops.length - 1 && i > 0 ? " end" : ""}`;
       n.textContent = String(i + 1);
       const where = document.createElement("span");
       where.className = "grow";
@@ -3803,7 +4066,7 @@
       del.className = "icon-button plain";
       del.setAttribute("aria-label", `Remove point ${i + 1}`);
       del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>';
-      del.addEventListener("click", () => { pushUndo(); route.points.splice(i, 1); drawRoute(); });
+      del.addEventListener("click", () => { pushUndo(); planLegs(Plan.removeStop(route.stops, route.legs, i)); });
       where.addEventListener("click", () => map.panTo(p));
       li.append(n, where, del);
       items.push(li);
@@ -3811,47 +4074,15 @@
     $("route-points").replaceChildren(...items);
     $("route-points").hidden = !items.length;
     $("route-undo").disabled = !route.undo.length;
-    $("route-clear").disabled = !pts.length && !route.id;
-    $("route-save").disabled = pts.length < 2;
+    $("route-clear").disabled = !stops.length && !route.id;
+    $("route-save").disabled = pts.length < 2 || route.legs.some((l) => l.fw && l.busy);
     $("route-save").textContent = route.id ? "Update" : "Save";
-    $("route-plan").disabled = pts.length < 2;
-    $("route-plan").textContent = pts.length < 2 ? "Tap start and end" : "Plan along fairways";
+    $("route-draught-box").hidden = routeMode !== "fw" && !route.legs.some((l) => l.fw);
   }
 
-  function setAuto(on) {
-    route.auto = on;
-    route.status = null;
-    $("route-auto").hidden = !on;
-    $("route-auto-button").setAttribute("aria-expanded", String(on));
-    $("route-auto-button").classList.toggle("active", on);
-    if (route.on) renderRoutePanel();
-  }
-
-  // The route from the first point to the last along the marked fairways, worked out by
-  // the add-on from the drawn chart's fairway lines. The points can be edited afterwards.
-  async function planAuto() {
-    const pts = route.points;
-    if (pts.length < 2) return;
-    const a = pts[0], b = pts[pts.length - 1];
-    route.status = { text: "Planning along the marked fairways…" };
-    drawRoute();
-    try {
-      const res = await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}`);
-      if (res.error) {
-        route.status = { text: res.error, error: true };
-      } else {
-        pushUndo(); // undo brings back the start and end
-        route.points = res.points;
-        setAuto(false);
-        const notes = [`Along the marked fairways for ${routeDraught} m draught. Check it on the chart: planning only, not for navigation.`,
-          ...(res.warnings || []), res.downloading ? "Some chart areas are still downloading; plan again in a minute for a better route." : ""];
-        route.status = { text: notes.filter(Boolean).join(" ") };
-        map.fitBounds(L.latLngBounds(res.points), { ...routePadding(), maxZoom: 13 });
-      }
-    } catch (err) {
-      route.status = { text: String(err.message || err), error: true };
-    }
-    drawRoute();
+  function renderRouteModes() {
+    for (const b of $("route-modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === routeMode));
+    $("route-modes").title = routeMode === "fw" ? "New legs follow the marked fairways" : "New legs go straight";
   }
 
   function routePadding() {
@@ -3860,23 +4091,81 @@
     return { paddingTopLeft: [panel.offsetWidth + 40, 80], paddingBottomRight: [40, 40] };
   }
 
+  // --- find a harbour by name, to start or end the route there ---
+  let findTimer = 0, findSeq = 0;
+  function showFind(on) {
+    $("route-find").hidden = !on;
+    $("route-find-button").setAttribute("aria-expanded", String(on));
+    $("route-find-button").classList.toggle("active", on);
+    if (on) {
+      $("route-find-input").placeholder = route.stops.length ? "Harbour for the next point" : "Harbour to start from";
+      $("route-find-input").focus();
+    } else {
+      $("route-find-input").value = "";
+      $("route-find-results").replaceChildren();
+    }
+  }
+
+  async function findHarbours() {
+    const q = $("route-find-input").value.trim();
+    const seq = ++findSeq;
+    if (q.length < 2) { $("route-find-results").replaceChildren(); return; }
+    const c = map.getCenter();
+    let rows = [], pending = false;
+    try {
+      const res = await api(`api/harbours?q=${encodeURIComponent(q)}&near=${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
+      rows = res.harbours || [];
+      pending = Boolean(res.pending);
+    } catch (err) {
+      console.error(err);
+    }
+    if (seq !== findSeq) return;
+    const items = rows.map((row) => {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.type = "button";
+      const name = document.createElement("span");
+      name.textContent = row[3] || "Harbour";
+      const sub = document.createElement("span");
+      sub.className = "small muted";
+      sub.textContent = `${NavM.nm(NavM.distanceNm([c.lat, c.lng], [row[1], row[2]]))} away`;
+      b.append(name, sub);
+      b.addEventListener("click", () => {
+        addRoutePoint(L.latLng(row[1], row[2]));
+        if (route.stops.length === 1) map.setView([row[1], row[2]], Math.max(map.getZoom(), 11));
+        showFind(false);
+        if (route.stops.length < 2) showFind(true); // and now the end
+      });
+      li.append(b);
+      return li;
+    });
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.className = "small muted";
+      li.textContent = pending ? "The harbour list is still downloading: try again in a minute." : "No harbour by that name.";
+      items.push(li);
+    }
+    $("route-find-results").replaceChildren(...items);
+  }
+
   async function saveRoute() {
-    const body = { name: $("route-name").value.trim(), points: route.points, speed: routeSpeed };
+    const saved = Plan.toSaved(route.stops, route.legs);
+    const body = { name: $("route-name").value.trim(), points: saved.points, plan: saved.plan, speed: routeSpeed };
     if (route.id) body.id = route.id;
     $("route-save").disabled = true;
     try {
-      let saved;
+      let reply;
       try {
-        saved = await api("api/routes", { method: "POST", body });
+        reply = await api("api/routes", { method: "POST", body });
       } catch (err) {
         if (!body.id) throw err;
         delete body.id; // deleted elsewhere meanwhile: save it as a new one
-        saved = await api("api/routes", { method: "POST", body });
+        reply = await api("api/routes", { method: "POST", body });
       }
-      route.id = saved.id;
-      route.name = saved.name;
-      $("route-name").value = saved.name;
-      route.status = { text: `Saved as "${saved.name}". It's listed under Menu › On the map.` };
+      route.id = reply.id;
+      route.name = reply.name;
+      $("route-name").value = reply.name;
+      route.status = { text: `Saved as "${reply.name}". It's listed under Menu › On the map.` };
       await loadRoutes();
     } catch (err) {
       route.status = { text: String(err.message || err), error: true };
@@ -3885,18 +4174,22 @@
   }
 
   function clearRoute() {
-    if (route.points.length) pushUndo();
-    route.points = [];
+    if (route.stops.length) pushUndo();
+    route.stops = [];
+    route.legs = [];
     route.id = null;
     route.name = "";
     route.status = null;
+    routePopup?.remove();
     $("route-name").value = "";
     drawRoute();
     renderSavedRoutes();
   }
 
   function editRoute(r) {
-    route.points = r.points.map((p) => [...p]);
+    const plan = Plan.fromSaved(r.points, r.plan);
+    route.stops = plan.stops;
+    route.legs = plan.legs.map((l) => legState({ ...l, planned: true }));
     route.id = r.id;
     route.name = r.name;
     route.undo = [];
@@ -3920,11 +4213,20 @@
   $("route-save").addEventListener("click", saveRoute);
   $("route-name").addEventListener("keydown", (e) => { if (e.key === "Enter" && route.points.length > 1) saveRoute(); });
   $("route-name").addEventListener("input", (e) => { route.name = e.target.value; });
-  $("route-auto-button").addEventListener("click", () => {
-    if (route.auto) { setAuto(false); return; }
-    setAuto(true);
+  for (const b of $("route-modes").querySelectorAll("button")) {
+    b.addEventListener("click", () => {
+      routeMode = b.dataset.mode;
+      store.set("fw-route-mode", routeMode);
+      route.status = null;
+      renderRouteModes();
+      renderRoutePanel();
+    });
+  }
+  $("route-find-button").addEventListener("click", () => showFind($("route-find").hidden));
+  $("route-find-input").addEventListener("input", () => { clearTimeout(findTimer); findTimer = setTimeout(findHarbours, 250); });
+  $("route-find-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("route-find-results").querySelector("button")?.click(); }
   });
-  $("route-plan").addEventListener("click", planAuto);
   $("route-speed").addEventListener("change", (e) => {
     const v = Number(String(e.target.value).replace(",", "."));
     if (v >= 0.5 && v <= 60) { routeSpeed = Math.round(v * 10) / 10; store.set("fw-route-speed", String(routeSpeed)); }
@@ -3933,10 +4235,18 @@
   });
   $("route-draught").addEventListener("change", (e) => {
     const v = Number(String(e.target.value).replace(",", "."));
+    const before = routeDraught;
     if (v >= 0 && v <= 15) { routeDraught = Math.round(v * 10) / 10; store.set("fw-route-draught", String(routeDraught)); }
     e.target.value = String(routeDraught);
+    if (routeDraught !== before) planLegs(route.legs.map((l, i) => (l.fw ? i : -1)).filter((i) => i >= 0));
   });
-  map.on("click", (e) => { if (route.on) addRoutePoint(e.latlng); });
+  // A tap on the map that only closes the route's little menu doesn't also add a point.
+  map.on("preclick", () => { routePopupWasOpen = Boolean(routePopup && map.hasLayer(routePopup)); });
+  map.on("click", (e) => {
+    if (!route.on) return;
+    if (routePopupWasOpen) { routePopupWasOpen = false; return; }
+    addRoutePoint(e.latlng);
+  });
 
   // Saved routes: a dashed line each, with the name at the start; tap one for its numbers.
   async function loadRoutes() {
@@ -3964,7 +4274,8 @@
         L.tooltip({ permanent: true, direction: "top", offset: [0, -4], className: "route-name-label" })
           .setLatLng(halfway(r.points)).setContent(esc(r.name)).addTo(savedLayer);
       }
-      for (const p of r.points) {
+      const stops = r.plan?.wp ? r.plan.wp.map((k) => r.points[k]).filter(Boolean) : r.points; // fairway turns get no dot
+      for (const p of stops) {
         L.circleMarker(p, { radius: 3, color: "#fff", weight: 1.5, fillColor: ROUTE_COLOR, fillOpacity: 1, interactive: false }).addTo(savedLayer);
       }
     }
