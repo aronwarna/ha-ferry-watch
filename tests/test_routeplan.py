@@ -13,11 +13,12 @@ NODE = shutil.which("node")
 SCRIPT = """
 const P = require(process.argv[1]);
 const out = {};
-const A = [60, 24], B = [60, 24.2], C = [60.1, 24.4], T1 = [60.01, 24.1], T2 = [60.05, 24.3];
+const copy = (v) => JSON.parse(JSON.stringify(v));
+const A = [60, 24], B = [60, 24.2], C = [60.1, 24.4], T1 = [60.01, 24.1], T2 = [60.05, 24.3], X = [60.03, 24.25];
 let stops = [], legs = [];
 out.first = P.addStop(stops, legs, A, true);
 out.second = P.addStop(stops, legs, B, true);
-legs[0].path = [T1]; legs[0].planned = true;
+legs[0].path = [T1, T2]; legs[0].planned = true;
 out.third = P.addStop(stops, legs, C, false);
 out.points = P.points(stops, legs);
 out.legPoints = P.legPoints(stops, legs, 0);
@@ -25,19 +26,48 @@ out.saved = P.toSaved(stops, legs);
 out.back = P.fromSaved(out.saved.points, out.saved.plan);
 out.plain = P.toSaved([A, B], [{ fw: false, path: [] }]);
 out.broken = P.fromSaved([A, T1, B], { wp: [0, 5], fw: [1] });
-// A saved fairway leg next to a straight one with points of its own (an older route).
 out.mixed = P.fromSaved([A, T1, B, T2, C], { wp: [0, 2, 4], fw: [1, 0] });
-// Bend the fairway leg through a new stop: both halves are planned again.
-out.insert = P.insertStop(stops, legs, 0, [60.02, 24.15]);
-out.afterInsert = { stops: JSON.parse(JSON.stringify(stops)), legs: JSON.parse(JSON.stringify(legs)) };
-out.move = P.moveStop(stops, legs, 2, [60.0, 24.25]);
-out.removeMiddleMixed = P.removeStop(stops, legs, 2);  // fairway + straight -> straight
-out.afterRemove = { stops: JSON.parse(JSON.stringify(stops)), legs: JSON.parse(JSON.stringify(legs)) };
-out.removeMiddleFw = P.removeStop(stops, legs, 1);  // fairway + fairway -> fairway
-out.mode = P.setLegMode(legs, 0, false);
-legs[0] = { fw: true, path: [T1, T2] };
-out.unpack = P.unpackLeg(stops, legs, 0);
-out.unpacked = { stops, legs };
+out.sections0 = P.sections(stops);
+out.kinds0 = out.sections0.map(([a, b]) => P.sectionKind(legs, a, b));
+
+// Pull the fairway leg's second piece out to X: the leg is unpacked, nothing to plan again.
+const keep = copy({ stops, legs });
+out.bendAt = P.insertBend(stops, legs, 0, 1, X);
+out.afterBend = copy({ stops, legs });
+out.bentPoints = P.points(stops, legs);
+out.sections1 = P.sections(stops);
+out.kinds1 = out.sections1.map(([a, b]) => P.sectionKind(legs, a, b));
+out.sectionPoints = P.sectionPoints(stops, legs, 0, 4);
+out.moveBend = P.moveStop(stops, legs, 2, [60.04, 24.26]);
+out.bendSaved = P.toSaved(stops, legs);
+out.bendBack = P.fromSaved(out.bendSaved.points, out.bendSaved.plan);
+
+// Moving one of the user's stops next to an automatic fairway leg plans it again.
+stops = keep.stops; legs = keep.legs;
+out.moveStop = P.moveStop(stops, legs, 1, [60, 24.21]);
+legs[0].path = [T1, T2];
+
+// A turn as a stop of its own.
+let s2 = copy(stops), l2 = copy(legs);
+out.turnStop = P.turnStop(s2, l2, 0, 1);
+out.turnStops = s2;
+
+// Straight from the start to the end: everything between goes.
+s2 = copy(stops); l2 = copy(legs);
+out.cut = P.setSection(s2, l2, 2, 0, false);
+out.afterCut = { stops: s2, legs: l2 };
+// Back along the fairways between the stops of a section.
+s2 = copy(out.afterBend.stops); l2 = copy(out.afterBend.legs);
+out.refw = P.setSection(s2, l2, 0, 4, true);
+out.afterRefw = { stops: s2, legs: l2 };
+
+// Removing the end when a bend comes before it: the bend becomes the end, a stop.
+s2 = [A, [60.02, 24.1, 1], B]; l2 = [{ fw: false, path: [] }, { fw: false, path: [] }];
+P.removeStop(s2, l2, 2);
+out.endFixed = s2;
+// Removing a stop between two fairway legs: one fairway leg, planned again.
+s2 = [A, B, C]; l2 = [{ fw: true, path: [T1] }, { fw: true, path: [] }];
+out.removeFw = P.removeStop(s2, l2, 1);
 console.log(JSON.stringify(out));
 """
 
@@ -46,27 +76,34 @@ console.log(JSON.stringify(out));
 def test_route_plan():
     out = json.loads(subprocess.run([NODE, "-e", SCRIPT, str(ROUTEPLAN)], capture_output=True, text=True,
                                     check=True).stdout)
-    A, B, C, T1, T2 = [60, 24], [60, 24.2], [60.1, 24.4], [60.01, 24.1], [60.05, 24.3]
+    A, B, C, T1, T2, X = [60, 24], [60, 24.2], [60.1, 24.4], [60.01, 24.1], [60.05, 24.3], [60.03, 24.25]
     assert out["first"] == [] and out["second"] == [0] and out["third"] == []
-    assert out["points"] == [A, T1, B, C]
-    assert out["legPoints"] == [A, T1, B]
-    assert out["saved"] == {"points": [A, T1, B, C], "plan": {"wp": [0, 2, 3], "fw": [1, 0]}}
+    assert out["points"] == [A, T1, T2, B, C]
+    assert out["legPoints"] == [A, T1, T2, B]
+    assert out["saved"] == {"points": [A, T1, T2, B, C], "plan": {"wp": [0, 3, 4], "fw": [1, 0]}}
     assert out["back"]["stops"] == [A, B, C]
-    assert [(l["fw"], l["path"]) for l in out["back"]["legs"]] == [(True, [T1]), (False, [])]
+    assert [(l["fw"], l["path"]) for l in out["back"]["legs"]] == [(True, [T1, T2]), (False, [])]
     assert out["plain"] == {"points": [A, B], "plan": None}
-    # A plan that doesn't fit the points: every point a stop, straight legs.
     assert out["broken"]["stops"] == [A, T1, B] and not any(l["fw"] for l in out["broken"]["legs"])
     assert out["mixed"]["stops"] == [A, B, T2, C]
-    assert [l["fw"] for l in out["mixed"]["legs"]] == [True, False, False]
-    assert out["insert"] == [0, 1]
-    assert out["afterInsert"]["stops"] == [A, [60.02, 24.15], B, C]
-    assert [l["fw"] for l in out["afterInsert"]["legs"]] == [True, True, False]
-    assert out["move"] == [1]  # leg 2-3 is straight: only the fairway leg before is planned again
-    assert out["removeMiddleMixed"] == []
-    assert out["afterRemove"]["stops"] == [A, [60.02, 24.15], C]
-    assert [l["fw"] for l in out["afterRemove"]["legs"]] == [True, False]
-    assert out["removeMiddleFw"] == []  # the leg after was straight, so the merged one is too
-    assert out["mode"] == []
-    assert out["unpack"] == []
-    assert out["unpacked"]["stops"] == [A, T1, T2, C]
-    assert [l["fw"] for l in out["unpacked"]["legs"]] == [False, False, False]
+    assert out["sections0"] == [[0, 1], [1, 2]] and out["kinds0"] == ["fw", "line"]
+
+    # The pulled-out bend sits between the two turns; the turns are bends now too.
+    assert out["bendAt"] == 2
+    assert out["afterBend"]["stops"] == [A, T1 + [1], X + [1], T2 + [1], B, C]
+    assert not any(l["fw"] for l in out["afterBend"]["legs"])
+    assert out["bentPoints"] == [A, T1, X, T2, B, C]
+    assert out["sections1"] == [[0, 4], [4, 5]] and out["kinds1"] == ["own", "line"]
+    assert out["sectionPoints"] == [A, T1, X, T2, B]
+    assert out["moveBend"] == []
+    assert out["bendSaved"]["plan"] == {"wp": [0, 1, 2, 3, 4, 5], "fw": [0] * 5, "bend": [1, 2, 3]}
+    assert out["bendBack"]["stops"] == [A, T1 + [1], [60.04, 24.26, 1], T2 + [1], B, C]
+
+    assert out["moveStop"] == [0]
+    assert out["turnStop"] == 2 and out["turnStops"] == [A, T1 + [1], T2 + [1], [60, 24.21], C]
+    assert out["cut"] == []
+    assert out["afterCut"]["stops"] == [A, C] and out["afterCut"]["legs"] == [{"fw": False, "path": []}]
+    assert out["refw"] == [0]
+    assert out["afterRefw"]["stops"] == [A, B, C] and [l["fw"] for l in out["afterRefw"]["legs"]] == [True, False]
+    assert out["endFixed"] == [A, [60.02, 24.1]]
+    assert out["removeFw"] == [0]

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.29.0
+
+- Route tool: easier to leave the fairway where you want. Pulling the route no longer
+  plans it again round the fairways: drag any dot on the line and only that bit moves.
+  - Each fairway turn is a filled dot to drag; the hollow dot halfway along each piece
+    pulls out a new bend.
+  - **Straight from here to…** (tap a stop, a dot or the line): then tap where to rejoin
+    the route, and the stretch between becomes one straight line, cutting out a loop
+    round an island.
+  - Tap a leg for **Along the fairways** to plan it along the fairways again, or
+    **Straight line**.
+- The panel lists legs between your own numbered stops (fairway, straight or own line);
+  bends aren't numbered. Saved routes keep their bends.
+- A fairway leg whose chart areas are still downloading is planned again by itself a
+  little later.
+
 ## 0.28.0
 
 - Route tool: a **Straight / Along fairways** switch at the top of the panel replaces the

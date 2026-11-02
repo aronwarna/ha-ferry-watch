@@ -68,8 +68,9 @@ def _points(value: Any, minimum: int) -> list[list[float]]:
 
 def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
     """A saved route's plan: wp, the indexes of its stops among the points (first and last
-    included, rising), and fw, 1 for each leg between stops that follows the fairways. None
-    for none, or one that doesn't fit the points."""
+    included, rising); fw, 1 for each leg between stops that follows the fairways; and bend,
+    which of the stops (as indexes into wp, neither end) are bends the user pulled the line
+    to rather than stops of their own. None for none, or one that doesn't fit the points."""
     if not isinstance(value, dict):
         return None
     wp, fw = value.get("wp"), value.get("fw")
@@ -79,7 +80,13 @@ def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
         return None
     if wp[0] != 0 or wp[-1] != n - 1 or any(b <= a for a, b in zip(wp, wp[1:])):
         return None
-    return {"wp": wp, "fw": fw} if any(fw) else None
+    bend = value.get("bend") or []
+    if not isinstance(bend, list) or not all(type(v) is int and 0 < v < len(wp) - 1 for v in bend) \
+            or any(b <= a for a, b in zip(bend, bend[1:])):
+        return None
+    if not any(fw) and not bend:
+        return None
+    return {"wp": wp, "fw": fw, **({"bend": bend} if bend else {})}
 
 
 def _mmsi(request: web.Request) -> int:

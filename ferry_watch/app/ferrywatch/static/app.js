@@ -3612,23 +3612,29 @@
   // --- measure and plan a route: nautical miles, true bearings, ETA ------------------------
   // Tap the map to add stops (or find a harbour by name). Each new leg goes straight or
   // along the marked fairways, as the switch at the top of the panel says; the add-on plans
-  // fairway legs from the drawn chart's fairway lines. Drag a stop to move it, drag the dot
-  // halfway along a leg to add a stop there (a fairway leg is planned again through it),
-  // tap a leg to make it straight or follow the fairways, tap a stop to remove it. Only the
-  // legs touched are planned again, so a stretch moved off the fairways stays put. Not a
-  // navigation tool. The route being drawn is kept in this browser between visits; saved
-  // routes are kept by the add-on.
+  // fairway legs from the drawn chart's fairway lines (see routeplan.js).
+  // Taking the route off the fairway where you want:
+  // - drag any dot on it: a filled one (a turn or a bend) moves, a hollow one (halfway along
+  //   a piece) pulls out a new bend. Only that bit of line moves; nothing is planned again.
+  // - tap a point or the line, "Straight from here to…", then tap where to rejoin the route:
+  //   the stretch between becomes one straight leg (a loop round an island is cut out).
+  // - tap a leg for "Along the fairways" or "Straight line" between your own stops.
+  // Moving one of your own stops plans its automatic fairway legs again. Not a navigation
+  // tool. The route being drawn is kept in this browser between visits; saved routes are
+  // kept by the add-on.
 
   const NavM = window.NavMath;
   const Plan = window.RoutePlan;
   const ROUTE_COLOR = "#c026d3";
   const ROUTE_ERROR = "#dc2626";
   const ROUTE_MAX_POINTS = 500;
-  const route = { on: false, stops: [], legs: [], points: [], undo: [], id: null, name: "", status: null, dragging: false };
+  const HANDLE_MIN_PX = 56; // a piece this long on screen gets a hollow dot to pull it by
+  const TURN_GAP_PX = 16; // fairway turns closer than this on screen to the last dot shown aren't given one
+  const route = { on: false, stops: [], legs: [], points: [], undo: [], id: null, name: "", status: null, dragging: false, pick: null };
   let routeMode = store.get("fw-route-mode") === "fw" ? "fw" : "line"; // for new legs
   let routeSpeed = Number(store.get("fw-route-speed")) || 25;
   let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
-  let routeLayer = null; // { group, casing, legs, labels, handles, markers }
+  let routeLayer = null; // { group, casing, legs, labels, handles, turns, markers, pick }
   let routePopup = null, routePopupWasOpen = false;
   const routeMarkers = [];
   let savedRoutes = [];
@@ -3651,6 +3657,13 @@
   const round6 = (v) => Math.round(v * 1e6) / 1e6;
   const latLngOf = (ll) => [round6(ll.lat), round6(((ll.lng + 540) % 360) - 180)];
   const legPending = (l) => l.fw && (l.busy || !l.planned);
+  const unplannedLegs = () => route.legs.map((l, i) => (l.fw && !l.planned ? i : -1)).filter((i) => i >= 0);
+
+  // The number shown on each of the user's own stops (bends have none).
+  function stopNumbers() {
+    let n = 0;
+    return route.stops.map((p) => (Plan.isBend(p) ? null : ++n));
+  }
 
   function setRouteMode(on) {
     if (on === route.on) return;
@@ -3664,6 +3677,7 @@
     } else {
       showFind(false);
       routePopup?.remove();
+      if (route.pick) cancelPick();
     }
     $("route").hidden = !on;
     $("route-button").setAttribute("aria-pressed", String(on));
@@ -3673,16 +3687,22 @@
     $("route-draught").value = String(routeDraught);
     $("route-name").value = route.name;
     renderRouteModes();
-    if (on) planLegs(route.legs.map((l, i) => (l.fw && !l.planned ? i : -1)).filter((i) => i >= 0));
+    if (on) planLegs(unplannedLegs());
     else drawRoute();
     renderSavedRoutes(); // not clickable while measuring, and the one being edited isn't drawn twice
   }
 
-  function routeIcon(i, n) {
-    const kind = i === 0 ? " start" : i === n - 1 ? " end" : "";
-    return L.divIcon({ className: "rp-icon", html: `<span class="rp${kind}">${i + 1}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] });
+  function stopIcon(i, numbers) {
+    if (Plan.isBend(route.stops[i])) return { key: "bend", icon: bendIcon };
+    const kind = i === 0 ? " start" : i === route.stops.length - 1 ? " end" : "";
+    return {
+      key: `${kind}/${numbers[i]}`,
+      icon: L.divIcon({ className: "rp-icon", html: `<span class="rp${kind}">${numbers[i]}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
+    };
   }
-  const midIcon = L.divIcon({ className: "rp-mid-icon", html: '<span class="rp-mid"></span>', iconSize: [32, 32], iconAnchor: [16, 16] });
+  // Filled: a point to drag (a fairway turn or a bend). Hollow: pull the line out from here.
+  const bendIcon = L.divIcon({ className: "rp-bend-icon", html: '<span class="rp-bend"></span>', iconSize: [28, 28], iconAnchor: [14, 14] });
+  const midIcon = L.divIcon({ className: "rp-mid-icon", html: '<span class="rp-mid"></span>', iconSize: [30, 30], iconAnchor: [15, 15] });
 
   function snapshot() {
     return JSON.stringify({ stops: route.stops, legs: route.legs.map((l) => legState({ ...l, planned: l.planned && !l.busy })) });
@@ -3699,11 +3719,13 @@
     route.stops = back.stops;
     route.legs = back.legs.map(legState);
     route.status = null;
+    route.pick = null;
     routePopup?.remove();
-    planLegs(route.legs.map((l, i) => (l.fw && !l.planned ? i : -1)).filter((i) => i >= 0));
+    planLegs(unplannedLegs());
   }
 
   function addRoutePoint(ll) {
+    if (route.pick) { cancelPick(); return; }
     if (route.points.length >= ROUTE_MAX_POINTS) return;
     pushUndo();
     route.status = null;
@@ -3712,21 +3734,22 @@
   }
 
   // Fairway legs are planned one at a time by the add-on. A leg changed meanwhile is a new
-  // leg object, so an answer for the old one is dropped.
+  // leg object, so an answer for the old one is dropped. While chart areas along the way are
+  // still downloading, the leg is asked for again a little later.
   let planChain = Promise.resolve();
   let planSeq = 0;
-  function planLegs(list, { fit = false } = {}) {
+  function planLegs(list, { fit = false, tries = 0 } = {}) {
     for (const i of list) {
       const leg = route.legs[i];
       if (!leg?.fw) continue;
       Object.assign(leg, { busy: true, planned: false, path: [], error: null, note: "", seq: ++planSeq });
       const seq = leg.seq;
-      planChain = planChain.then(() => planLeg(leg, seq, fit)).catch(console.error);
+      planChain = planChain.then(() => planLeg(leg, seq, fit, tries)).catch(console.error);
     }
     drawRoute();
   }
 
-  async function planLeg(leg, seq, fit) {
+  async function planLeg(leg, seq, fit, tries) {
     const i = route.legs.indexOf(leg);
     if (i < 0 || leg.seq !== seq) return;
     const a = route.stops[i], b = route.stops[i + 1];
@@ -3741,8 +3764,14 @@
     leg.planned = true;
     if (res.error) {
       leg.error = res.error;
+      if (res.downloading && tries < 4) {
+        setTimeout(() => {
+          const k = route.legs.indexOf(leg);
+          if (k >= 0 && leg.seq === seq && route.on) planLegs([k], { fit, tries: tries + 1 });
+        }, 20000);
+      }
     } else {
-      leg.path = (res.points || []).slice(1, -1);
+      leg.path = (res.points || []).slice(1, -1).map((p) => [p[0], p[1]]);
       leg.note = [...(res.warnings || []), res.downloading ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
         .filter(Boolean).join(" ");
     }
@@ -3750,10 +3779,22 @@
     if (fit && !res.error && route.legs.length === 1) map.fitBounds(L.latLngBounds(route.points), { ...routePadding(), maxZoom: 13 });
   }
 
+  // --- dragging: stops, fairway turns and bends move; hollow dots pull out a new bend ---
+  function routeDragStart() {
+    route.dragging = true;
+    route.pick = null;
+    routePopup?.remove();
+    map.getContainer().classList.add("route-dragging");
+  }
+  function routeDragEnd() {
+    route.dragging = false;
+    map.getContainer().classList.remove("route-dragging");
+  }
+
   function makeRouteMarker() {
     const m = L.marker([0, 0], { draggable: true, keyboard: false, zIndexOffset: 2000, autoPan: true });
     let touched = new Set();
-    m.on("dragstart", () => { pushUndo(); m.dragged = true; touched = new Set(); routeDragStart(); routePopup?.remove(); });
+    m.on("dragstart", () => { pushUndo(); m.dragged = true; touched = new Set(); routeDragStart(); });
     m.on("drag", () => {
       const i = routeMarkers.indexOf(m);
       if (i < 0) return;
@@ -3769,55 +3810,55 @@
     m.on("click", () => {
       if (m.dragged) return;
       const i = routeMarkers.indexOf(m);
-      if (i >= 0) stopMenu(i);
+      if (i >= 0) pointTapped({ stop: i }, route.stops[i]);
     });
     return m;
   }
 
-  // The dot halfway along a leg: drag it to add a stop there and bend the leg through it.
-  function makeHandle(i, at) {
-    const h = L.marker(at, { icon: midIcon, draggable: true, keyboard: false, zIndexOffset: 1500, autoPan: true, title: "Drag to move this leg" });
+  // A dot that, dragged, first makes a stop of its own (start(): its index), then moves it.
+  function makeDragDot(at, icon, title, start, onTap) {
+    const d = L.marker(at, { icon, draggable: true, keyboard: false, zIndexOffset: 1800, autoPan: true, title });
     let stop = -1;
-    h.on("dragstart", () => {
+    d.on("dragstart", () => {
       pushUndo();
-      h.dragged = true;
-      routePopup?.remove();
-      Plan.insertStop(route.stops, route.legs, i, latLngOf(h.getLatLng()));
-      stop = i + 1;
+      d.dragged = true;
       routeDragStart();
+      stop = start(latLngOf(d.getLatLng()));
     });
-    h.on("drag", () => {
-      Plan.moveStop(route.stops, route.legs, stop, latLngOf(h.getLatLng()));
+    d.on("drag", () => {
+      Plan.moveStop(route.stops, route.legs, stop, latLngOf(d.getLatLng()));
       scheduleRouteDraw();
     });
-    h.on("dragend", () => {
-      setTimeout(() => { h.dragged = false; }, 60);
+    d.on("dragend", () => {
+      setTimeout(() => { d.dragged = false; }, 60);
       routeDragEnd();
-      planLegs([stop - 1, stop]);
+      drawRoute();
     });
-    h.on("click", () => { if (!h.dragged) legMenu(i, h.getLatLng()); });
-    return h;
+    d.on("click", () => { if (!d.dragged) onTap(d.getLatLng()); });
+    return d;
   }
 
-  function routeDragStart() {
-    route.dragging = true;
-    map.getContainer().classList.add("route-dragging");
-  }
-  function routeDragEnd() {
-    route.dragging = false;
-    map.getContainer().classList.remove("route-dragging");
-  }
+  // Turn k of fairway leg i.
+  const makeTurn = (i, k, at) => makeDragDot(at, bendIcon, "Drag to move this turn",
+    () => Plan.turnStop(route.stops, route.legs, i, k), (ll) => pointTapped({ leg: i, turn: k }, ll));
+  // Halfway along piece k of leg i.
+  const makeHandle = (i, k, at) => makeDragDot(at, midIcon, "Drag to bend the route here",
+    (p) => Plan.insertBend(route.stops, route.legs, i, k, p), (ll) => lineTapped(i, ll));
 
   let routeFrame = 0;
   function scheduleRouteDraw() {
     if (!routeFrame) routeFrame = requestAnimationFrame(() => { routeFrame = 0; drawRoute(); });
   }
 
+  function saveDraft() {
+    store.set("fw-route-draft", JSON.stringify({ stops: route.stops, legs: route.legs.map(legState), id: route.id, name: route.name }));
+  }
+
   function drawRoute() {
     route.points = Plan.points(route.stops, route.legs);
     if (!route.on) {
       routeLayer?.group.remove();
-      store.set("fw-route-draft", JSON.stringify({ stops: route.stops, legs: route.legs.map(legState), id: route.id, name: route.name }));
+      saveDraft();
       return;
     }
     if (!routeLayer) {
@@ -3828,17 +3869,19 @@
         legs: L.layerGroup().addTo(group),
         labels: L.layerGroup().addTo(group),
         handles: L.layerGroup().addTo(group),
+        turns: L.layerGroup().addTo(group),
         markers: L.layerGroup().addTo(group),
+        pick: L.layerGroup().addTo(group),
       };
     }
     if (!map.hasLayer(routeLayer.group)) routeLayer.group.addTo(map);
     routeLayer.casing.setLatLngs(route.points);
     drawLegLines();
-    if (route.dragging) { // the marker being dragged must stay; the rest catches up on dragend
+    if (route.dragging) { // the dot being dragged must stay; the rest catches up on dragend
       renderRoutePanel();
       return;
     }
-    const stops = route.stops;
+    const stops = route.stops, numbers = stopNumbers();
     while (routeMarkers.length > stops.length) routeMarkers.pop().remove();
     stops.forEach((p, i) => {
       let m = routeMarkers[i];
@@ -3848,18 +3891,19 @@
         m.setLatLng(p).addTo(routeLayer.markers);
       }
       const ll = m.getLatLng();
-      if (ll.lat !== p[0] || ll.lng !== p[1]) m.setLatLng(p);
-      const key = `${i}/${stops.length}`;
-      if (m.iconKey !== key) { m.iconKey = key; m.setIcon(routeIcon(i, stops.length)); }
+      if (ll.lat !== p[0] || ll.lng !== p[1]) m.setLatLng([p[0], p[1]]);
+      const { key, icon } = stopIcon(i, numbers);
+      if (m.iconKey !== key) { m.iconKey = key; m.setIcon(icon); m.setZIndexOffset(key === "bend" ? 1900 : 2000); }
     });
-    drawHandlesAndLabels();
+    drawDots();
+    drawPick();
     renderRoutePanel();
-    store.set("fw-route-draft", JSON.stringify({ stops, legs: route.legs.map(legState), id: route.id, name: route.name }));
+    saveDraft();
   }
 
-  // Each leg: straight, along the fairways (a white line down its middle and a dot at each
-  // turn), still being planned (dashed) or not plannable (dashed red). A wide see-through
-  // line over each takes the taps.
+  // Each leg: straight, along the fairways (a white line down its middle), still being
+  // planned (dashed) or not plannable (dashed red). A wide see-through line over each takes
+  // the taps.
   function drawLegLines() {
     const group = routeLayer.legs;
     group.clearLayers();
@@ -3871,54 +3915,74 @@
         L.polyline(pts, { color: ROUTE_COLOR, weight: 3, opacity: 0.75, dashArray: "5 7", interactive: false }).addTo(group);
       } else {
         L.polyline(pts, { color: ROUTE_COLOR, weight: leg.fw ? 4.5 : 3.5, opacity: 1, interactive: false }).addTo(group);
-        if (leg.fw) {
-          L.polyline(pts, { color: "#fff", weight: 1.3, opacity: 0.95, interactive: false }).addTo(group);
-          for (const p of leg.path) {
-            L.circleMarker(p, { radius: 2.6, color: "#fff", weight: 1.2, fillColor: ROUTE_COLOR, fillOpacity: 1, interactive: false }).addTo(group);
-          }
-        }
+        if (leg.fw) L.polyline(pts, { color: "#fff", weight: 1.3, opacity: 0.95, interactive: false }).addTo(group);
       }
       if (!route.dragging) {
         const hit = L.polyline(pts, { color: "#000", opacity: 0, weight: 24, interactive: true, bubblingMouseEvents: false }).addTo(group);
-        hit.on("click", (e) => { L.DomEvent.stop(e); legMenu(i, e.latlng); });
+        hit.on("click", (e) => { L.DomEvent.stop(e); lineTapped(i, e.latlng); });
       }
     });
   }
 
+  const px = (p) => map.latLngToContainerPoint(p);
   const screenLength = (pts) => {
-    let px = 0;
-    for (let k = 1; k < pts.length; k++) px += map.latLngToContainerPoint(pts[k - 1]).distanceTo(map.latLngToContainerPoint(pts[k]));
-    return px;
+    let n = 0;
+    for (let k = 1; k < pts.length; k++) n += px(pts[k - 1]).distanceTo(px(pts[k]));
+    return n;
   };
 
-  function legLabel(leg, pts) {
+  // The dots to drag: each fairway turn (where there's room), a hollow one halfway along
+  // every piece long enough on screen, and a label on each section.
+  function drawDots() {
+    routeLayer.labels.clearLayers();
+    routeLayer.handles.clearLayers();
+    routeLayer.turns.clearLayers();
+    const size = map.getSize();
+    const onScreen = (p) => p.x > -40 && p.y > -40 && p.x < size.x + 40 && p.y < size.y + 40;
+    route.legs.forEach((leg, i) => {
+      const pts = Plan.legPoints(route.stops, route.legs, i);
+      const scr = pts.map(px);
+      if (leg.fw && !legPending(leg) && !leg.error) {
+        let last = scr[0];
+        for (let k = 0; k < leg.path.length; k++) {
+          const p = scr[k + 1];
+          if (p.distanceTo(last) < TURN_GAP_PX || p.distanceTo(scr[scr.length - 1]) < TURN_GAP_PX || !onScreen(p)) continue;
+          makeTurn(i, k, pts[k + 1]).addTo(routeLayer.turns);
+          last = p;
+        }
+      }
+      if (legPending(leg)) return;
+      for (let k = 0; k + 1 < pts.length; k++) {
+        if (scr[k].distanceTo(scr[k + 1]) < HANDLE_MIN_PX) continue;
+        const mid = scr[k].add(scr[k + 1]).divideBy(2);
+        if (onScreen(mid)) makeHandle(i, k, map.containerPointToLatLng(mid)).addTo(routeLayer.handles);
+      }
+    });
+    for (const [a, b] of Plan.sections(route.stops)) {
+      const pts = Plan.sectionPoints(route.stops, route.legs, a, b);
+      const len = screenLength(pts);
+      if (len < 130) continue;
+      // Beside the middle, along the line, clear of the hollow dot there.
+      const along = halfwayAt(pts, 0.5 + Math.min(0.25, 60 / len));
+      const bad = route.legs.slice(a, b).some((l) => l.fw && l.error);
+      L.marker(along, {
+        interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "leg-label", html: `<span${bad ? ' class="error"' : ""}>${esc(sectionLabel(a, b, pts))}</span>`, iconSize: null }),
+      }).addTo(routeLayer.labels);
+    }
+  }
+  map.on("moveend", () => { if (route.on && !route.dragging) drawDots(); });
+
+  function sectionLabel(a, b, pts) {
     const nm = NavM.nm(NavM.totalNm(pts));
-    if (!leg.fw) return `${nm} · ${NavM.degrees(NavM.legs(pts)[0].bearing)}`;
+    const kind = Plan.sectionKind(route.legs, a, b);
+    if (kind === "line") return `${nm} · ${NavM.degrees(NavM.legs(pts)[0].bearing)}`;
+    if (kind === "own") return nm;
+    const leg = route.legs[a];
     if (leg.error) return "No fairway way";
     if (legPending(leg)) return "Planning…";
     return `${nm} · fairway`;
   }
-
-  // "2.2 NM · 214°" on each leg long enough on screen to hold it, and the dot to drag it by.
-  function drawHandlesAndLabels() {
-    routeLayer.labels.clearLayers();
-    routeLayer.handles.clearLayers();
-    route.legs.forEach((leg, i) => {
-      const pts = Plan.legPoints(route.stops, route.legs, i);
-      const px = screenLength(pts);
-      if (px < 56) return;
-      const mid = halfway(pts);
-      makeHandle(i, mid).addTo(routeLayer.handles);
-      if (px < 130) return;
-      // The label just beside the dot, along the leg.
-      const along = halfwayAt(pts, 0.5 + Math.min(0.25, 52 / px));
-      L.marker(along, {
-        interactive: false, keyboard: false,
-        icon: L.divIcon({ className: "leg-label", html: `<span${leg.fw && leg.error ? ' class="error"' : ""}>${esc(legLabel(leg, pts))}</span>`, iconSize: null }),
-      }).addTo(routeLayer.labels);
-    });
-  }
-  map.on("zoomend", () => { if (route.on && !route.dragging) drawHandlesAndLabels(); });
 
   // The point a share of the way along a line, by distance.
   function halfwayAt(points, share) {
@@ -3934,7 +3998,80 @@
     return points[points.length - 1];
   }
 
-  // --- the little menus for a stop and a leg ---
+  // The piece of leg i nearest a place, and the nearest point on it.
+  function nearestPiece(i, ll) {
+    const pts = Plan.legPoints(route.stops, route.legs, i);
+    const p = px(ll);
+    let best = { k: 0, d: Infinity, at: pts[0] };
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const foot = L.LineUtil.closestPointOnSegment(p, px(pts[k]), px(pts[k + 1]));
+      const d = foot.distanceTo(p);
+      if (d < best.d) best = { k, d, at: latLngOf(map.containerPointToLatLng(foot)) };
+    }
+    return best;
+  }
+
+  // --- "Straight from here to…": cut a stretch out of the route ---
+  // A place on the route: { stop }, a fairway turn { leg, turn }, or a place on a leg's line
+  // { leg, at }. Made a stop of its own when needed; returns its index.
+  function stopAt(ref) {
+    if (ref.stop != null) return ref.stop;
+    if (ref.turn != null) return Plan.turnStop(route.stops, route.legs, ref.leg, ref.turn);
+    const { k, at } = nearestPiece(ref.leg, ref.at);
+    return Plan.insertBend(route.stops, route.legs, ref.leg, k, at);
+  }
+  const refPosition = (ref) => (ref.stop != null ? ref.stop : ref.leg + 0.5);
+
+  function startPick(ref) {
+    pushUndo();
+    route.pick = { stop: stopAt(ref), undo: route.undo.length };
+    route.status = null;
+    drawRoute();
+  }
+
+  function finishPick(ref) {
+    const before = route.stops.length;
+    let from = route.pick.stop;
+    const to = stopAt(ref);
+    if (refPosition(ref) < from) from += route.stops.length - before;
+    route.pick = null;
+    if (to === from) {
+      route.status = { text: "That's where the cut starts: tap another point on the route." };
+      route.pick = { stop: from, undo: route.undo.length };
+      drawRoute();
+      return;
+    }
+    Plan.setSection(route.stops, route.legs, Math.min(from, to), Math.max(from, to), false);
+    route.status = { text: "Cut straight across. Drag its hollow dot to bend it round anything in the way." };
+    drawRoute();
+  }
+
+  function cancelPick() {
+    const pick = route.pick;
+    route.pick = null;
+    // Nothing else changed since: take back the stop the cut would have started from.
+    if (pick && route.undo.length === pick.undo) undoRoute();
+    else drawRoute();
+  }
+
+  function drawPick() {
+    routeLayer.pick.clearLayers();
+    map.getContainer().classList.toggle("route-picking", Boolean(route.pick));
+    const p = route.pick && route.stops[route.pick.stop];
+    if (p) L.circleMarker([p[0], p[1]], { radius: 17, color: ROUTE_COLOR, weight: 2.5, dashArray: "4 4", fill: false, interactive: false }).addTo(routeLayer.pick);
+  }
+
+  function pointTapped(ref, at) {
+    if (route.pick) finishPick(ref);
+    else pointMenu(ref, at);
+  }
+
+  function lineTapped(i, ll) {
+    if (route.pick) finishPick({ leg: i, at: ll });
+    else sectionMenu(i, ll);
+  }
+
+  // --- the little menus for a point and a leg ---
   function openRoutePopup(at, el, offset = [0, -6]) {
     routePopup?.remove();
     routePopup = L.popup({ className: "fw-popup aid-popup route-popup", offset, autoPanPaddingTopLeft: [20, 90] })
@@ -3950,54 +4087,69 @@
     return b;
   }
 
-  function stopMenu(i) {
-    const n = route.stops.length;
+  function routeMenu(titleText, subText, subError = false) {
     const el = document.createElement("div");
     el.className = "rp-menu";
     const title = document.createElement("strong");
-    title.textContent = i === 0 ? "Start" : i === n - 1 ? "End" : `Point ${i + 1}`;
-    const where = document.createElement("div");
-    where.className = "small muted";
-    where.textContent = NavM.position(...route.stops[i]);
-    el.append(title, where, menuButton(i === 0 ? "Remove the start" : i === n - 1 ? "Remove the end" : "Remove this point", () => {
-      pushUndo();
-      planLegs(Plan.removeStop(route.stops, route.legs, i));
-    }));
-    openRoutePopup(route.stops[i], el, [0, -14]);
+    title.textContent = titleText;
+    const sub = document.createElement("div");
+    sub.className = `small muted${subError ? " error" : ""}`;
+    sub.textContent = subText;
+    el.append(title, sub);
+    return el;
   }
 
-  function legMenu(i, at) {
-    const leg = route.legs[i];
-    if (!leg) return;
-    const pts = Plan.legPoints(route.stops, route.legs, i);
-    const el = document.createElement("div");
-    el.className = "rp-menu";
-    const title = document.createElement("strong");
-    title.textContent = `Leg ${i + 1}–${i + 2} · ${NavM.nm(NavM.totalNm(pts))}`;
-    const sub = document.createElement("div");
-    sub.className = "small muted";
-    sub.textContent = !leg.fw ? `Straight, ${NavM.degrees(NavM.legs(pts)[0].bearing)}`
-      : leg.error ? leg.error : legPending(leg) ? "Planning along the marked fairways…"
-        : `Along the marked fairways for ${routeDraught} m draught`;
-    if (leg.fw && leg.error) sub.classList.add("error");
-    el.append(title, sub);
-    const where = latLngOf(L.latLng(at));
-    el.append(menuButton(leg.fw ? "Make it straight" : "Follow the fairways", () => {
+  function pointMenu(ref, at) {
+    const n = route.stops.length;
+    const numbers = stopNumbers();
+    let title;
+    if (ref.turn != null) title = "Fairway turn";
+    else if (Plan.isBend(route.stops[ref.stop])) title = "Bend";
+    else title = ref.stop === 0 ? "Start" : ref.stop === n - 1 ? "End" : `Stop ${numbers[ref.stop]}`;
+    const where = L.latLng(at);
+    const el = routeMenu(title, NavM.position(where.lat, where.lng));
+    if (n > 1) el.append(menuButton("Straight from here to…", () => startPick(ref), true));
+    el.append(menuButton(ref.turn != null || Plan.isBend(route.stops[ref.stop]) ? "Remove this bend" : "Remove this stop", () => {
       pushUndo();
-      planLegs(Plan.setLegMode(route.legs, i, !leg.fw));
-    }, true));
-    if (leg.fw && (leg.error || leg.note)) el.append(menuButton("Plan it again", () => planLegs([i])));
-    el.append(menuButton("Add a point here", () => {
-      pushUndo();
-      planLegs(Plan.insertStop(route.stops, route.legs, i, where));
+      planLegs(Plan.removeStop(route.stops, route.legs, stopAt(ref)));
     }));
-    if (leg.fw && leg.planned && !leg.busy && leg.path.length) {
-      el.append(menuButton("Make its turns movable", () => {
+    openRoutePopup(at, el, [0, ref.stop != null && !Plan.isBend(route.stops[ref.stop]) ? -14 : -8]);
+  }
+
+  function sectionMenu(i, at) {
+    const [a, b] = Plan.sectionOf(route.stops, i);
+    const kind = Plan.sectionKind(route.legs, a, b);
+    const pts = Plan.sectionPoints(route.stops, route.legs, a, b);
+    const numbers = stopNumbers();
+    const leg = route.legs[a];
+    const sub = kind === "line" ? `Straight, ${NavM.degrees(NavM.legs(pts)[0].bearing)}`
+      : kind === "own" ? `Your own line, ${b - a - 1} ${b - a === 2 ? "bend" : "bends"}`
+        : leg.error ? leg.error : legPending(leg) ? "Planning along the marked fairways…"
+          : `Along the marked fairways for ${routeDraught} m draught`;
+    const el = routeMenu(`Leg ${numbers[a]}–${numbers[b]} · ${NavM.nm(NavM.totalNm(pts))}`, sub, kind === "fw" && Boolean(leg.error));
+    const where = L.latLng(at);
+    el.append(menuButton("Straight from here to…", () => startPick({ leg: i, at: where }), true));
+    if (kind !== "fw") {
+      el.append(menuButton("Along the fairways", () => {
         pushUndo();
-        Plan.unpackLeg(route.stops, route.legs, i);
+        planLegs(Plan.setSection(route.stops, route.legs, a, b, true));
+      }));
+    } else if (leg.error || leg.note) {
+      el.append(menuButton("Plan it again", () => planLegs([a])));
+    }
+    if (kind !== "line") {
+      el.append(menuButton("Straight line", () => {
+        pushUndo();
+        Plan.setSection(route.stops, route.legs, a, b, false);
         drawRoute();
       }));
     }
+    el.append(menuButton("Add a point here", () => {
+      pushUndo();
+      const { k, at: foot } = nearestPiece(i, where);
+      Plan.insertBend(route.stops, route.legs, i, k, foot);
+      drawRoute();
+    }));
     openRoutePopup(at, el);
   }
 
@@ -4008,11 +4160,12 @@
   }
 
   function routeHint() {
+    if (route.pick) return { text: "Now tap where to rejoin the route: a stop, a dot or the line. Tap the map to cancel." };
     if (route.status) return route.status;
     const legs = route.legs;
     if (legs.some((l) => l.fw && l.busy)) return { text: "Planning along the marked fairways…" };
     const bad = legs.findIndex((l) => l.fw && l.error);
-    if (bad >= 0) return { text: `Leg ${bad + 1}–${bad + 2}: ${legs[bad].error} Tap it to make it straight.`, error: true };
+    if (bad >= 0) return { text: `${legs[bad].error} Tap the dashed leg to make it straight.`, error: true };
     const notes = [...new Set(legs.filter((l) => l.fw && l.note).map((l) => l.note))];
     if (route.stops.length < 2) {
       return { text: routeMode === "fw" ? "Tap the start, then the end, or find a harbour by name. The route follows the marked fairways."
@@ -4020,7 +4173,7 @@
     }
     if (legs.some((l) => l.fw)) {
       return { text: [`Fairway legs for ${routeDraught} m draught, planning only: check them on the chart.`, ...notes,
-        "Drag a leg's dot to move it, tap a leg to make it straight."].join(" ") };
+        "To leave the fairway, drag a dot on the line, or tap the line for “Straight from here to…”."].join(" ") };
     }
     return null;
   }
@@ -4034,43 +4187,59 @@
     setText($("route-hint"), hint?.text || "");
     $("route-hint").hidden = !hint;
     $("route-hint").classList.toggle("error", Boolean(hint?.error));
+    $("route-pick-cancel").hidden = !route.pick;
 
+    const numbers = stopNumbers();
     const items = [];
-    stops.forEach((p, i) => {
-      if (i > 0) {
-        const leg = route.legs[i - 1];
-        const legPts = Plan.legPoints(stops, route.legs, i - 1);
-        const nm = NavM.totalNm(legPts);
-        const li = document.createElement("li");
-        li.className = `rp-leg${leg.fw ? " fw" : ""}${leg.fw && leg.error ? " error" : ""}${legPending(leg) ? " busy" : ""}`;
-        li.tabIndex = 0;
-        li.title = "Change this leg";
-        const t = NavM.etaSeconds(nm, routeSpeed);
-        const how = !leg.fw ? NavM.degrees(NavM.legs(legPts)[0].bearing) : leg.error ? "no fairway" : legPending(leg) ? "planning…" : "fairway";
-        li.innerHTML = `<span class="leg-n">${i}–${i + 1}</span><strong>${NavM.nm(nm)}</strong><span class="leg-how">${how}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
-        const open = () => { const mid = halfway(legPts); map.panInside(mid, routePadding()); legMenu(i - 1, mid); };
-        li.addEventListener("click", open);
-        li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
-        items.push(li);
-      }
+    const stopRow = (i) => {
+      const p = stops[i];
       const li = document.createElement("li");
       li.className = "rp-row";
       const n = document.createElement("span");
       n.className = `rp${i === 0 ? " start" : i === stops.length - 1 && i > 0 ? " end" : ""}`;
-      n.textContent = String(i + 1);
+      n.textContent = String(numbers[i]);
       const where = document.createElement("span");
       where.className = "grow";
       where.textContent = NavM.position(p[0], p[1]);
       const del = document.createElement("button");
       del.type = "button";
       del.className = "icon-button plain";
-      del.setAttribute("aria-label", `Remove point ${i + 1}`);
+      del.setAttribute("aria-label", `Remove stop ${numbers[i]}`);
       del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>';
       del.addEventListener("click", () => { pushUndo(); planLegs(Plan.removeStop(route.stops, route.legs, i)); });
-      where.addEventListener("click", () => map.panTo(p));
+      where.addEventListener("click", () => map.panTo([p[0], p[1]]));
       li.append(n, where, del);
-      items.push(li);
-    });
+      return li;
+    };
+    if (stops.length) items.push(stopRow(0));
+    for (const [a, b] of Plan.sections(stops)) {
+      const kind = Plan.sectionKind(route.legs, a, b);
+      const legs = route.legs.slice(a, b);
+      const secPts = Plan.sectionPoints(stops, route.legs, a, b);
+      const nm = NavM.totalNm(secPts);
+      const busy = legs.some(legPending), bad = legs.some((l) => l.fw && l.error);
+      const li = document.createElement("li");
+      li.className = `rp-leg ${kind}${bad ? " error" : ""}${busy ? " busy" : ""}`;
+      li.tabIndex = 0;
+      li.title = "Change this leg";
+      const t = NavM.etaSeconds(nm, routeSpeed);
+      const how = kind === "line" ? NavM.degrees(NavM.legs(secPts)[0].bearing) : kind === "own" ? "own line"
+        : bad ? "no fairway" : busy ? "planning…" : "fairway";
+      li.innerHTML = `<span class="leg-n">${numbers[a]}–${numbers[b]}</span><strong>${NavM.nm(nm)}</strong><span class="leg-how">${how}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
+      const open = () => {
+        const mid = halfwayAt(secPts, 0.5);
+        map.panInside(mid, routePadding());
+        let leg = a, d = Infinity; // the leg the middle is on
+        for (let k = a; k < b; k++) {
+          const near = nearestPiece(k, L.latLng(mid)).d;
+          if (near < d) { d = near; leg = k; }
+        }
+        sectionMenu(leg, mid);
+      };
+      li.addEventListener("click", open);
+      li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+      items.push(li, stopRow(b));
+    }
     $("route-points").replaceChildren(...items);
     $("route-points").hidden = !items.length;
     $("route-undo").disabled = !route.undo.length;
@@ -4175,6 +4344,7 @@
 
   function clearRoute() {
     if (route.stops.length) pushUndo();
+    route.pick = null;
     route.stops = [];
     route.legs = [];
     route.id = null;
@@ -4193,6 +4363,7 @@
     route.id = r.id;
     route.name = r.name;
     route.undo = [];
+    route.pick = null;
     route.status = null;
     routeSpeed = r.speed || routeSpeed;
     if (route.on) {
@@ -4208,7 +4379,8 @@
 
   $("route-button").addEventListener("click", () => setRouteMode(!route.on));
   $("route-close").addEventListener("click", () => setRouteMode(false));
-  $("route-undo").addEventListener("click", undoRoute);
+  $("route-undo").addEventListener("click", () => { route.pick = null; undoRoute(); });
+  $("route-pick-cancel").addEventListener("click", cancelPick);
   $("route-clear").addEventListener("click", clearRoute);
   $("route-save").addEventListener("click", saveRoute);
   $("route-name").addEventListener("keydown", (e) => { if (e.key === "Enter" && route.points.length > 1) saveRoute(); });
@@ -4245,7 +4417,7 @@
   map.on("click", (e) => {
     if (!route.on) return;
     if (routePopupWasOpen) { routePopupWasOpen = false; return; }
-    addRoutePoint(e.latlng);
+    addRoutePoint(e.latlng); // or, while picking where a cut rejoins, cancels that
   });
 
   // Saved routes: a dashed line each, with the name at the start; tap one for its numbers.
@@ -4879,6 +5051,7 @@
     if (typing && e.target.closest("#route")) e.target.blur();
     else if (drawing) cancelDrawing();
     else if (popupOpen) map.closePopup();
+    else if (route.pick) cancelPick();
     else if (historyView.isOpen()) historyView.escape();
     else if (!$("weather-sheet").hidden) toggleWeather(false);
     else if (!$("conditions-sheet").hidden) toggleConditions(false);

@@ -694,12 +694,26 @@ body.attribution-open .strip { visibility: hidden; }
 .rp-leg strong { font-size: 13px; }
 .rp-leg { cursor: pointer; }
 .rp-leg:hover .leg-how, .rp-leg:focus-visible .leg-how { text-decoration: underline; }
-.rp-leg.fw { border-left-style: solid; border-left-width: 3px; padding-left: 17px; }
+.rp-leg.fw, .rp-leg.own { border-left-style: solid; border-left-width: 3px; padding-left: 17px; }
+.rp-leg.own { border-left-color: color-mix(in srgb, var(--route) 55%, transparent); }
 .rp-leg.busy { border-left-style: dotted; }
 .rp-leg.error { border-left-color: #dc2626; }
 .rp-leg.error .leg-how { color: #dc2626; }
 .leg-n { display: none; }
-.route-hint { margin: 0; }
+.route-hint { margin: 0; flex: 1; }
+.route-hint-row { display: flex; align-items: center; gap: 8px; }
+.route-hint-row:has(.route-hint[hidden]):has(.route-pick-cancel[hidden]) { display: none; }
+.route-pick-cancel {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 2px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: 600 13px/1.2 system-ui, sans-serif;
+  cursor: pointer;
+}
 .route-hint.error { color: #dc2626; }
 .route-actions { display: flex; align-items: center; gap: 6px; }
 .route-actions .icon-button {
@@ -746,6 +760,24 @@ body.attribution-open .strip { visibility: hidden; }
   cursor: grab;
 }
 .rp-mid-icon:hover .rp-mid { width: 17px; height: 17px; }
+/* A fairway turn or a bend: a filled dot to drag */
+.rp-bend {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #c026d3;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  box-sizing: border-box;
+  cursor: grab;
+}
+.rp-bend-icon:hover .rp-bend { width: 16px; height: 16px; }
+.route-picking { cursor: pointer; }
+.route-picking .rp-mid-icon .rp-mid { border-style: dashed; }
 .route-dragging .rp-mid-icon:not(.leaflet-drag-target), .route-dragging .leg-label { visibility: hidden; }
 .leg-label span.error { color: #dc2626; border-color: rgba(220, 38, 38, 0.45); }
 /* The little menu for a stop or a leg */

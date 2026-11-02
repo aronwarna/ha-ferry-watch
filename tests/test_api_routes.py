@@ -132,6 +132,14 @@ def test_route_plan_saved_with_the_points(tmp_path):
                     {"wp": [0, 2, 3], "fw": [0, 0]}, {"wp": [0, 2, 3], "fw": [True, 0]}, "x"):
             r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts, "plan": bad})).json()
             assert "plan" not in r, bad
+        # A route with bends the user pulled the line to, and no fairway legs.
+        bent = {"wp": [0, 1, 2, 3], "fw": [0, 0, 0], "bend": [1, 2]}
+        r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts, "plan": bent})).json()
+        assert r["plan"] == bent
+        for bad_bend in ([0], [3], [2, 1], ["1"], 1):
+            r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts,
+                                                              "plan": {**bent, "bend": bad_bend}})).json()
+            assert "plan" not in r, bad_bend
         assert (await client.post("/api/routes", json={"points": [[60, 24]] * 500})).status == 200
 
     run_with_client(tmp_path, body)
