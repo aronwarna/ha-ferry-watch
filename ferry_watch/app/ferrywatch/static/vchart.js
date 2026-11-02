@@ -2511,13 +2511,18 @@
     dataChars = 0;
     dataRev = rev;
   }
+  // Until the server's revision is known (the first moments after the panel opens), nothing
+  // is taken from or kept in the browser: a tile kept by an older version would show and
+  // never be replaced.
   function dataGet(key) {
+    if (!rev) return undefined;
     dataCheck();
     const text = tileData.get(key);
     if (text !== undefined) { tileData.delete(key); tileData.set(key, text); }
     return text;
   }
   function dataPut(key, text) {
+    if (!rev) return;
     dataCheck();
     if (tileData.has(key)) dataChars -= tileData.get(key).length;
     tileData.delete(key);
@@ -2556,6 +2561,7 @@
     return storeDb;
   }
   function storeGet(key) {
+    if (!rev) return Promise.resolve(null);
     const id = `${rev}|${key}`;
     return store().then((db) => db && new Promise((resolve) => {
       try {
@@ -2568,6 +2574,7 @@
     }));
   }
   function storePut(key, text) {
+    if (!rev) return;
     const id = `${rev}|${key}`;
     store().then((db) => {
       if (!db) return;
@@ -2609,7 +2616,8 @@
   const inflight = new Map(); // "z/x/y" -> Promise<{ pending, partial, text }>
   function fetchData(key, signal) {
     const url = `api/vchart/${key}?r=${rev}`;
-    return fetch(url, signal ? { signal } : undefined).then(async (r) => {
+    // Without the revision, past the browser's own cache too (see dataGet).
+    return fetch(url, { signal, cache: rev ? "default" : "no-store" }).then(async (r) => {
       if (!r.ok && r.status !== 202) throw new Error(`HTTP ${r.status}`);
       const text = await r.text();
       const pending = r.status === 202;
@@ -2896,7 +2904,7 @@
         return;
       }
       const z = this._tileZoom;
-      if (z == null) return;
+      if (z == null || !rev) return;
       const center = map.getCenter();
       const minZ = Math.max(this.options.minZoom, serverMinZoom), maxZ = this.options.maxZoom;
       const list = [];

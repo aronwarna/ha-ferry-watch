@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.31.2
+
+- Fixes the drawn chart showing tiles the phone kept from before an update (so 0.31.1's
+  extra depth contours didn't show): in the first moments after the panel opens, before
+  it knows the chart's version, tiles are now always fetched fresh, and nothing kept
+  from then is used again.
+- Note: Traficom's open data has extra depth contours only at 15 m and 30 m, so those
+  are the faint lines you'll see. The official chart's many other contours come from
+  Traficom's electronic chart cells, which aren't open data.
+
 ## 0.31.1
 
 - More depth contours on the drawn chart up close: from zoom 14, the depth contours the
