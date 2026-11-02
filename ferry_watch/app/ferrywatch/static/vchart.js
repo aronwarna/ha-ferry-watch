@@ -113,7 +113,7 @@
     if (close) ctx.closePath();
   }
 
-  function fillRings(ctx, rings, color, cutAt) {
+  function fillRings(ctx, rings, color, cutAt, seam) {
     ctx.beginPath();
     for (const ring of rings) path(ctx, ring, true);
     ctx.fillStyle = color;
@@ -124,7 +124,8 @@
     // thin channel across the land (zoomed out, where block edges fall inside tiles).
     // ``cutAt(c)`` tells those lines apart; without it every straight edge is taken for
     // one. (Edges are on the tile's whole units, so many short ones are straight too: left
-    // unlined, their seams showed as a fine grey grid all over the shallows.)
+    // unlined, their seams showed as a fine grey grid all over the shallows.) ``seam``: the
+    // hairline's width in tile units, at least a screen pixel for the water (see drawTile).
     ctx.beginPath();
     for (const ring of rings) {
       for (let i = 0, n = ring.length; i < n; i += 2) {
@@ -138,7 +139,7 @@
     const cap = ctx.lineCap;
     ctx.lineCap = "round";
     ctx.strokeStyle = color;
-    ctx.lineWidth = 0.6;
+    ctx.lineWidth = seam ?? 0.6;
     ctx.stroke();
     ctx.lineCap = cap;
   }
@@ -1778,8 +1779,13 @@
       const w = water.getContext("2d");
       w.setTransform(k, 0, 0, k, 0, 0);
       const cut = cutLines(zoom, e);
-      for (const [band, ...rings] of data.xdepth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut);
-      for (const [band, ...rings] of data.depth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut);
+      // The seams' hairline a whole screen pixel wide: thinner (0.6 units is a third of a
+      // pixel on a computer's screen zoomed out), the seams between the archipelago's many
+      // small areas let the coast's black through, a grey speckle all over the shallows,
+      // with the chart blocks' edges (where pieces overlap instead) showing as a light grid.
+      const seam = Math.max(0.6, 1 / k);
+      for (const [band, ...rings] of data.xdepth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut, seam);
+      for (const [band, ...rings] of data.depth || []) fillRings(w, rings, C.depth[band] ?? C.depth[4], cut, seam);
       const edge = scratch(1, size);
       const g = edge.getContext("2d");
       const d = Math.max(1, Math.round(0.9 * dpr));

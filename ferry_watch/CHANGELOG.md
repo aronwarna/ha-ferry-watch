@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.31.3
+
+- Fixes the grid on the zoomed-out drawn chart, mostly on a computer screen: the thin
+  line that hides the seams between neighbouring depth areas was only a third of a
+  pixel there, so in the archipelago's thousands of small areas the seams let a grey
+  speckle through, and the chart blocks' edges (where the pieces overlap instead) stood
+  out as a light grid. That line is now always at least one screen pixel wide.
+
 ## 0.31.2
 
 - Fixes the drawn chart showing tiles the phone kept from before an update (so 0.31.1's

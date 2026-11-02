@@ -600,8 +600,12 @@ def _fake_finland(key: str, bbox) -> list[dict]:
     feats = []
     if key != "depth":
         return feats
+    if os.environ.get("FW_FAKE_FINLAND_SEA") == "patch":
+        return _fake_patchwork(bbox)
     base = ne_base()
-    for kind, d1, d2 in (("fi_sea", 10, 50), ("lakes", 3, 6)):
+    # FW_FAKE_FINLAND_SEA="3,6": the sea that shallow instead (light blue: seams show white).
+    sea = [float(v) for v in (os.environ.get("FW_FAKE_FINLAND_SEA") or "10,50").split(",")]
+    for kind, d1, d2 in (("fi_sea", sea[0], sea[1]), ("lakes", 3, 6)):
         polys = []  # one feature of them all, as the base map's pieces meet edge to edge
         for (x0, y0, x1, y1), poly in base[kind]:
             if x1 < minx or x0 > maxx or y1 < miny or y0 > maxy:
@@ -615,6 +619,46 @@ def _fake_finland(key: str, bbox) -> list[dict]:
                 polys.append(rings)
         if polys:
             feats.append({"geometry": {"type": "MultiPolygon", "coordinates": polys},
+                          "properties": {"DRVAL1": d1, "DRVAL2": d2}})
+    return feats
+
+
+PATCH_CELL = 1500.0  # mercator metres
+
+
+def _fake_patchwork(bbox) -> list[dict]:
+    """FW_FAKE_FINLAND_SEA=patch: the sea as a patchwork of small depth areas sharing their
+    edges, shallow (light blue) and deep (white) mixed, as in the archipelago: any seam
+    between them, or where the chart's blocks meet, shows when zoomed out. Whole areas, as
+    the WFS gives them (not cut at the box)."""
+    minx, miny, maxx, maxy = bbox
+    s = PATCH_CELL
+
+    def h(*key: int) -> float:
+        return random.Random(hash(key) & 0xFFFFFFFF).random()
+
+    def vertex(i: int, j: int) -> list[float]:
+        return [i * s + (h(1, i, j) - 0.5) * 0.5 * s, j * s + (h(2, i, j) - 0.5) * 0.5 * s]
+
+    def mid(a: tuple[int, int], b: tuple[int, int]) -> list[float]:
+        (i0, j0), (i1, j1) = sorted([a, b])
+        p, q = vertex(i0, j0), vertex(i1, j1)
+        return [(p[0] + q[0]) / 2 + (h(3, i0, j0, i1, j1) - 0.5) * 0.3 * s,
+                (p[1] + q[1]) / 2 + (h(4, i0, j0, i1, j1) - 0.5) * 0.3 * s]
+
+    bands = ((0, 3), (3, 6), (6, 10), (10, 20), (20, 50))
+    feats = []
+    for i in range(math.floor(minx / s) - 1, math.ceil(maxx / s) + 1):
+        for j in range(math.floor(miny / s) - 1, math.ceil(maxy / s) + 1):
+            corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+            ring = []
+            for c, d in zip(corners, corners[1:] + corners[:1]):
+                ring += [vertex(*c), mid(c, d)]
+            xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+            if max(xs) < minx or min(xs) > maxx or max(ys) < miny or min(ys) > maxy:
+                continue
+            d1, d2 = bands[int(h(5, i, j) * len(bands))]
+            feats.append({"geometry": {"type": "Polygon", "coordinates": [ring + [ring[0]]]},
                           "properties": {"DRVAL1": d1, "DRVAL2": d2}})
     return feats
 
