@@ -292,7 +292,7 @@ def _km_point(x, y, **props):
 def scene() -> dict[str, list[dict]]:
     """Every layer's features (web-mercator GeoJSON-like, as the WFS services give them)."""
     f = _field()
-    loops = {lv: [[_to_merc(p) for p in loop] for loop in _loops(f, lv)] for lv in (0, -3, -6, -10, -20)}
+    loops = {lv: [[_to_merc(p) for p in loop] for loop in _loops(f, lv)] for lv in (0, -2, -3, -4, -6, -8, -10, -15, -20)}
     out: dict[str, list[dict]] = {}
 
     def clipped(level):
@@ -308,7 +308,8 @@ def scene() -> dict[str, list[dict]]:
         _poly(clipped(-10) + clipped(-6), DRVAL1=6, DRVAL2=10),
         _poly([box] + clipped(-10), DRVAL1=10, DRVAL2=40),
     ]
-    out["contour"] = [_line(line, VALDCO=-lv) for lv in (-3, -6, -10, -20)
+    # As Traficom's data: more depths than the paper chart's 3, 6, 10 and 20 m.
+    out["contour"] = [_line(line, VALDCO=-lv) for lv in (-2, -3, -4, -6, -8, -10, -15, -20)
                       for loop in loops[lv] for line in _open_lines(loop)]
 
     def at(kx, ky):

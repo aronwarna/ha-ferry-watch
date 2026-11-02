@@ -3080,6 +3080,12 @@
         note: "Wrecks, and bunkers, trenches and gun positions on the shore and islands (from zoom 13), from Museovirasto's registers. Shown on the drawn chart.",
         onChange: async (on) => { heritageOn = on; store.set("fw-heritage", on ? "1" : "0"); applyHeritage(); },
       }),
+      switchRow({
+        compact: true,
+        title: "More depth contours", color: "#a3bccd", checked: contoursOn,
+        note: "Up close (zoom 14 and in), the depth contours the paper chart leaves out, as faint lines like the official chart's. Shown on the drawn chart.",
+        onChange: async (on) => { contoursOn = on; store.set("fw-contours", on ? "1" : "0"); applyHeritage(); },
+      }),
       groupHead("Traffic"),
       switchRow({
         compact: true,
@@ -3252,9 +3258,10 @@
   // --- wrecks and coastal heritage on the drawn chart ---------------------------------
 
   let heritageOn = store.get("fw-heritage") !== "0";
+  let contoursOn = store.get("fw-contours") !== "0";
   function applyHeritage() {
     try {
-      window.FerryChart?.setOptions?.({ heritage: heritageOn });
+      window.FerryChart?.setOptions?.({ heritage: heritageOn, contours: contoursOn });
     } catch (err) {
       console.error(err);
     }

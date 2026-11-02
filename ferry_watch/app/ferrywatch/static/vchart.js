@@ -20,6 +20,7 @@
     depth: ["#c9e0b4", "#e4f1fb", "#e4f1fb", "#e4f1fb", "#ffffff", "#ffffff"], // drying, 0-3, 3-6, 6-10, deeper, unsurveyed
     contour: "#00a3e7", // 10 m and deeper, and their labels
     contourShallow: "#008bc5", // 3 m dotted, 6 m dashed
+    contourExtra: "#a3bccd", // the rest of Traficom's contours, up close: faint, as on the official chart
     sounding: "#000000",
     fairway: "#000000",
     fairwayArea: "#eceded",
@@ -101,7 +102,7 @@
     "ensimmäinen maailmansota": "First World War", "toinen maailmansota": "Second World War",
   };
 
-  const options = { heritage: true };
+  const options = { heritage: true, contours: true }; // contours: the extra ones (contourx)
   let serverMinZoom = 5; // the lowest zoom the server cuts tiles for (state.vchart.min_zoom)
 
   // --- drawing helpers ------------------------------------------------------------
@@ -1841,6 +1842,8 @@
     for (const [line] of data.band || []) strokeLine(ctx, line, C.band, 12 * s);
 
     // 7. Contours: 3 m dotted, 6 m dashed, 10 m and deeper solid with a figure in a break.
+    // Under them, up close, the depths the paper chart leaves out, as faint thin lines.
+    if (options.contours) for (const [, line] of data.contourx || []) strokeLine(ctx, line, C.contourExtra, 0.7 * unit);
     const labelled = new Set();
     for (const [depth, line] of data.contour || []) {
       if (depth <= 3) {
@@ -2304,6 +2307,7 @@
     self.onmessage = ({ data: m }) => {
       try {
         options.heritage = m.heritage;
+        options.contours = m.contours;
         const size = 256 * m.dpr;
         const canvas = new OffscreenCanvas(size, size);
         const data = JSON.parse(m.text);
@@ -2719,7 +2723,7 @@
       if (best < 0) return;
       const job = workerJobs.splice(best, 1)[0];
       slot.job = job;
-      slot.worker.postMessage({ id: job.id, text: job.text, coords: job.coords, dpr: job.dpr, heritage: options.heritage });
+      slot.worker.postMessage({ id: job.id, text: job.text, coords: job.coords, dpr: job.dpr, heritage: options.heritage, contours: options.contours });
     }
   }
   function workerDraw(job) {
@@ -3182,12 +3186,15 @@
       rev = r;
       if (!first) for (const layer of layers) layer.redraw();
     },
-    // { heritage: bool }: show Museovirasto's wrecks and underwater sites (on by default).
+    // { heritage: bool }: show Museovirasto's wrecks and underwater sites (on by default);
+    // { contours: bool }: the depth contours the paper chart leaves out, up close (on by default).
     setOptions: (opts) => {
       let changed = false;
-      if (opts && "heritage" in opts && !!opts.heritage !== options.heritage) {
-        options.heritage = !!opts.heritage;
-        changed = true;
+      for (const key of ["heritage", "contours"]) {
+        if (opts && key in opts && !!opts[key] !== options[key]) {
+          options[key] = !!opts[key];
+          changed = true;
+        }
       }
       if (changed) for (const layer of layers) layer.redraw();
     },

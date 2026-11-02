@@ -134,7 +134,7 @@ OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 33  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 34  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -303,8 +303,10 @@ ROCK_TYPES = {38511: 1, 38512: 2, 38513: 3}
 ROCK_SCALE = {12: 0.62 * 0.8, 13: 0.78, 14: 1.0}
 # Wrecks: 1 depth unknown (dangerous), 2 depth known, 3 hull showing.
 WRECK_TYPES = {16721: 1, 16722: 2, 16712: 3}
-# Depth contours as the paper chart shows them; Traficom's data has more.
+# Depth contours as the paper chart shows them; Traficom's data has more, sent from
+# EXTRA_CONTOUR_Z as "contourx" (faint lines, as the official chart has them).
 CONTOURS = (3, 6, 10, 20, 50, 100, 200)
+EXTRA_CONTOUR_Z = 14
 OVERVIEW_CONTOURS = (20, 50, 100, 200)
 OVERVIEW_TSS = ("lane", "zone", "prec", "deep", "twoway")  # routeing drawn on overview charts
 # Dredged and unsurveyed areas aren't depth areas in S-57, so the depth areas have holes
@@ -2456,10 +2458,15 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                             rows.setdefault("rockpt", []).append([round((cx - ox) * k), round((cy - oy) * k), p])
                     continue
                 smooth = False
+                target = out
                 if key == "contour":
                     d = _num(p[0])
                     if d not in CONTOURS or (z < 12 and d < 10):
-                        continue
+                        # Up close, the rest of Traficom's contours too, for faint lines as
+                        # on the official chart (the panel can leave them out).
+                        if z < EXTRA_CONTOUR_Z or d is None or d <= 0:
+                            continue
+                        target = rows.setdefault("contourx", [])
                     if z < BLOCK_Z:
                         # Zoomed out, only contours that make a shape: no rings round single
                         # shoals (a piece reaching the block's margin is part of a longer one).
@@ -2484,9 +2491,9 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                     flat = _flat(chaikin(simplify(part, tol), tol) if smooth else simplify(part, tol))
                     if len(flat) >= 4:
                         if solid is None:
-                            out.append([p, flat])
+                            target.append([p, flat])
                         else:
-                            out.append([p, flat, solid])
+                            target.append([p, flat, solid])
                             solid = []
     base_land: list = []
     if base:
@@ -2686,6 +2693,8 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
                                 key=lambda row: row[0])  # shallow first
     if "contour" in rows:
         tile["contour"] = [[_num(p[0]), line] for p, line in rows["contour"]]
+    if "contourx" in rows:
+        tile["contourx"] = [[_num(p[0]), line] for p, line in rows["contourx"]]
     if "farea" in rows:
         tile["farea"] = [[_int(code), _num(draught), vl(jnro), *rings]
                          for p, *rings in rows["farea"] for code, draught, jnro in [_pad(p, 3)[:3]]]

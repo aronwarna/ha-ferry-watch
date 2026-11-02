@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.1
+
+- More depth contours on the drawn chart up close: from zoom 14, the depth contours the
+  paper chart leaves out (Traficom's data has many more than 3, 6, 10 and 20 m) are
+  drawn as faint thin lines under the usual ones, as on the official chart. Switch them
+  off with **More depth contours** under Layers → On the chart.
+
 ## 0.31.0
 
 - The drawn chart is drawn in the background on the phone's spare cores (several tiles
