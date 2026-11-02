@@ -2459,7 +2459,9 @@
   // --- the Leaflet layer -------------------------------------------------------------
 
   const tileAids = new Map(); // tile key -> [{ latlng, aid } or { latlng, site }]
-  const RETRY_MS = 2500;
+  // The server answers 202 while an area's data is still downloading: asked again after
+  // these waits (then every last one).
+  const RETRY_MS = [700, 1500, 2500];
   // A tile drawn while some of its data is still downloading (or failed) is asked for again
   // after these waits, so what comes later shows up without moving the map.
   const AGAIN_MS = [10000, 30000, 90000, 300000];
@@ -2468,8 +2470,90 @@
   let rev = ""; // changes when the server's tiles do (e.g. rocks added), so cached tiles are dropped
   const layers = new Set();
 
+  // --- tile data kept in the browser, and fetched ahead ------------------------------------
+  // Complete tiles' JSON (as text: a fraction of the parsed size) is kept, most recent last,
+  // so panning back, zooming out and in again, and the tiles fetched ahead of a move (see
+  // ChartLayer._prefetch) draw at once, without asking Home Assistant again.
+  const DATA_MAX = 12e6; // characters kept, about 12 MB
+  const tileData = new Map(); // "z/x/y" -> text
+  let dataChars = 0, dataRev = "";
+  function dataCheck() {
+    if (dataRev === rev) return;
+    tileData.clear();
+    dataChars = 0;
+    dataRev = rev;
+  }
+  function dataGet(key) {
+    dataCheck();
+    const text = tileData.get(key);
+    if (text !== undefined) { tileData.delete(key); tileData.set(key, text); }
+    return text;
+  }
+  function dataPut(key, text) {
+    dataCheck();
+    if (tileData.has(key)) dataChars -= tileData.get(key).length;
+    tileData.delete(key);
+    tileData.set(key, text);
+    dataChars += text.length;
+    for (const [k, t] of tileData) {
+      if (dataChars <= DATA_MAX) break;
+      tileData.delete(k);
+      dataChars -= t.length;
+    }
+  }
+  // Requests under way, so a tile shown while it's being fetched ahead waits for that one.
+  const inflight = new Map(); // "z/x/y" -> Promise<{ pending, partial, text }>
+  function fetchData(key, signal) {
+    const url = `api/vchart/${key}?r=${rev}`;
+    return fetch(url, signal ? { signal } : undefined).then(async (r) => {
+      if (!r.ok && r.status !== 202) throw new Error(`HTTP ${r.status}`);
+      const text = await r.text();
+      const pending = r.status === 202;
+      const partial = r.headers.get("X-Chart-Complete") === "0";
+      if (!pending && !partial) dataPut(key, text);
+      return { pending, partial, text };
+    });
+  }
+  function shared(key) {
+    let p = inflight.get(key);
+    if (!p) {
+      p = fetchData(key).finally(() => inflight.delete(key));
+      inflight.set(key, p);
+    }
+    return p;
+  }
+
+  // Tiles are drawn a few per frame, nearest the middle of the map first, so tiles arriving
+  // while the map moves don't stall the move.
+  const DRAW_BUDGET_MS = 12;
+  const drawQueue = [];
+  let drawFrame = 0;
+  function queueDraw(job) {
+    drawQueue.push(job);
+    if (!drawFrame) drawFrame = requestAnimationFrame(runDraws);
+  }
+  function runDraws() {
+    drawFrame = 0;
+    const t0 = performance.now();
+    for (const job of drawQueue) job.d = job.dist();
+    drawQueue.sort((a, b) => a.d - b.d);
+    while (drawQueue.length) {
+      const job = drawQueue.shift();
+      if (job.dead()) continue;
+      job.run();
+      if (performance.now() - t0 > DRAW_BUDGET_MS) break;
+    }
+    if (drawQueue.length) drawFrame = requestAnimationFrame(runDraws);
+  }
+
+  const PREFETCH_AT_ONCE = 4;
+  const PREFETCH_MAX = 40; // tiles fetched ahead after a move, at most
+
   const ChartLayer = L.GridLayer.extend({
-    options: { minZoom: 5, maxZoom: 19, updateWhenZooming: false, keepBuffer: 2, zIndex: 3 },
+    // updateWhenIdle false: tiles are asked for while a finger pans the map (Leaflet waits
+    // for the pan to end on phones by default), so the edges fill in during the move.
+    options: { minZoom: 5, maxZoom: 19, updateWhenZooming: false, updateWhenIdle: false, updateInterval: 150,
+      keepBuffer: 2, zIndex: 3 },
 
     createTile(coords, done) {
       const dpr = pixelRatio();
@@ -2477,10 +2561,11 @@
       canvas.width = canvas.height = 256 * dpr;
       const controller = new AbortController();
       canvas._abort = controller;
+      const key = `${coords.z}/${coords.x}/${coords.y}`;
       let waiting = false;
       const setWaiting = (on) => {
         if (on === waiting) return;
-        waiting = on;
+        waiting = canvas._waiting = on;
         waitingTiles += on ? 1 : -1;
         waitingChanged?.(waitingTiles);
       };
@@ -2491,37 +2576,111 @@
         done(err, canvas);
       };
       controller.signal.addEventListener("abort", () => setWaiting(false));
-      // The server answers 202 while an area's data is still downloading; ask again shortly.
-      let again = 0, partial = false;
-      const load = () => {
-        fetch(`api/vchart/${coords.z}/${coords.x}/${coords.y}?r=${rev}`, { signal: controller.signal })
-          .then((r) => {
-            partial = r.headers.get("X-Chart-Complete") === "0";
-            return r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`));
-          })
-          .then((data) => {
-            if (data.pending) {
-              // Left clear meanwhile: the map underneath shows until the chart is drawn.
-              if (!waiting && !shown && coords.z > OVERVIEW_Z) show(null);
-              setWaiting(true);
-              canvas._retry = setTimeout(load, RETRY_MS);
-              return;
-            }
-            setWaiting(false);
+      const dead = () => controller.signal.aborted;
+      const draw = (data, partial) => {
+        queueDraw({
+          dead,
+          dist: () => this._distance(coords),
+          run: () => {
             canvas._fw = drawTile(canvas, data, coords, dpr);
             this._rememberTaps(coords, data);
             show(null);
             this._labels?.schedule();
             if (partial && again < AGAIN_MS.length) canvas._retry = setTimeout(load, AGAIN_MS[again++]);
-          })
-          .catch((err) => {
-            if (err.name !== "AbortError") console.error("Chart tile", coords, err);
-            setWaiting(false);
-            show(err.name === "AbortError" ? null : err);
-          });
+          },
+        });
+      };
+      let again = 0, tries = 0;
+      const got = (res) => {
+        if (dead()) return;
+        if (res.pending) {
+          // Not shown meanwhile (Leaflet keeps the zoom before over it, scaled), until drawn.
+          setWaiting(true);
+          canvas._retry = setTimeout(load, RETRY_MS[Math.min(tries++, RETRY_MS.length - 1)]);
+          return;
+        }
+        setWaiting(false);
+        draw(JSON.parse(res.text), res.partial);
+      };
+      const failed = (err) => {
+        if (err.name !== "AbortError") console.error("Chart tile", coords, err);
+        setWaiting(false);
+        show(err.name === "AbortError" ? null : err);
+      };
+      const load = () => {
+        const text = again === 0 ? dataGet(key) : undefined;
+        if (text !== undefined) {
+          draw(JSON.parse(text), false);
+          return;
+        }
+        // One being fetched ahead is waited for rather than asked for twice.
+        const ahead = again === 0 && tries === 0 && inflight.get(key);
+        (ahead || fetchData(key, controller.signal)).then(got).catch(failed);
       };
       load();
       return canvas;
+    },
+
+    // How far a tile is from the middle of the map, in tiles (drawn nearest first).
+    _distance(coords) {
+      const map = this._map;
+      if (!map) return 0;
+      const c = map.project(map.getCenter(), coords.z).divideBy(256);
+      return Math.hypot(coords.x + 0.5 - c.x, coords.y + 0.5 - c.y);
+    },
+
+    // After a move, the tiles round the view, the view one zoom out and the middle of it
+    // one zoom in are fetched (not drawn) ahead, a couple at a time once the view's own
+    // tiles are in: the next pan or zoom then draws from them at once. Their data only
+    // (no canvases), kept as tileData; the server keeps its cut tiles on disk too.
+    _prefetch() {
+      clearTimeout(this._preTimer);
+      const gen = ++this._preGen;
+      this._preTimer = setTimeout(() => this._prefetchRun(gen), 150);
+    },
+
+    _prefetchRun(gen) {
+      const map = this._map;
+      if (!map || gen !== this._preGen) return;
+      const busy = map._animatingZoom || Object.values(this._tiles).some((t) => !t.loaded && !t.el._waiting && t.coords.z === this._tileZoom);
+      if (busy) {
+        this._preTimer = setTimeout(() => this._prefetchRun(gen), 400);
+        return;
+      }
+      const z = this._tileZoom;
+      if (z == null) return;
+      const center = map.getCenter();
+      const minZ = Math.max(this.options.minZoom, serverMinZoom), maxZ = this.options.maxZoom;
+      const list = [];
+      const add = (zz, bounds, grow) => {
+        if (zz < minZ || zz > maxZ) return;
+        const lo = bounds.min.divideBy(256).floor().subtract([grow, grow]);
+        const hi = bounds.max.subtract([1, 1]).divideBy(256).floor().add([grow, grow]);
+        const n = 2 ** zz, c = map.project(center, zz).divideBy(256);
+        const here = [];
+        for (let x = lo.x; x <= hi.x; x++) {
+          for (let y = lo.y; y <= hi.y; y++) {
+            if (y < 0 || y >= n) continue;
+            const wx = ((x % n) + n) % n;
+            here.push([Math.hypot(x + 0.5 - c.x, y + 0.5 - c.y), `${zz}/${wx}/${y}`]);
+          }
+        }
+        here.sort((a, b) => a[0] - b[0]);
+        list.push(...here.map((h) => h[1]));
+      };
+      add(z, map.getPixelBounds(center, z), 1); // the ring round the view (the view's own are skipped below)
+      add(z - 1, map.getPixelBounds(center, z - 1), 0);
+      add(z + 1, map.getPixelBounds(center, z + 1), 0);
+      const shownKeys = new Set(Object.values(this._tiles).map((t) => `${t.coords.z}/${t.coords.x}/${t.coords.y}`));
+      dataCheck();
+      const todo = list.filter((k) => !shownKeys.has(k) && !tileData.has(k) && !inflight.has(k)).slice(0, PREFETCH_MAX);
+      const next = () => {
+        if (gen !== this._preGen || !this._map) return;
+        const key = todo.shift();
+        if (!key) return;
+        shared(key).catch(() => null).then(next);
+      };
+      for (let i = 0; i < PREFETCH_AT_ONCE; i++) next();
     },
 
     // Aids and heritage sites in the tile, for taps.
@@ -2561,14 +2720,34 @@
 
     onRemove(map) {
       layers.delete(this);
+      this._stopPrefetch();
       this._ratioQuery?.removeEventListener?.("change", this._ratioChanged);
       this._ratioQuery = null;
       if (this._labels) map.removeLayer(this._labels);
       L.GridLayer.prototype.onRemove.call(this, map);
     },
 
+    getEvents() {
+      const events = L.GridLayer.prototype.getEvents.call(this);
+      events.moveend = this._onMoveEndFetch;
+      events.movestart = this._stopPrefetch;
+      events.zoomstart = this._stopPrefetch;
+      return events;
+    },
+
+    _onMoveEndFetch(e) {
+      L.GridLayer.prototype._onMoveEnd.call(this, e);
+      this._prefetch();
+    },
+
+    _stopPrefetch() {
+      clearTimeout(this._preTimer);
+      this._preGen = (this._preGen || 0) + 1;
+    },
+
     onAdd(map) {
       layers.add(this);
+      this._preGen = this._preGen || 0;
       L.GridLayer.prototype.onAdd.call(this, map);
       this.off("tileunload", this._tileUnload, this);
       this.on("tileunload", this._tileUnload, this);
@@ -2739,6 +2918,7 @@
 
   window.FerryChart = {
     drawTileWithLabels,
+    drawTile, // for timing (perf scripts)
     layer: (opts) => new ChartLayer({ minZoom: serverMinZoom, ...opts }),
     // A tile layer for Traficom's raster charts (as L.tileLayer), without their black no-data.
     rasterLayer: (url, opts) => new RasterLayer(url, opts),

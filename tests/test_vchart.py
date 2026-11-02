@@ -499,25 +499,58 @@ def test_adding_a_key_fetches_only_the_new_part(tmp_path):
     asyncio.run(run())
 
 
+HANKO = (22.95, 59.83)
+
+
+def _block_at(lon, lat):
+    """The zoom-11 block over a place, and the place in that block's units."""
+    mx, my = vchart.lonlat_to_mercator(lon, lat)
+    n = 2 ** vchart.BLOCK_Z
+    fx, fy = (mx + vchart.HALF) / (2 * vchart.HALF) * n, (vchart.HALF - my) / (2 * vchart.HALF) * n
+    return (int(fx), int(fy)), ((fx % 1) * vchart.UNITS, (fy % 1) * vchart.UNITS)
+
+
 def test_station_names_are_left_out():
-    rows = {"name": [[[ "HANKO, POHJOINEN", "fin", 48120], 100.0, 100.0], [["Hanko", "fin", 48111], 200.0, 200.0]]}
-    tile = vchart.make_tile(11, 0, 0, {(0, 0): vchart.layers_from_rows(rows)})
+    key, (ux, uy) = _block_at(*HANKO)
+    rows = {"name": [[["HANKO, POHJOINEN", "fin", 48120], ux - 50, uy], [["Hanko", "fin", 48111], ux, uy]]}
+    tile = vchart.make_tile(11, *key, {key: vchart.layers_from_rows(rows)})
     assert [n[2] for n in tile["name"]] == ["Hanko"]
 
 
+def test_town_and_sea_names_only_where_the_town_or_sea_is():
+    # Villages, houses and lake bays share the names of coastal towns and seas: zoomed out,
+    # only the real ones are named.
+    def names(lon, lat, text, code, z=8):
+        key, (ux, uy) = _block_at(lon, lat)
+        layers = vchart.layers_from_rows({"name": [[[text, "fin", code], ux, uy]]})
+        s = vchart.BLOCK_Z - z
+        return [r[2] for r in vchart.make_tile(z, key[0] >> s, key[1] >> s, {key: layers}).get("name", [])]
+
+    assert names(26.94, 60.47, "Kotka", 48111) == ["Kotka"]
+    assert names(25.5, 62.0, "Kotka", 48120) == []  # a village inland
+    assert names(23.13, 60.38, "Salo", 48111) == ["Salo"]
+    assert names(27.5, 62.3, "Salo", 48120) == []
+    assert names(20.5, 62.5, "Pohjanlahti", 36000) == ["Pohjanlahti"]  # the Gulf of Bothnia
+    assert names(26.0, 62.3, "Pohjanlahti", 36000) == []  # a bay of a lake
+    assert names(24.6, 59.8, "Suomenlahti", 36000) == ["Suomenlahti"]
+
+
 def test_names_appear_by_zoom():
+    key, (ux, uy) = _block_at(*HANKO)
     rows = {"name": [
-        [["Granskär", "swe", None], 100.0, 100.0],         # island, by its ending
-        [["Västerfjärden", "swe", 36490], 300.0, 300.0],    # water
-        [["Stormossen", "swe", 35010], 500.0, 500.0],       # inland
-        [["HANGON LENTOKENTTÄ", "fin", 35010], 700.0, 700.0],
-        [["Hanko", "fin", 48111], 900.0, 900.0],            # town
+        [["Granskär", "swe", None], ux - 400, uy],          # island, by its ending
+        [["Västerfjärden", "swe", 36490], ux - 200, uy],    # water
+        [["Stormossen", "swe", 35010], ux + 200, uy],       # inland
+        [["HANGON LENTOKENTTÄ", "fin", 35010], ux + 400, uy],
+        [["Hanko", "fin", 48111], ux, uy],                  # town
     ]}
 
     layers = vchart.layers_from_rows(rows)
 
     def names(z):
-        return sorted(r[2] for r in vchart.make_tile(z, 0, 0, {(0, 0): layers}).get("name", []))
+        s = z - vchart.BLOCK_Z
+        tiles = [(key[0] * 2 ** s + i, key[1] * 2 ** s + j) for i in range(2 ** s) for j in range(2 ** s)]
+        return sorted({r[2] for t in tiles for r in vchart.make_tile(z, *t, {key: layers}).get("name", [])})
 
     assert names(11) == ["Hanko"]
     assert names(12) == ["Hanko", "Västerfjärden"]  # open waters before islands

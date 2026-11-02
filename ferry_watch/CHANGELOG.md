@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.30.0
+
+- Snappier drawn chart when zooming and panning:
+  - While new tiles load, the chart from before the zoom stays on screen (stretched)
+    instead of going blank; a tile whose area is still downloading is asked for again
+    after 0.7 s (was 2.5 s).
+  - After each move, the tiles round the view, the view one zoom out and the middle one
+    zoom in are fetched ahead (their data only, at most about 12 MB kept in the browser),
+    so the next pan or zoom draws at once instead of asking Home Assistant again.
+  - On phones, tiles are now asked for while your finger is still panning, not only after
+    it lifts.
+  - On the NAS, tiles already made are read on a thread of their own, a tile that only
+    needs cutting from data on disk is waited for instead of answered "not yet", and the
+    background chart downloads pause while you're using the map.
+- Fixes town and sea names in the wrong place on the zoomed-out drawn chart (Kotka, Salo,
+  Hamina, Kokkola, Tornio, Pohjanlahti... all over the lakes): villages, houses and lake
+  bays with those names were taken for the towns and seas. Those names now show zoomed
+  out only where the real town or sea is.
+
 ## 0.29.0
 
 - Route tool: easier to leave the fairway where you want. Pulling the route no longer

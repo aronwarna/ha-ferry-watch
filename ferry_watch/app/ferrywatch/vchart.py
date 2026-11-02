@@ -134,7 +134,7 @@ OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 32  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 33  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -406,6 +406,18 @@ async def in_thread(fn: Callable, /, *args: Any) -> Any:
     if _pool is None:
         _pool = ThreadPoolExecutor(CHART_THREADS, thread_name_prefix="chart")
     return await asyncio.get_running_loop().run_in_executor(_pool, partial(fn, *args))
+
+
+_io_pool: ThreadPoolExecutor | None = None
+
+
+async def in_io(fn: Callable, /, *args: Any) -> Any:
+    """Quick file work (reading a tile kept on disk) on a thread of its own, so a tile that
+    is ready is never queued behind the chart threads' parsing and cutting."""
+    global _io_pool
+    if _io_pool is None:
+        _io_pool = ThreadPoolExecutor(1, thread_name_prefix="chart-io")
+    return await asyncio.get_running_loop().run_in_executor(_io_pool, partial(fn, *args))
 
 
 def source_names(key: str) -> list[tuple[str | None, str]]:
@@ -1051,6 +1063,9 @@ def near_finland(bounds: tuple[float, float, float, float]) -> bool:
 # The Gulf of Finland, Hanko to the eastern border (lon/lat): what "Keep chart on NAS" kept
 # before all of Finnish waters (it still comes first).
 KEEP_AREA = (22.7, 59.45, 28.2, 60.75)
+PANEL_QUIET = 1.5  # s without tile requests before background chart work goes on
+PANEL_YIELD_MAX = 20.0  # s background work waits for the panel at most, per step
+DISK_WAIT = 4.0  # s a tile request waits when its blocks are on disk (only reading and cutting)
 KEEP_PAUSE = 1.0  # s between downloads, to be gentle on Traficom and Väylävirasto
 KEEP_RECHECK = 6 * 3600  # s between passes that refresh blocks older than MAX_AGE
 PRECUT_EVERY = 25  # blocks fetched (for the overview) between making the zoomed-out tiles again
@@ -2507,7 +2522,7 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if z <= ROCK_MERGE_MAX_Z:
         merge_rocks(rows, z, x, y)
     rows.pop("rockctr", None)
-    _format(tile, rows, z, classes, depths)
+    _format(tile, rows, z, classes, depths, (x, y))
     return {k: v for k, v in tile.items() if v != []}
 
 
@@ -2608,7 +2623,7 @@ def _sign(props: tuple) -> tuple[str, float | int | None]:
 
 
 def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
-            depths: dict[int, float] | None = None) -> None:
+            depths: dict[int, float] | None = None, xy: tuple[int, int] | None = None) -> None:
     """Turn collected rows into what the panel reads (see static/vchart.js).
 
     Tile coordinates are 0..512 (``e``) with a buffer past each edge; rings and lines are
@@ -2788,7 +2803,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
     if "heritage" in rows:
         tile["heritage"] = _heritage_rows(rows["heritage"], tile.get("wreck", ()), z)
     if "name" in rows:
-        tile["name"] = _names(rows["name"], tile, z)
+        tile["name"] = _names(rows["name"], tile, z, xy)
 
 
 def _heritage_rows(rows: list, wrecks, z: int) -> list:
@@ -2822,7 +2837,10 @@ WATER_ENDINGS = ("fjärd", "fjärden", "viken", "vik", "selkä", "lahti", "sund"
                  "fladan", "träsk", "träsket", "järvi", "bukt", "bukten", "strömmen", "ström", "selet")
 OPEN_WATER_ENDINGS = ("fjärd", "fjärden", "selkä", "selät")  # big open waters, named sooner
 # Coastal towns named on overview charts, the whole coast from the Gulf of Finland to the
-# Bay of Bothnia. The feature classes can't tell towns from villages.
+# Bay of Bothnia. The feature classes can't tell towns from villages, and many villages,
+# houses and bays inland share these names (Salo, Kotka, Hamina, Kokkola, Pohjanlahti...),
+# which showed all over the lakes once the chart covered all of Finland (0.27.0): a name
+# only counts as the town (or sea) where the town (or sea) is, see PLACE_AT and _big_name.
 COASTAL_TOWNS = {"Hanko", "Hangö", "Tammisaari", "Ekenäs", "Inkoo", "Ingå", "Kirkkonummi", "Kyrkslätt",
                  "Espoo", "Esbo", "Helsinki", "Helsingfors", "Porvoo", "Borgå", "Loviisa", "Lovisa",
                  "Kotka", "Hamina", "Fredrikshamn", "Paldiski", "Tallinn",
@@ -2843,6 +2861,85 @@ BIG_WATERS = {"Suomenlahti", "Finska viken", "Saaristomeri", "Skärgårdshavet",
               "Itämeri", "Östersjön", "Pohjanlahti", "Bottniska viken", "Saaristomeren", "Ahvenanmeren",
               "Soome laht", "Läänemeri", "Финский залив", "Balti meri"}
 
+# Where each of them is (lon, lat): a town's name counts within PLACE_KM of it.
+_TOWN_AT = {
+    ("Hanko", "Hangö"): (22.95, 59.83), ("Tammisaari", "Ekenäs"): (23.43, 59.97), ("Inkoo", "Ingå"): (24.00, 60.05),
+    ("Kirkkonummi", "Kyrkslätt"): (24.44, 60.12), ("Espoo", "Esbo"): (24.66, 60.21),
+    ("Helsinki", "Helsingfors"): (24.94, 60.17), ("Porvoo", "Borgå"): (25.66, 60.39), ("Loviisa", "Lovisa"): (26.23, 60.46),
+    ("Kotka",): (26.94, 60.47), ("Hamina", "Fredrikshamn"): (27.19, 60.57), ("Paldiski",): (24.05, 59.35),
+    ("Tallinn",): (24.75, 59.44), ("Turku", "Åbo"): (22.27, 60.45), ("Naantali", "Nådendal"): (22.03, 60.47),
+    ("Parainen", "Pargas"): (22.30, 60.30), ("Uusikaupunki", "Nystad"): (21.41, 60.80), ("Rauma", "Raumo"): (21.51, 61.13),
+    ("Pori", "Björneborg"): (21.80, 61.48), ("Kristiinankaupunki", "Kristinestad"): (21.38, 62.27),
+    ("Kaskinen", "Kaskö"): (21.22, 62.38), ("Vaasa", "Vasa"): (21.62, 63.10), ("Uusikaarlepyy", "Nykarleby"): (22.53, 63.52),
+    ("Pietarsaari", "Jakobstad"): (22.70, 63.67), ("Kokkola", "Karleby"): (23.13, 63.84), ("Raahe", "Brahestad"): (24.48, 64.68),
+    ("Oulu", "Uleåborg"): (25.47, 65.01), ("Kemi",): (24.56, 65.74), ("Tornio", "Torneå"): (24.15, 65.85),
+    ("Maarianhamina", "Mariehamn"): (19.94, 60.10), ("Salo",): (23.13, 60.38), ("Kemiönsaari", "Kimitoön"): (22.70, 60.16),
+    ("Stockholm",): (18.07, 59.33), ("Norrtälje",): (18.70, 59.76), ("Östhammar",): (18.37, 60.26), ("Öregrund",): (18.44, 60.34),
+    ("Gävle",): (17.14, 60.67), ("Söderhamn",): (17.06, 61.30), ("Hudiksvall",): (17.10, 61.73), ("Sundsvall",): (17.31, 62.39),
+    ("Härnösand",): (17.94, 62.63), ("Örnsköldsvik",): (18.72, 63.29), ("Umeå",): (20.26, 63.83), ("Skellefteå",): (20.95, 64.75),
+    ("Piteå",): (21.48, 65.32), ("Luleå",): (22.15, 65.58), ("Haparanda",): (24.14, 65.84), ("Nynäshamn",): (17.95, 58.90),
+    ("Kapellskär",): (19.06, 59.72), ("Grisslehamn",): (18.81, 60.10), ("Sillamäe",): (27.76, 59.40), ("Kunda",): (26.54, 59.50),
+    ("Loksa",): (25.71, 59.58), ("Haapsalu",): (23.54, 58.94), ("Narva-Jõesuu",): (28.04, 59.46), ("Kärdla",): (22.75, 59.00),
+    ("Muuga",): (24.96, 59.49), ("Sankt-Peterburg", "Санкт-Петербург"): (30.32, 59.94), ("Vyborg", "Выборг"): (28.75, 60.71),
+    ("Primorsk", "Приморск"): (28.61, 60.37), ("Ust-Luga", "Усть-Луга"): (28.32, 59.66),
+    ("Kronshtadt", "Кронштадт"): (29.77, 60.00),
+}
+TOWN_AT = {name: at for names, at in _TOWN_AT.items() for name in names}
+PLACE_KM = 15
+# The box (lon0, lat0, lon1, lat1) each sea's name is placed in; it must be out at sea too
+# (Natural Earth's), so bays called Pohjanlahti on lakes and the coast stay small names.
+_SEA_BOX = {
+    ("Suomenlahti", "Finska viken", "Soome laht", "Финский залив"): (22.5, 59.2, 30.6, 60.8),
+    ("Saaristomeri", "Skärgårdshavet", "Saaristomeren"): (20.5, 59.6, 22.9, 60.9),
+    ("Selkämeri", "Bottenhavet"): (17.0, 60.4, 22.0, 63.0),
+    ("Perämeri", "Bottenviken"): (20.5, 63.4, 25.8, 66.0),
+    ("Merenkurkku", "Kvarken", "Norra Kvarken"): (19.5, 63.0, 22.0, 64.2),
+    ("Ahvenanmeri", "Ålands hav", "Ahvenanmeren"): (18.3, 59.6, 20.3, 60.6),
+    ("Pohjanlahti", "Bottniska viken"): (17.0, 60.3, 25.8, 66.0),
+    ("Itämeri", "Östersjön", "Läänemeri", "Balti meri"): (13.0, 54.0, 30.6, 66.0),
+}
+SEA_BOX = {name: box for names, box in _SEA_BOX.items() for name in names}
+
+
+def _ne_contains(kind: str, mx: float, my: float) -> bool:
+    """Whether a web-mercator point is in Natural Earth's polygons of a kind (see ne_base)."""
+    for (x0, y0, x1, y1), rings in ne_base()[kind]:
+        if not (x0 <= mx <= x1 and y0 <= my <= y1):
+            continue
+        inside = False
+        for ring in rings:
+            n = len(ring)
+            j = n - 2
+            for i in range(0, n, 2):
+                xi, yi, xj, yj = ring[i], ring[i + 1], ring[j], ring[j + 1]
+                if (yi > my) != (yj > my) and mx < (xj - xi) * (my - yi) / (yj - yi) + xi:
+                    inside = not inside
+                j = i
+        if inside:
+            return True
+    return False
+
+
+def _big_name(text: str, lonlat: tuple[float, float] | None, at_m: tuple[float, float] | None = None) -> bool:
+    """Whether a name is one of the coastal towns or seas named zoomed out, there: the same
+    name elsewhere (a village, a house, a bay) is an ordinary name. Without a place, by
+    name alone."""
+    if text not in COASTAL_TOWNS and text not in BIG_WATERS:
+        return False
+    if lonlat is None:
+        return True
+    lon, lat = lonlat
+    town = TOWN_AT.get(text)
+    if town is not None:
+        dx = (lon - town[0]) * 111.32 * math.cos(math.radians(lat))
+        return math.hypot(dx, (lat - town[1]) * 110.57) <= PLACE_KM
+    box = SEA_BOX.get(text)
+    if box is not None:
+        if not (box[0] <= lon <= box[2] and box[1] <= lat <= box[3]):
+            return False
+        return _ne_contains("sea", *(at_m or lonlat_to_mercator(lon, lat)))
+    return text in COASTAL_TOWNS or text in BIG_WATERS
+
 
 def _name_kind(code: int | None, text: str = "") -> str:
     """Name class for the panel: s settlement, w water, i island or cape, l other land."""
@@ -2856,13 +2953,16 @@ def _name_kind(code: int | None, text: str = "") -> str:
     return "l"
 
 
-def _name_min_z(code: int | None, kind: str, text: str) -> int:
+def _name_min_z(code: int | None, kind: str, text: str, big: bool | None = None) -> int:
     """Zoom from which a name shows: big waters and towns first, islands next, inland names
-    only up close."""
-    if text in BIG_WATERS:
+    only up close. ``big``: whether it's the coastal town or sea itself (see _big_name);
+    None judges by the name alone."""
+    if big is None:
+        big = text in COASTAL_TOWNS or text in BIG_WATERS
+    if big and text in BIG_WATERS:
         return 8
     if kind == "s":
-        return 8 if text in COASTAL_TOWNS else 13
+        return 8 if big else 13
     if text.isupper():
         return 16  # all-capital names are mostly stations, airports and the like
     if kind == "w":
@@ -2910,23 +3010,34 @@ def _in_water(tile: dict, px: int, py: int) -> bool:
     return False
 
 
-def _names(rows: list, tile: dict, z: int) -> list:
+def _names(rows: list, tile: dict, z: int, xy: tuple[int, int] | None = None) -> list:
     names = []
     cells = _water_cells(tile) if z < 15 else None
+    size = 2 * HALF / 2 ** z
+
+    def where(px: float, py: float) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        if xy is None:
+            return None
+        mx, my = -HALF + (xy[0] + px / EXTENT) * size, HALF - (xy[1] + py / EXTENT) * size
+        return mercator_to_lonlat(mx, my), (mx, my)
+
     for px, py, (text, lang, code) in rows:
         text = str(text or "")
         if not text or ("," in text and text.isupper()):
             continue  # e.g. "HANKO, POHJOINEN": station names, not chart names
         code = _int(code)
         kind = _name_kind(code, text)
-        if z < _name_min_z(code, kind, text):
+        big = False
+        if text in COASTAL_TOWNS or text in BIG_WATERS:
+            at = where(px, py)
+            big = _big_name(text, *(at or (None, None)))
+        if z < _name_min_z(code, kind, text, big):
             continue
-        if kind == "w" and z < INLAND_WATER_Z and text not in BIG_WATERS and ("depth" in tile or "xdepth" in tile) \
+        if kind == "w" and z < INLAND_WATER_Z and not big and ("depth" in tile or "xdepth" in tile) \
                 and -TILE_BUFFER < px < EXTENT + TILE_BUFFER and -TILE_BUFFER < py < EXTENT + TILE_BUFFER \
                 and not _in_water(tile, px, py):
             continue  # a lake or pond on an island: only up close, not over the island's own name
-        if cells is not None and kind != "i" and text not in COASTAL_TOWNS and text not in BIG_WATERS \
-                and (px >> 5, py >> 5) not in cells:
+        if cells is not None and kind != "i" and not big and (px >> 5, py >> 5) not in cells:
             # Away from the shore: inland villages, bogs and lakes stay off the sea chart
             # until zoomed right in. Open-water names far out at sea stay.
             if kind != "w" or not _in_water(tile, px, py):
@@ -3656,6 +3767,7 @@ class VectorChart:
                     await self._ensure_part(*key, "")  # fetched again without them
                     await asyncio.sleep(KEEP_PAUSE)
                 continue
+            await self._panel_quiet()
             self._wanted[key] = math.inf  # never skipped as "the map moved on"
             ok = True
             for part in parts():
@@ -3685,6 +3797,7 @@ class VectorChart:
         for z in range(OVERVIEW_MIN_Z + 1, MIN_Z - 1, -1):
             s = BLOCK_Z - z
             for x, y in sorted({(bx >> s, by >> s) for bx, by in blocks}):
+                await self._panel_quiet()
                 if z >= OVERVIEW_MIN_Z:
                     await self._overview_body(z, x, y, None)
                 else:
@@ -3741,16 +3854,18 @@ class VectorChart:
                       wait: float | None = None) -> tuple[bytes, bool] | None:
         """The tile as gzipped JSON, and whether it's complete: from the disk cache when the
         blocks it's cut from haven't changed since, else cut (see ``tile``)."""
-        if z < BLOCK_MIN_Z:
-            self._touch()
-            return await self._overview_body(z, x, y, wait)
         self._touch()
+        if z < BLOCK_MIN_Z:
+            # Made from blocks on disk (or kept made): worth waiting for, see DISK_WAIT.
+            return await self._overview_body(z, x, y, None if wait is None else max(wait, DISK_WAIT))
         path = self._tile_path(z, x, y)
         sources = self._tile_sources(z, x, y)
-        body = await in_thread(_fresh_tile, path, sources)
+        body = await in_io(_fresh_tile, path, sources)
         if body is not None:
             self.tiles_from_disk += 1
             return body, True
+        if wait is not None and await in_io(self._on_disk, blocks_for(z, x, y)):
+            wait = max(wait, DISK_WAIT)
         result = await self._cut(z, x, y, wait)
         if result is None:
             return None
@@ -3762,6 +3877,19 @@ class VectorChart:
             except OSError as err:
                 self._log_once("tile cache", "Could not keep a chart tile on disk: %s", err)
         return body, complete
+
+    def _on_disk(self, keys: Iterable[tuple[int, int]]) -> bool:
+        """Whether these blocks' depths are all on disk: a tile from them only needs reading
+        and cutting, no download."""
+        return all(self._path(*key).exists() for key in keys)
+
+    async def _panel_quiet(self) -> None:
+        """Background work (keeping blocks fresh, making zoomed-out tiles) waits while the
+        panel is asking for tiles, so the chart threads are free for those; it goes on after
+        a pause in them, or after PANEL_YIELD_MAX at most."""
+        start = time.monotonic()
+        while time.monotonic() - self._last_tile < PANEL_QUIET and time.monotonic() - start < PANEL_YIELD_MAX:
+            await asyncio.sleep(0.25)
 
     def _tile_path(self, z: int, x: int, y: int) -> Path:
         return self.dir / "tiles" / self._rev() / str(z) / f"{x}_{y}.json.gz"
@@ -4430,7 +4558,7 @@ class VectorChart:
             except (OSError, ValueError):
                 return None
 
-        return await in_thread(read)
+        return await in_io(read)
 
     async def _keep_overview(self, z: int, x: int, y: int, body: bytes | None, meta: dict) -> None:
         """Keep a zoomed-out tile on disk (with ``body`` None, only what it was made from)."""
@@ -4473,7 +4601,7 @@ class VectorChart:
                     files[(bx, by)] = paths
             return files, newest
 
-        files, newest = await in_thread(scan)
+        files, newest = await in_io(scan)
         have = [list(k) for k in files]
         kept = await self._overview_kept(z, x, y)
         if kept is not None:
