@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.31.0
+
+- The drawn chart is drawn in the background on the phone's spare cores (several tiles
+  at once), so pinching and panning stay smooth while new tiles are drawn. Falls back to
+  drawing on the page where the browser can't.
+- Tiles are kept on the phone (up to about 150 MB of its storage): an area you've looked
+  at before opens straight from the phone, even after closing the app, without asking
+  Home Assistant. A tile older than a day still shows at once and is checked behind it.
+- While pinching, the next zoom's tiles are asked for as soon as it's reached, not after
+  your fingers lift; tiles show at once instead of fading in; two zooms out are fetched
+  ahead too, and up to 24 MB of tiles kept in memory (was 12).
+
 ## 0.30.0
 
 - Snappier drawn chart when zooming and panning:

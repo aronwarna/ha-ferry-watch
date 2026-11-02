@@ -308,7 +308,8 @@
   const scratchCanvases = [];
   function scratch(i, size) {
     let c = scratchCanvases[i];
-    if (!c) c = scratchCanvases[i] = document.createElement("canvas");
+    // In a drawing worker (see drawPool) there's no document: an OffscreenCanvas.
+    if (!c) c = scratchCanvases[i] = typeof document !== "undefined" ? document.createElement("canvas") : new OffscreenCanvas(size, size);
     if (c.width !== size) {
       c.width = size; // also clears it
       c.height = size;
@@ -2294,6 +2295,29 @@
   const MAX_DPR = 3;
   const pixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DPR);
 
+  // --- drawing in workers ------------------------------------------------------------
+  // Loaded as a worker (see drawPool), this file only draws: tile JSON in, the drawn tile
+  // as an ImageBitmap out, with what the label overlay and taps need. Several tiles are then
+  // drawn at once on the phone's other cores, and pinching and panning stay smooth while
+  // they are, as with the satellite and official charts' plain images.
+  if (typeof window === "undefined") {
+    self.onmessage = ({ data: m }) => {
+      try {
+        options.heritage = m.heritage;
+        const size = 256 * m.dpr;
+        const canvas = new OffscreenCanvas(size, size);
+        const data = JSON.parse(m.text);
+        const fw = drawTile(canvas, data, m.coords, m.dpr);
+        const bitmap = canvas.transferToImageBitmap();
+        self.postMessage({ id: m.id, bitmap, fw, e: data.e, aid: data.aid, heritage: data.heritage }, [bitmap]);
+      } catch (err) {
+        self.postMessage({ id: m.id, error: String((err && err.stack) || err) });
+      }
+    };
+    return;
+  }
+  const SCRIPT = document.currentScript?.src;
+
   const PANE = "fwChartLabels";
   const MAX_LABELS = 1200; // candidates looked at per redraw
 
@@ -2474,7 +2498,7 @@
   // Complete tiles' JSON (as text: a fraction of the parsed size) is kept, most recent last,
   // so panning back, zooming out and in again, and the tiles fetched ahead of a move (see
   // ChartLayer._prefetch) draw at once, without asking Home Assistant again.
-  const DATA_MAX = 12e6; // characters kept, about 12 MB
+  const DATA_MAX = 24e6; // characters kept, about 24 MB
   const tileData = new Map(); // "z/x/y" -> text
   let dataChars = 0, dataRev = "";
   function dataCheck() {
@@ -2501,6 +2525,82 @@
       dataChars -= t.length;
     }
   }
+  // --- tiles kept on the phone ---------------------------------------------------------
+  // Complete tiles also go to the browser's own storage (IndexedDB, which works over plain
+  // http too), so an area seen before opens from the phone, even after the app was closed,
+  // without asking Home Assistant: the stored data is a fraction of a picture's size and
+  // draws about as fast as a picture decodes. A day old, a stored tile still shows at once
+  // and is asked for again behind it. The oldest go past STORE_MAX.
+  const STORE_MAX = 150e6; // characters, about 150 MB of the phone's storage
+  const STORE_FRESH_MS = 86400e3;
+  const STORE_PRUNE_EVERY = 300; // tiles stored between checks of the total
+  let storeDb = null; // Promise<IDBDatabase | null>
+  let storePuts = 0;
+  function store() {
+    if (storeDb) return storeDb;
+    storeDb = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open("fw-chart-tiles", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("tiles");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+        req.onblocked = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+    return storeDb;
+  }
+  function storeGet(key) {
+    const id = `${rev}|${key}`;
+    return store().then((db) => db && new Promise((resolve) => {
+      try {
+        const req = db.transaction("tiles").objectStore("tiles").get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    }));
+  }
+  function storePut(key, text) {
+    const id = `${rev}|${key}`;
+    store().then((db) => {
+      if (!db) return;
+      try {
+        db.transaction("tiles", "readwrite").objectStore("tiles").put({ text, t: Date.now() }, id);
+      } catch {
+        return;
+      }
+      if (++storePuts % STORE_PRUNE_EVERY === 0) storePrune(db);
+    });
+  }
+  // Tiles of an older revision go; then the oldest, until the rest fit STORE_MAX.
+  function storePrune(db) {
+    try {
+      const rows = [];
+      const os = db.transaction("tiles", "readwrite").objectStore("tiles");
+      os.openCursor().onsuccess = (ev) => {
+        const cursor = ev.target.result;
+        if (cursor) {
+          if (!String(cursor.key).startsWith(`${rev}|`)) cursor.delete();
+          else rows.push([cursor.value.t, cursor.key, cursor.value.text.length]);
+          cursor.continue();
+          return;
+        }
+        let total = rows.reduce((a, r) => a + r[2], 0);
+        rows.sort((a, b) => a[0] - b[0]);
+        for (const [, id, n] of rows) {
+          if (total <= STORE_MAX) break;
+          os.delete(id);
+          total -= n;
+        }
+      };
+    } catch {
+      // storage unavailable: nothing kept
+    }
+  }
+
   // Requests under way, so a tile shown while it's being fetched ahead waits for that one.
   const inflight = new Map(); // "z/x/y" -> Promise<{ pending, partial, text }>
   function fetchData(key, signal) {
@@ -2510,14 +2610,24 @@
       const text = await r.text();
       const pending = r.status === 202;
       const partial = r.headers.get("X-Chart-Complete") === "0";
-      if (!pending && !partial) dataPut(key, text);
+      if (!pending && !partial) {
+        dataPut(key, text);
+        storePut(key, text);
+      }
       return { pending, partial, text };
     });
   }
+  // Fetching ahead: from the phone's storage when it's there and fresh, else from the server.
   function shared(key) {
     let p = inflight.get(key);
     if (!p) {
-      p = fetchData(key).finally(() => inflight.delete(key));
+      p = storeGet(key).then((hit) => {
+        if (hit && Date.now() - hit.t < STORE_FRESH_MS) {
+          dataPut(key, hit.text);
+          return { pending: false, partial: false, text: hit.text };
+        }
+        return fetchData(key);
+      }).finally(() => inflight.delete(key));
       inflight.set(key, p);
     }
     return p;
@@ -2546,14 +2656,102 @@
     if (drawQueue.length) drawFrame = requestAnimationFrame(runDraws);
   }
 
+  // Drawing workers: one job each at a time, the waiting job nearest the middle of the map
+  // next. Without OffscreenCanvas in workers (older browsers), or if a worker fails, tiles
+  // are drawn here as before (queueDraw).
+  const WORKERS = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+  let pool = null; // [{ worker, job }], or false: draw on the page
+  const workerJobs = [];
+  let jobId = 0;
+  function drawPool() {
+    if (pool !== null) return pool;
+    pool = false;
+    try {
+      if (!SCRIPT || typeof OffscreenCanvas === "undefined" || typeof createImageBitmap === "undefined"
+          || !new OffscreenCanvas(1, 1).getContext("2d")) return pool;
+      if (localStorage.getItem("fw-chart-workers") === "0") return pool; // for comparing
+    } catch {
+      return pool;
+    }
+    try {
+      pool = Array.from({ length: WORKERS }, () => {
+        const slot = { worker: new Worker(SCRIPT), job: null };
+        slot.worker.onmessage = ({ data: res }) => {
+          const job = slot.job;
+          slot.job = null;
+          if (job && job.id === res.id) {
+            if (res.error) job.fail(new Error(res.error));
+            else job.done(res);
+          }
+          pumpWorkers();
+        };
+        slot.worker.onerror = (ev) => {
+          ev.preventDefault?.();
+          console.error("Chart drawing worker failed; drawing on the page", ev.message);
+          poolFailed();
+        };
+        return slot;
+      });
+    } catch (err) {
+      console.error("Chart drawing workers unavailable", err);
+      pool = false;
+    }
+    return pool;
+  }
+  // A worker that fails gives every waiting tile back to the page (fallback).
+  function poolFailed() {
+    const slots = pool || [];
+    pool = false;
+    const jobs = [...slots.map((s) => s.job).filter(Boolean), ...workerJobs.splice(0)];
+    for (const s of slots) s.worker.terminate();
+    for (const job of jobs) job.fallback();
+  }
+  function pumpWorkers() {
+    if (!pool) return;
+    for (const slot of pool) {
+      if (slot.job) continue;
+      for (let i = workerJobs.length - 1; i >= 0; i--) if (workerJobs[i].dead()) workerJobs.splice(i, 1);
+      let best = -1, bestD = Infinity;
+      workerJobs.forEach((job, i) => {
+        const d = job.dist();
+        if (d < bestD) { best = i; bestD = d; }
+      });
+      if (best < 0) return;
+      const job = workerJobs.splice(best, 1)[0];
+      slot.job = job;
+      slot.worker.postMessage({ id: job.id, text: job.text, coords: job.coords, dpr: job.dpr, heritage: options.heritage });
+    }
+  }
+  function workerDraw(job) {
+    job.id = ++jobId;
+    workerJobs.push(job);
+    pumpWorkers();
+  }
+
   const PREFETCH_AT_ONCE = 4;
-  const PREFETCH_MAX = 40; // tiles fetched ahead after a move, at most
+  const PREFETCH_MAX = 60; // tiles fetched ahead after a move, at most
 
   const ChartLayer = L.GridLayer.extend({
     // updateWhenIdle false: tiles are asked for while a finger pans the map (Leaflet waits
-    // for the pan to end on phones by default), so the edges fill in during the move.
-    options: { minZoom: 5, maxZoom: 19, updateWhenZooming: false, updateWhenIdle: false, updateInterval: 150,
+    // for the pan to end on phones by default), so the edges fill in during the move; and
+    // updateWhenZooming: while pinching, as soon as the next zoom is reached, not after the
+    // fingers lift.
+    options: { minZoom: 5, maxZoom: 19, updateWhenZooming: true, updateWhenIdle: false, updateInterval: 150,
       keepBuffer: 2, zIndex: 3 },
+
+    // A drawn tile shows at once, not faded in over 200 ms (the chart is opaque: the fade
+    // only showed the map under it).
+    _tileReady(coords, err, tile) {
+      const map = this._map;
+      if (!map) return;
+      const fade = map._fadeAnimated;
+      map._fadeAnimated = false;
+      try {
+        L.GridLayer.prototype._tileReady.call(this, coords, err, tile);
+      } finally {
+        map._fadeAnimated = fade;
+      }
+    },
 
     createTile(coords, done) {
       const dpr = pixelRatio();
@@ -2577,17 +2775,42 @@
       };
       controller.signal.addEventListener("abort", () => setWaiting(false));
       const dead = () => controller.signal.aborted;
-      const draw = (data, partial) => {
+      const dist = () => this._distance(coords);
+      const drawn = (fw, taps, partial) => {
+        canvas._fw = fw;
+        this._rememberTaps(coords, taps);
+        show(null);
+        this._labels?.schedule();
+        if (partial && again < AGAIN_MS.length) canvas._retry = setTimeout(load, AGAIN_MS[again++]);
+      };
+      const drawHere = (text, partial) => {
         queueDraw({
           dead,
-          dist: () => this._distance(coords),
+          dist,
           run: () => {
-            canvas._fw = drawTile(canvas, data, coords, dpr);
-            this._rememberTaps(coords, data);
-            show(null);
-            this._labels?.schedule();
-            if (partial && again < AGAIN_MS.length) canvas._retry = setTimeout(load, AGAIN_MS[again++]);
+            const data = JSON.parse(text);
+            drawn(drawTile(canvas, data, coords, dpr), data, partial);
           },
+        });
+      };
+      const draw = (text, partial) => {
+        if (!drawPool()) {
+          drawHere(text, partial);
+          return;
+        }
+        workerDraw({
+          text, dpr, coords: { x: coords.x, y: coords.y, z: coords.z }, dead, dist,
+          done: (res) => {
+            if (dead()) { res.bitmap.close(); return; }
+            const ctx = canvas.getContext("2d");
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(res.bitmap, 0, 0);
+            res.bitmap.close();
+            drawn(res.fw, res, partial);
+          },
+          fail: (err) => failed(err),
+          fallback: () => { if (!dead()) drawHere(text, partial); },
         });
       };
       let again = 0, tries = 0;
@@ -2600,22 +2823,43 @@
           return;
         }
         setWaiting(false);
-        draw(JSON.parse(res.text), res.partial);
+        draw(res.text, res.partial);
       };
       const failed = (err) => {
         if (err.name !== "AbortError") console.error("Chart tile", coords, err);
         setWaiting(false);
         show(err.name === "AbortError" ? null : err);
       };
-      const load = () => {
-        const text = again === 0 ? dataGet(key) : undefined;
-        if (text !== undefined) {
-          draw(JSON.parse(text), false);
-          return;
-        }
+      const fetchNow = () => {
         // One being fetched ahead is waited for rather than asked for twice.
         const ahead = again === 0 && tries === 0 && inflight.get(key);
         (ahead || fetchData(key, controller.signal)).then(got).catch(failed);
+      };
+      const load = () => {
+        const text = again === 0 ? dataGet(key) : undefined;
+        if (text !== undefined) {
+          draw(text, false);
+          return;
+        }
+        if (again > 0 || tries > 0 || inflight.has(key)) {
+          fetchNow();
+          return;
+        }
+        storeGet(key).then((hit) => {
+          if (dead()) return;
+          if (!hit) {
+            fetchNow();
+            return;
+          }
+          dataPut(key, hit.text);
+          draw(hit.text, false);
+          // A day old: shown, and asked for again behind it (drawn again if it changed).
+          if (Date.now() - hit.t >= STORE_FRESH_MS) {
+            fetchData(key, controller.signal).then((res) => {
+              if (!dead() && !res.pending && res.text !== hit.text) draw(res.text, res.partial);
+            }).catch(() => null);
+          }
+        });
       };
       load();
       return canvas;
@@ -2671,6 +2915,7 @@
       add(z, map.getPixelBounds(center, z), 1); // the ring round the view (the view's own are skipped below)
       add(z - 1, map.getPixelBounds(center, z - 1), 0);
       add(z + 1, map.getPixelBounds(center, z + 1), 0);
+      add(z - 2, map.getPixelBounds(center, z - 2), 0); // a quick pinch out goes two zooms
       const shownKeys = new Set(Object.values(this._tiles).map((t) => `${t.coords.z}/${t.coords.x}/${t.coords.y}`));
       dataCheck();
       const todo = list.filter((k) => !shownKeys.has(k) && !tileData.has(k) && !inflight.has(k)).slice(0, PREFETCH_MAX);
@@ -2919,6 +3164,7 @@
   window.FerryChart = {
     drawTileWithLabels,
     drawTile, // for timing (perf scripts)
+    workers: () => (pool ? pool.length : 0), // drawing workers in use (0: drawn on the page)
     layer: (opts) => new ChartLayer({ minZoom: serverMinZoom, ...opts }),
     // A tile layer for Traficom's raster charts (as L.tileLayer), without their black no-data.
     rasterLayer: (url, opts) => new RasterLayer(url, opts),
