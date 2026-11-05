@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.31.4
+
+- Home Assistant backups are much smaller: they now leave out the drawn chart, the map
+  tile caches and the weather overlays (together 1 to 2 GB, all downloaded again by
+  themselves). Ship tracks, passages and stats, areas, settings, ship photos and the
+  Land Survey key are still in every backup. After restoring a backup the drawn chart
+  fills in again over about a day, zoomed-out first.
+
 ## 0.31.3
 
 - Fixes the grid on the zoomed-out drawn chart, mostly on a computer screen: the thin
