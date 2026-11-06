@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.32.0
+
+More in Stats, under the ship list (for the ships and direction chosen above):
+
+- Highlights: days since the last inner passage (which ship, which way), the longest wait
+  for one so far (with a bar showing how far the current wait has got), the busiest day
+  for the inner route, and the fastest passage past Porkkala against the usual speed.
+- In wind like now: how often ships took the inner route in wind like the wind at
+  Mäkiluoto right now (same direction give or take 35°, within 3 m/s), against how often
+  they did overall. It's what happened before, not a forecast, and it says so when there
+  are too few passages to tell.
+- Times past Porkkala: for each ship and direction, a strip with a dot for every passage
+  in the last 60 days, the inner ones ringed in orange, the usual time marked and the
+  latest one big, plus its usual speed and how late or early the latest was.
+- The year at a glance: a square for every day, purple for outer route only, orange
+  (darker for more) for days with inner passages. Tap a day to see its passages. On a
+  phone it scrolls sideways and starts at the latest weeks.
+- Passages now carry their speed in the stats data.
+
 ## 0.31.4
 
 - Home Assistant backups are much smaller: they now leave out the drawn chart, the map

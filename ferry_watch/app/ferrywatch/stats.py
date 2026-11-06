@@ -35,7 +35,7 @@ def payload(store: Store) -> dict[str, Any]:
     ]
     for mmsi in seen - names.keys():
         ships.append({"mmsi": mmsi, "name": f"MMSI {mmsi}", "color": "#64748b", "current": False})
-    # [ts, mmsi, route, direction, wind m/s, wind from °, ice state, alert sent 0/1]
+    # [ts, mmsi, route, direction, wind m/s, wind from °, ice state, alert sent 0/1, speed kn]
     return {"ships": ships, "passages": [list(r) for r in rows]}
 
 

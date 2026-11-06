@@ -756,3 +756,78 @@ button.danger:hover { background: rgba(220, 38, 38, 0.08); }
 .card-bell:empty { display: none; }
 .card-bell { display: inline-flex; flex: 0 0 auto; }
 .card-bell .icon-button.plain { width: 32px; height: 32px; }
+
+/* --- More in Stats: highlights, wind like now, times past Porkkala, the year (0.32) ------ */
+.stats-more { margin-top: 6px; }
+.sm-section { margin-top: 18px; }
+.sm-section h3 { margin: 0 0 6px; font-size: 15px; }
+.sm-section h4 { margin: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.sm-note { margin: 2px 0 6px; }
+.sm-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.sm-card {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: 9px 10px 8px; border: 1px solid var(--border); border-radius: 10px;
+  background: linear-gradient(160deg, color-mix(in srgb, #f97316 7%, transparent), transparent 70%);
+}
+.sm-card strong { font-size: 22px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.sm-label { font-size: 11.5px; color: var(--muted); }
+.sm-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.sm-dots { display: inline-flex; gap: 3px; vertical-align: middle; }
+.sm-dots .dot, .sm-tname .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.sm-meter { height: 5px; margin-top: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.sm-meter i { display: block; height: 100%; background: #f97316; border-radius: 3px; }
+.sm-wind { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.sm-wind p { margin: 6px 0 0; }
+.sm-wind-now { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.sm-arrow { width: 22px; height: 22px; fill: #0284c7; flex: 0 0 auto; }
+.sm-odds { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.sm-odds strong { font-size: 30px; line-height: 1; color: #ea580c; font-variant-numeric: tabular-nums; }
+.sm-odds span { font-size: 12.5px; }
+.sm-scale { position: relative; height: 8px; margin-top: 10px; border-radius: 4px; background: color-mix(in srgb, #8b5cf6 22%, transparent); }
+.sm-scale .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: #f97316; }
+.sm-scale .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
+.sm-timing { border: 1px solid var(--border); border-radius: 10px; padding: 2px 10px 6px; margin-top: 6px; }
+.sm-trow, .sm-axis { display: grid; grid-template-columns: 6em minmax(0, 1fr) 5.4em; align-items: center; gap: 8px; }
+.sm-trow { min-height: 36px; }
+.sm-tname { display: flex; flex-direction: column; min-width: 0; font-size: 13px; line-height: 1.25; }
+.sm-tname > span { display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-tname > .muted { font-size: 11px; padding-left: 13px; }
+.sm-strip { position: relative; display: block; height: 22px; margin: 0 6px; }
+.sm-strip::before { content: ""; position: absolute; left: -4px; right: -4px; top: 10px; height: 2px; border-radius: 1px; background: var(--border); }
+.sm-strip i { position: absolute; top: 50%; }
+.sm-strip .tick { width: 1px; height: 6px; margin: -3px 0 0; background: var(--border); }
+.sm-strip .usual { height: 20px; margin-top: -10px; border-left: 1.5px dashed var(--text); opacity: 0.7; }
+.sm-strip .pt { width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; opacity: 0.4; }
+.sm-strip .pt.inner { opacity: 0.95; box-shadow: 0 0 0 2px #f97316; }
+.sm-strip .pt.latest { width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; opacity: 1; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--text); z-index: 1; }
+.sm-strip .pt.latest.inner { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #f97316; }
+.sm-tval { display: flex; flex-direction: column; font-size: 11.5px; line-height: 1.25; text-align: right; white-space: nowrap; }
+.sm-tval .late { color: #b45309; }
+.sm-tval .early { color: #0369a1; }
+.sm-strip .pt.edge:not(.latest) { width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 1px; transform: rotate(45deg); }
+.sm-tval strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.sm-axis-labels { position: relative; height: 14px; margin: 0 6px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sm-axis-labels span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.sm-year-wrap { overflow-x: auto; }
+.sm-year { display: block; width: 100%; min-width: 520px; height: auto; }
+.sm-year text { font-size: 8.5px; fill: var(--muted); }
+.sm-year rect { cursor: pointer; }
+.sm-year rect.future, .sm-year rect.none { cursor: default; }
+.sm-year rect.future { fill: none; stroke: var(--border); stroke-width: 0.6; }
+.sm-year rect.none, .sm-key .none { fill: rgba(127, 127, 127, 0.08); background: rgba(127, 127, 127, 0.08); }
+.sm-year rect.quiet { fill: rgba(127, 127, 127, 0.16); }
+.sm-year rect.outer, .sm-key .outer { fill: color-mix(in srgb, #8b5cf6 38%, transparent); background: color-mix(in srgb, #8b5cf6 38%, transparent); }
+.sm-year rect.in1, .sm-key .in1 { fill: #fdba74; background: #fdba74; }
+.sm-year rect.in2, .sm-key .in2 { fill: #f97316; background: #f97316; }
+.sm-year rect.in3, .sm-key .in3 { fill: #c2410c; background: #c2410c; }
+.sm-year rect:hover:not(.future):not(.none) { stroke: var(--text); stroke-width: 1; }
+.sm-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+.sm-key span { display: inline-flex; align-items: center; gap: 3px; }
+.sm-key i { display: inline-block; width: 10px; height: 10px; border-radius: 2.5px; }
+@container (max-width: 420px) {
+  .sm-trow, .sm-axis { grid-template-columns: 5.6em minmax(0, 1fr) 4.9em; gap: 6px; }
+}
+@media (prefers-color-scheme: dark) {
+  .sm-tval .late { color: #fbbf24; }
+  .sm-tval .early { color: #7dd3fc; }
+}

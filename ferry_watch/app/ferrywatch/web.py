@@ -166,7 +166,7 @@ class Web:
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
-                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js",
+                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
                      "static/overlays.js", "static/wind.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative

@@ -431,10 +431,10 @@ class Store:
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def passage_rows(self) -> list[tuple]:
-        """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified),
-        oldest first, for the stats."""
+        """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified,
+        speed in knots), oldest first, for the stats."""
         return [tuple(r) for r in self.db.execute(
-            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice, notified "
+            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice, notified, round(sog, 1) "
             "FROM passages ORDER BY ts").fetchall()]
 
     # --- sea ice -----------------------------------------------------------

@@ -2283,10 +2283,10 @@
   function statsRows() {
     if (statsRowsOf !== statsData) {
       statsRowsOf = statsData;
-      statsRowsAll = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified]) => {
+      statsRowsAll = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified, sog]) => {
         const d = new Date(ts * 1000);
         return {
-          ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified,
+          ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified, sog,
           year: d.getFullYear(), month: d.getMonth(), date: d.getDate(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
           minute: d.getHours() * 60 + d.getMinutes(),
         };
@@ -2362,6 +2362,7 @@
     const shipScope = (statsView === "year" ? all : all.filter((p) => p.year === statsYear))
       .filter((p) => dirOk(p) && inPick(p) && (!statsDay || p.date === statsDay));
     renderStatsShips(shipScope);
+    renderStatsMore(filtered, all);
     renderPassageList(scope, scopeName);
     renderStatsWeather(scope, scopeName);
     renderStatsCsv(picked, scopeName);
@@ -2730,6 +2731,30 @@
       li.addEventListener("click", () => setHidden(only ? [] : ships.filter((s) => s.mmsi !== ship.mmsi).map((s) => s.mmsi)));
       return li;
     }));
+  }
+
+  // Highlights, the inner route in wind like now, times past Porkkala and the year at a
+  // glance (stats-more.js), for the ships and direction chosen.
+  function renderStatsMore(filtered, all) {
+    const w = lastState?.weather || {};
+    FerryStatsMore.render($("stats-more"), filtered, {
+      ships: statsShips(),
+      year: statsYear,
+      wind: w.enabled !== false && fresh(w.wind) ? w.wind : null,
+      firstTs: all.length ? all[0].ts : null,
+      onDay: (ts) => {
+        const d = new Date(ts * 1000);
+        statsView = "month";
+        store.set("fw-stats-view", statsView);
+        statsYear = d.getFullYear();
+        $("stats-year").value = String(statsYear);
+        statsPick = d.getMonth();
+        statsDay = d.getDate();
+        passagesShown = PAGE;
+        renderStats();
+        $("passages-title").scrollIntoView({ behavior: "smooth", block: "start" });
+      },
+    });
   }
 
   // The passages in the selection, newest first, a day heading over each day's.
