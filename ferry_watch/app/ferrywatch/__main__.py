@@ -31,6 +31,7 @@ from . import radar, seaice, wind
 from .overlays import Overlays
 from .passages import Detector
 from .photos import PhotoCache
+from .satellite import Satellite
 from .predict import Predictor
 from .stations import Stations
 from .store import Store
@@ -82,6 +83,7 @@ class FerryWatch:
         self.enc: dict[str, str] = dict(ENC_DEFAULT)
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
+        self.satellite: Satellite | None = None
         self.overlays: Overlays | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
@@ -119,6 +121,10 @@ class FerryWatch:
         # Photos looked up for other ships when their popup opens: the newest 300 (~25 MB).
         self.other_photos = PhotoCache(DATA_DIR / "photos" / "others", self.session, max_files=300)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
+        # Aerial photos for the Satellite view: their own folder and size limit, so they
+        # never push chart tiles out.
+        self.satellite = Satellite(TileCache(DATA_DIR / "satellite", self.session, 400 * 1024 * 1024),
+                                   self.store.kv_get("mml_api_key", ""))
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
             self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
@@ -313,6 +319,8 @@ class FerryWatch:
     def set_mml_key(self, key: str) -> None:
         self.store.kv_set("mml_api_key", key.strip())
         self.vchart.set_mml_key(key)
+        if self.satellite:
+            self.satellite.mml_key = key.strip()
         if self._keep_task:  # start a new pass now, to fetch the new part everywhere
             self._keep_task.cancel()
             self._keep_task = None
@@ -437,6 +445,7 @@ class FerryWatch:
                     _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
             await asyncio.to_thread(self.tiles.prune)
+            await asyncio.to_thread(self.satellite.cache.prune)
             await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
@@ -485,6 +494,7 @@ class FerryWatch:
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
+            "satellite": self.satellite.sources() if self.satellite else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
             "weather": self.weather_state(),

@@ -102,8 +102,15 @@
       L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER, zIndex: 1, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
       }),
+      // Sharper aerial photos where a country gives them away (Finland 0.5 m, Estonia),
+      // fetched and kept by the add-on. Elsewhere, and where they have no picture, the
+      // add-on sends nothing and Esri's imagery shows through.
+      L.tileLayer("api/tiles/photo/{z}/{x}/{y}.jpg", {
+        minZoom: 11, maxZoom: 19, maxNativeZoom: 18, zIndex: 2,
+        attribution: "Aerial photos © Maanmittauslaitos (via Kapsi), Maa-amet",
+      }),
       L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
-        maxZoom: 19, referrerPolicy: REFERRER, zIndex: 2,
+        maxZoom: 19, referrerPolicy: REFERRER, zIndex: 3,
       }),
     ]),
     chart: null, // built by buildChartLayer below
@@ -3306,6 +3313,9 @@
     for (const sv of st.vchart?.services || []) {
       rows.push([`Chart: ${sv.name}`, sv.failing ? "bad" : "ok",
         sv.failing ? `Failing since ${fmtWhen(sv.failing)}${sv.ok ? ` (last OK ${fmtWhen(sv.ok)})` : ""}` : ok(sv.ok)]);
+    }
+    for (const sv of st.satellite || []) {
+      if (sv.failing) rows.push([sv.name, "bad", `Failing: ${sv.failing}`]);
     }
     if (st.vchart && !st.vchart.mml_key) rows.push(["Chart: Land Survey (rocks, names, land)", "off", "No API key (see Drawn chart above)"]);
     const air = st.aircraft || {};

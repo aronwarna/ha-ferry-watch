@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, stats
+from . import __version__, config, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
@@ -101,6 +101,12 @@ def _mmsi(request: web.Request) -> int:
         return int(request.match_info["mmsi"])
     except ValueError:
         raise web.HTTPBadRequest(text="Invalid MMSI") from None
+
+
+def _image_type(path) -> str:
+    """JPEG or PNG, from the file's first bytes (aerial photos come as either)."""
+    with open(path, "rb") as f:
+        return "image/jpeg" if f.read(3) == b"\xff\xd8\xff" else "image/png"
 
 
 class Web:
@@ -227,6 +233,12 @@ class Web:
         except ValueError:
             raise web.HTTPBadRequest() from None
         source = request.match_info["source"]
+        if source == "photo":  # Satellite view: a country's own aerial photos over Esri's
+            path = await self.fw.satellite.tile(z, x, y) if self.fw.satellite else None
+            if not path:  # elsewhere, or no photo here: Esri's imagery underneath shows
+                cover = satellite.region(z, x, y)  # outside the covered countries: for good
+                raise web.HTTPNotFound(headers={"Cache-Control": "no-store" if cover else "max-age=604800"})
+            return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": _image_type(path)})
         if source == "seamark-abroad":  # chart view: the Finnish charts draw their own marks
             if in_finnish_waters(z, x, y):
                 raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800"})

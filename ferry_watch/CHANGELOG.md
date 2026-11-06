@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.35.0
+
+- Sharper Satellite view: from zoom 11 in, Finland (incl. Åland) shows the Land Survey's
+  own aerial photos (0.5 m per pixel, taken in summer, renewed every three years), and
+  Estonia shows Maa-amet's. Elsewhere, and where those have no picture (open sea), Esri's
+  imagery shows as before. The NAS fetches the photos and keeps a copy (up to 400 MB,
+  left out of backups). The Finnish photos come through Kapsi's free service with no key;
+  if Kapsi is down, the Land Survey's own tiles are used with your API key (those stop at
+  zoom 16). Settings › Data sources lists a photo service only while it's failing.
+
 ## 0.34.0
 
 - Route tool: drag the automatic route onto another fairway and it goes that way. While
