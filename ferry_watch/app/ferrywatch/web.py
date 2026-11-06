@@ -110,6 +110,7 @@ class Web:
         r.add_get("/api/tails", self.tails)
         r.add_get("/api/track/{mmsi}", self.track)
         r.add_get("/api/photo/{mmsi}", self.photo)
+        r.add_get("/api/vessels/{mmsi}/photo", self.vessel_photo)
         r.add_post("/api/ships/{mmsi}/photo", self.upload_photo)
         r.add_post("/api/ships", self.add_ship)
         r.add_delete("/api/ships/{mmsi}", self.remove_ship)
@@ -284,10 +285,14 @@ class Web:
         return web.Response(body=body, content_type="application/json", headers=headers)
 
     async def photo(self, request: web.Request) -> web.StreamResponse:
-        path = self.fw.photos.path(_mmsi(request))
+        path = self.fw.photo_path(_mmsi(request))
         if not path:
             raise web.HTTPNotFound()
         return web.FileResponse(path, headers={"Cache-Control": "max-age=86400"})
+
+    async def vessel_photo(self, request: web.Request) -> web.Response:
+        """Looks up (once) and describes a photo of any vessel; the image is at api/photo/<mmsi>."""
+        return web.json_response({"photo": await self.fw.any_ship_photo(_mmsi(request))})
 
     async def upload_photo(self, request: web.Request) -> web.Response:
         mmsi = _mmsi(request)
@@ -497,6 +502,18 @@ class Web:
         return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
 
     async def traffic(self, request: web.Request) -> web.Response:
+        if "s" in request.query:  # a wide view: every ship inside the box
+            try:
+                box = [float(request.query[k]) for k in ("s", "w", "n", "e")]
+            except (KeyError, ValueError):
+                raise web.HTTPBadRequest(text="s, w, n and e are needed")
+            if any(v != v for v in box):
+                raise web.HTTPBadRequest(text="s, w, n and e are needed")
+            ships = await self.fw.traffic.in_view(*box)
+            resp = web.json_response({"ships": ships, "error": self.fw.traffic.error})
+            if len(ships) > 200:
+                resp.enable_compression()  # ~70 bytes a ship, a quarter of that gzipped
+            return resp
         try:
             lat, lon = float(request.query["lat"]), float(request.query["lon"])
             radius = float(request.query.get("r", 30))

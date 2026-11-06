@@ -407,6 +407,10 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 .ac-body strong { font-size: 14px; }
 .ac-alert { color: #dc2626; font-weight: 600; }
 .ac-foot { font-size: 11px; margin-top: 2px; }
+.traffic-popup { width: 220px; }
+.traffic-popup .ac-photo { margin: 0 0 6px; border-radius: 6px; overflow: hidden; }
+.ext-links { margin-top: 4px; }
+.ext-links a { color: var(--accent, #2563eb); }
 
 /* Rescue aircraft badge */
 .air-badge {

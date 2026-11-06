@@ -945,6 +945,10 @@
     const fleet = info.fleet && lastState?.fleets?.find((f) => f.id === info.fleet);
     $("card-fleet").hidden = !fleet;
     if (fleet) $("card-fleet").textContent = `${fleet.name} fleet`;
+    if ($("card-links").dataset.mmsi !== String(info.mmsi)) {
+      $("card-links").dataset.mmsi = info.mmsi;
+      $("card-links").replaceChildren(...shipLinks(info.mmsi));
+    }
     $("card-follow").hidden = !info.fleet;
     $("card-unfollow").hidden = info.fleet !== "followed";
     // My ships: their alerts bell by the name, and a way to their stats.
@@ -967,6 +971,7 @@
       const credit = $("card-credit");
       credit.hidden = !photo.credit_url;
       if (photo.credit_url) credit.href = photo.credit_url;
+      credit.textContent = `Photo: ${photo.source || "Wikipedia"}`;
     } else {
       $("card-img").removeAttribute("src");
       box.classList.add("empty");
@@ -3454,7 +3459,11 @@
 
   // --- other ships: all AIS traffic around the view, only while switched on -----------------
 
-  const TRAFFIC_MIN_ZOOM = 8; // the server keeps the circle within 60 km anyway
+  // Down to zoom 5 (all of Finland): views wider than 60 km get every ship in the box from
+  // one shared snapshot on the server, smaller marks the further out.
+  const TRAFFIC_MIN_ZOOM = 5;
+  const TRAFFIC_CIRCLE_KM = 60;
+  const trafficSize = (z) => (z >= 9 ? 7 : z >= 7 ? 5.5 : 4.5);
   const TRAFFIC_POLL = 30000;
   const AIS_CLASSES = [
     ["Passenger", "#2563eb", (t) => t >= 60 && t <= 69],
@@ -3477,6 +3486,45 @@
     if (type >= 70 && type <= 79) return "Cargo ship";
     if (type >= 80 && type <= 89) return "Tanker";
     return "Ship";
+  }
+
+  // Free ship sites, by MMSI. VesselFinder first: photo, particulars and the last port calls
+  // without signing in; MarineTraffic hides much of it behind a login now.
+  const SHIP_SITES = [
+    ["VesselFinder", (m) => `https://www.vesselfinder.com/vessels/details/${m}`],
+    ["MarineTraffic", (m) => `https://www.marinetraffic.com/en/ais/details/ships/mmsi:${m}`],
+  ];
+  function shipLinks(mmsi) {
+    const out = [document.createTextNode("Open in ")];
+    SHIP_SITES.forEach(([label, url], i) => {
+      if (i) out.push(document.createTextNode(" · "));
+      const a = document.createElement("a");
+      a.href = url(mmsi);
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = label;
+      out.push(a);
+    });
+    return out;
+  }
+
+  // Photos of other ships, looked up by the server (Wikimedia, by IMO number) when a popup opens.
+  const vesselPhotos = new Map(); // mmsi -> photo | null | Promise
+  function vesselPhoto(mmsi) {
+    if (vesselPhotos.has(mmsi)) return vesselPhotos.get(mmsi);
+    const lookup = api(`api/vessels/${mmsi}/photo`)
+      .then((d) => { vesselPhotos.set(mmsi, d.photo || null); return d.photo || null; })
+      .catch(() => { vesselPhotos.delete(mmsi); return null; });
+    vesselPhotos.set(mmsi, lookup);
+    return lookup;
+  }
+  function showVesselPhoto(a, mmsi, photo) {
+    if (!photo) { a.hidden = true; return; }
+    a.querySelector("img").src = `api/photo/${mmsi}?v=${photo.version}`;
+    a.querySelector(".credit").textContent = `Photo: ${photo.source || "Wikipedia"}`;
+    if (photo.credit_url) a.href = photo.credit_url;
+    else a.removeAttribute("href");
+    a.hidden = false;
   }
 
   // A small triangle along the course (a dot when still), drawn on one canvas for all of them.
@@ -3532,9 +3580,13 @@
     }
     const c = map.getCenter();
     const radius = Math.ceil(map.distance(c, map.getBounds().getNorthEast()) / 1000);
+    const b = map.getBounds().pad(0.1);
+    const url = radius > TRAFFIC_CIRCLE_KM
+      ? `api/traffic?s=${b.getSouth().toFixed(2)}&w=${b.getWest().toFixed(2)}&n=${b.getNorth().toFixed(2)}&e=${b.getEast().toFixed(2)}`
+      : `api/traffic?lat=${c.lat.toFixed(3)}&lon=${c.lng.toFixed(3)}&r=${radius}`;
     trafficBusy = true;
     try {
-      const data = await api(`api/traffic?lat=${c.lat.toFixed(3)}&lon=${c.lng.toFixed(3)}&r=${radius}`);
+      const data = await api(url);
       if (!trafficOn) return;
       drawTraffic(data.ships || []);
       trafficNote = data.error ? `Couldn't reach Digitraffic just now (${data.error}).` : "";
@@ -3552,6 +3604,7 @@
       trafficLayer = L.layerGroup().addTo(map);
     }
     const seen = new Set();
+    const size = trafficSize(map.getZoom());
     for (const row of rows) {
       const [mmsi, lat, lon, sog, cog, heading, , type] = row;
       if (ships.has(mmsi)) continue; // already on the map as one of mine or a fleet ship
@@ -3560,14 +3613,16 @@
       const color = aisColor(type);
       let boat = traffic.get(mmsi);
       if (!boat) {
-        boat = new Boat([lat, lon], { renderer: trafficCanvas, radius: 7, color: "#fff", weight: 1, opacity: 0.9,
+        boat = new Boat([lat, lon], { renderer: trafficCanvas, radius: size, color: "#fff", weight: 1, opacity: 0.9,
           fillColor: color, fillOpacity: 0.85, course });
         boat.bindPopup(() => trafficPopup(boat), { className: "aid-popup", offset: [0, -4] });
         boat.addTo(trafficLayer);
         traffic.set(mmsi, boat);
       } else {
-        const changed = boat.options.course !== course || boat.options.fillColor !== color;
+        const changed = boat.options.course !== course || boat.options.fillColor !== color || boat.options.radius !== size;
         boat.options.course = course;
+        boat.options.radius = size;
+        boat._radius = size;
         if (changed) boat.setStyle({ fillColor: color });
         const ll = boat.getLatLng();
         if (ll.lat !== lat || ll.lng !== lon) boat.setLatLng([lat, lon]);
@@ -3585,6 +3640,18 @@
   function trafficPopup(boat) {
     const [mmsi, , , sog, cog, heading, name, type, length, dest] = boat.row;
     const el = document.createElement("div");
+    el.className = "traffic-popup";
+    const pic = document.createElement("a");
+    pic.className = "ac-photo";
+    pic.target = "_blank";
+    pic.rel = "noopener";
+    pic.hidden = true;
+    pic.innerHTML = '<img alt=""><span class="credit"></span>';
+    pic.querySelector("img").addEventListener("load", () => boat.getPopup()?.update());
+    const photo = vesselPhoto(mmsi);
+    if (photo instanceof Promise) photo.then((p) => { showVesselPhoto(pic, mmsi, p); boat.getPopup()?.update(); });
+    else showVesselPhoto(pic, mmsi, photo);
+    el.append(pic);
     const title = document.createElement("strong");
     title.textContent = name || `MMSI ${mmsi}`;
     el.append(title);
@@ -3616,10 +3683,17 @@
         follow.textContent = String(err.message || err);
       }
     });
-    el.append(document.createElement("br"), follow);
+    const links = document.createElement("div");
+    links.className = "ext-links small";
+    links.append(...shipLinks(mmsi));
+    el.append(document.createElement("br"), follow, links);
     return el;
   }
 
+  map.on("zoomend", () => {
+    const size = trafficSize(map.getZoom());
+    for (const boat of traffic.values()) if (boat.options.radius !== size) boat.setRadius(size);
+  });
   map.on("moveend", () => {
     if (!trafficOn) return;
     clearTimeout(trafficMoveTimer);

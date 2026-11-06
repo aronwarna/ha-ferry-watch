@@ -30,11 +30,12 @@ HEADERS = {"Digitraffic-User": "ha-ferry-watch", "User-Agent": USER_AGENT, "Acce
 _SKIP = " \t\r\n,"
 
 
-def iter_json_array(text: str) -> Iterator[Any]:
-    """The items of a JSON array one at a time. Digitraffic's vessel list parses into
-    about 15 MB of Python objects at once; decoded item by item only one is alive."""
+def iter_json_array(text: str, start: int = 0) -> Iterator[Any]:
+    """The items of a JSON array (the first one from `start` on) one at a time. Digitraffic's
+    vessel list parses into about 15 MB of Python objects at once; decoded item by item only
+    one is alive."""
     decoder = json.JSONDecoder()
-    i, n = text.index("[") + 1, len(text)
+    i, n = text.index("[", start) + 1, len(text)
     while True:
         while i < n and text[i] in _SKIP:
             i += 1
@@ -54,8 +55,10 @@ def directory_row(v: dict[str, Any]) -> tuple | None:
     destination = " ".join(str(v.get("destination") or "").replace("@", " ").split()) or None
     ts = v.get("timestamp")
     ship_type = v.get("shipType")
+    imo = v.get("imo")
     return (mmsi, name or None, normalize(name) or None, ship_type if isinstance(ship_type, int) else None,
-            vessel_length(v) or None, destination, int(ts / 1000) if isinstance(ts, (int, float)) else None)
+            vessel_length(v) or None, destination, int(ts / 1000) if isinstance(ts, (int, float)) else None,
+            imo if isinstance(imo, int) and imo > 0 else 0)
 
 
 _ROMAN = {"Ii", "Iii", "Iv", "Vi", "Vii", "Viii", "Ix", "Xi", "Xii"}

@@ -75,3 +75,33 @@ def test_error_returns_last_answer(tmp_path):
 def test_simulated_traffic_parses():
     data = fake_traffic(60.0, 24.6, 60)
     assert parse_locations(data, time.time(), set())
+
+
+def test_wide_view_uses_one_snapshot_and_the_box(tmp_path):
+    import json
+    store = Store(tmp_path / "t.db")
+    store.replace_vessels([(1, "ARUNA", "ARUNA", 70, 120, "HAMINA", 1, 9074729)])
+    calls = []
+    now = time.time()
+
+    async def fetch(lat, lon, radius, from_ms):
+        calls.append(lat)
+        return json.dumps({"type": "FeatureCollection", "dataUpdatedTime": "x", "features": [
+            feat(1, 60.0, 24.5, now), feat(2, 64.0, 22.0, now), feat(3, 59.5, 26.0, now)]})
+
+    async def run():
+        t = Traffic(None, store, lambda: {3}, fetch)
+        rows = await t.in_view(59.0, 20.0, 61.0, 27.0)
+        assert [r[0] for r in rows] == [1]  # 2 is outside, 3 is already on the map
+        assert rows[0][6] == "Aruna"
+        rows = await t.in_view(59.0, 20.0, 66.0, 27.0)
+        assert sorted(r[0] for r in rows) == [1, 2]
+        assert calls == [None]  # the second view shared the snapshot
+
+    asyncio.run(run())
+
+
+def test_simulated_traffic_all():
+    import json
+    data = asyncio.run(__import__("ferrywatch.simulate", fromlist=["x"]).fake_traffic_fetch(None, None, 0, 0))
+    assert json.loads(data)["features"]

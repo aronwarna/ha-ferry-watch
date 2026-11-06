@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.33.0
+
+- Other ships now show zoomed out too, down to all of Finland (was only from zoom 8,
+  within 60 km). Wide views share one snapshot of every ship Digitraffic has, kept 30 s;
+  marks get smaller further out. Costs a few MB on the server only while it's switched on.
+- Photos for many more ships: besides Wikipedia, photos are looked up on Wikimedia Commons
+  and Wikidata by the ship's IMO number, so the exact ship (fleet ships, cruise ships,
+  cargo ships, tugs...). Tapping another ship shows its photo too when there is one; those
+  are kept for the newest 300 ships and left out of backups. Ships that found nothing
+  before are tried again once.
+- The ship card and the other-ship popup link to VesselFinder and MarineTraffic.
+
 ## 0.32.1
 
 - The alert areas (the inner-route lines and your phone's area) are no longer drawn on

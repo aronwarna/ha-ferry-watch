@@ -74,6 +74,7 @@ class FerryWatch:
         self.session: aiohttp.ClientSession | None = None
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
+        self.other_photos: PhotoCache | None = None
         self.web = Web(self)
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
@@ -115,6 +116,8 @@ class FerryWatch:
         loop = asyncio.get_running_loop()
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
+        # Photos looked up for other ships when their popup opens: the newest 300 (~25 MB).
+        self.other_photos = PhotoCache(DATA_DIR / "photos" / "others", self.session, max_files=300)
         self.tiles = TileCache(DATA_DIR / "tiles", self.session)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
@@ -223,7 +226,8 @@ class FerryWatch:
 
     async def _refresh_fleets_daily(self) -> None:
         while True:
-            if time.time() - self.fleets.updated_ts >= FLEET_REFRESH or not self.store.vessel_count():
+            if (time.time() - self.fleets.updated_ts >= FLEET_REFRESH or not self.store.vessel_count()
+                    or not self.store.vessel_imos_known()):  # IMO numbers are kept since 0.33.0
                 await self.refresh_fleets()
             await asyncio.sleep(3600)
 
@@ -254,12 +258,35 @@ class FerryWatch:
         if new:
             asyncio.create_task(self._fleet_photos())
 
+    def _with_imo(self, ship: dict[str, Any]) -> dict[str, Any]:
+        imo = self.store.vessel_info([ship["mmsi"]]).get(ship["mmsi"], {}).get("imo")
+        return {**ship, "imo": imo}
+
+    def photo_path(self, mmsi: int):
+        return self.photos.path(mmsi) or self.other_photos.path(mmsi)
+
+    async def any_ship_photo(self, mmsi: int) -> dict[str, Any] | None:
+        """A photo of any vessel (an "other ship" whose popup was opened): my ships and fleet
+        ships keep theirs; the rest are looked up by IMO number in a capped cache. Wikipedia
+        is only asked by name for passenger ships, whose names are rarely shared."""
+        if self.photos.path(mmsi):
+            return self.photos.public_info(mmsi)
+        if not self.other_photos.path(mmsi) and not self.other_photos.tried(mmsi):
+            v = self.store.vessel_info([mmsi]).get(mmsi, {})
+            passenger = isinstance(v.get("type"), int) and 60 <= v["type"] <= 69
+            await self.other_photos.ensure({"mmsi": mmsi, "name": v.get("name"), "imo": v.get("imo"),
+                                            "by_name": passenger, "imo_first": True})
+        return self.other_photos.public_info(mmsi)
+
     async def _fleet_photos(self) -> None:
         """Look up photos for followed fleet ships, one at a time (each is looked up once)."""
         changed = False
-        for mmsi, info in self.fleets.active(set(self.tracker.ships)).items():
+        active = self.fleets.active(set(self.tracker.ships))
+        imos = self.store.vessel_info(active)
+        for mmsi, info in active.items():
             if not self.photos.path(mmsi):
-                changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"]})
+                imo = imos.get(mmsi, {}).get("imo")
+                changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"], "imo": imo})
         if changed:
             await self.web.broadcast_ships()
 
@@ -413,7 +440,7 @@ class FerryWatch:
             await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
-                await self.photos.ensure(ship)
+                await self.photos.ensure(self._with_imo(ship))
             await self._fleet_photos()
             await self.web.broadcast_ships()
             await asyncio.sleep(HOUSEKEEPING_INTERVAL)
@@ -532,7 +559,7 @@ class FerryWatch:
     async def _after_add(self, mmsi: int) -> None:
         ship = self.store.ship(mmsi)
         if ship:
-            await self.photos.ensure(ship)
+            await self.photos.ensure(self._with_imo(ship))
             await self.web.broadcast_ships()
 
     def zones_changed(self) -> None:

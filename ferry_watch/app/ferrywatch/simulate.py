@@ -379,15 +379,38 @@ def _shuttle(path, metres: float):
     return lat, lon, brg
 
 
-def fake_traffic(lat: float, lon: float, radius_km: float, now: float | None = None) -> dict[str, Any]:
-    """Stand-in for Digitraffic's /locations?latitude&longitude&radius: GeoJSON features."""
+def _crowd() -> list[tuple]:
+    """FW_FAKE_TRAFFIC_N=<n> more made-up ships spread over the Baltic, for load tests: each
+    sails a straight 40 km leg back and forth."""
+    import random
+    n = int(os.environ.get("FW_FAKE_TRAFFIC_N") or 0)
+    rnd = random.Random(7)
+    out = []
+    for i in range(n):
+        lat, lon = rnd.uniform(57.5, 65.5), rnd.uniform(17.5, 30.0)
+        brg = rnd.uniform(0, 2 * math.pi)
+        end = (lat + 0.36 * math.cos(brg), lon + 0.72 * math.sin(brg))
+        speed = rnd.choice([0.0, 0.0, 6.0, 10.0, 12.0, 14.0, 18.0])
+        out.append((240_000_000 + i, None, rnd.choice([30, 36, 37, 52, 60, 70, 80, 0]), 100, None,
+                    [(lat, lon), end], speed))
+    return out
+
+
+_CROWD: list[tuple] | None = None
+
+
+def fake_traffic(lat: float | None, lon: float | None, radius_km: float, now: float | None = None) -> dict[str, Any]:
+    """Stand-in for Digitraffic's /locations?latitude&longitude&radius (lat None: every ship)."""
+    global _CROWD
+    if _CROWD is None:
+        _CROWD = _crowd()
     now = now or time.time()
     features = []
-    for i, (mmsi, _name, _type, _length, _dest, path, speed) in enumerate(TRAFFIC):
+    for i, (mmsi, _name, _type, _length, _dest, path, speed) in enumerate([*TRAFFIC, *_CROWD]):
         plat, plon, brg = _shuttle(path, now * speed * KNOTS + i * 7919)
-        if distance_m(lat, lon, plat, plon) > radius_km * 1000:
+        if lat is not None and distance_m(lat, lon, plat, plon) > radius_km * 1000:
             continue
-        ts_ms = int(now * 1000) - i * 3000
+        ts_ms = int(now * 1000) - (i % 250) * 3000
         features.append({
             "mmsi": mmsi, "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [plon, plat]},
@@ -405,6 +428,7 @@ def fake_vessel_list() -> str:
     rows = [(m, info["name"].upper(), 60, 200, None) for m, info in FLEET_MEMBERS.items()]
     rows += [(m, n, t, length, d) for m, n, t, length, d, _p, _s in TRAFFIC if n]
     rows += _EXTRA_VESSELS
+    rows += [(m, f"TEST {m % 100000}", t, length, None) for m, _n, t, length, _d, _p, _s in _crowd()]
     return json.dumps([{"mmsi": m, "name": n, "shipType": t, "referencePointA": length // 2,
                         "referencePointB": length - length // 2, "referencePointC": 10, "referencePointD": 10,
                         "posType": 1, "draught": 60, "imo": 0, "callSign": "", "eta": 0,
@@ -433,8 +457,12 @@ async def fake_faults_fetch() -> dict[str, Any]:
     return fake_faults()
 
 
-async def fake_traffic_fetch(lat: float, lon: float, radius_km: int, from_ms: int) -> dict[str, Any]:
-    return fake_traffic(lat, lon, radius_km)
+async def fake_traffic_fetch(lat: float | None, lon: float | None, radius_km: int, from_ms: int) -> Any:
+    data = fake_traffic(lat, lon, radius_km)
+    if lat is None:
+        import json
+        return json.dumps(data)  # as the real one: text, read a ship at a time
+    return data
 
 
 def fake_fmi(params: dict[str, Any]) -> str:

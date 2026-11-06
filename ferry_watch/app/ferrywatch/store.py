@@ -109,6 +109,7 @@ ADDED_COLUMNS = [
     ("passages", "ice_conc", "REAL"),
     ("meta", "eta_ts", "INTEGER"),
     ("meta", "draught", "REAL"),
+    ("vessels", "imo", "INTEGER"),
 ]
 
 
@@ -453,12 +454,19 @@ class Store:
     # rather than in memory, for ship search and for naming the ships in "Other ships".
 
     def replace_vessels(self, rows: Iterable[tuple]) -> int:
-        """Replace the directory with (mmsi, name, norm, type, length, destination, updated)
+        """Replace the directory with (mmsi, name, norm, type, length, destination, updated[, imo])
         rows. They may come from a generator; nothing changes if it fails part way."""
+        padded = (tuple(r) + (None,) * (8 - len(r)) for r in rows)
         with self.db:
             self.db.execute("DELETE FROM vessels")
-            cur = self.db.executemany("INSERT OR REPLACE INTO vessels VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+            cur = self.db.executemany(
+                "INSERT OR REPLACE INTO vessels (mmsi, name, norm, type, length, destination, updated, imo) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", padded)
         return cur.rowcount
+
+    def vessel_imos_known(self) -> bool:
+        """Whether the directory was read since IMO numbers were kept (0.33.0)."""
+        return self.db.execute("SELECT 1 FROM vessels WHERE imo IS NOT NULL LIMIT 1").fetchone() is not None
 
     def vessel_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM vessels").fetchone()[0]
@@ -487,7 +495,7 @@ class Store:
         for i in range(0, len(mmsis), 500):
             chunk = mmsis[i:i + 500]
             rows = self.db.execute(
-                "SELECT mmsi, name, type, length, destination FROM vessels "
+                "SELECT mmsi, name, type, length, destination, imo FROM vessels "
                 f"WHERE mmsi IN ({','.join('?' * len(chunk))})", chunk).fetchall()
             out.update({r["mmsi"]: dict(r) for r in rows})
         return out
