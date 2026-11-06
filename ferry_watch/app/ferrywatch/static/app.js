@@ -1709,6 +1709,10 @@
   };
   const zoneLayers = new Map(); // id -> { zone, layer }
   let editing = false;
+  // The areas are only on the map while they're edited or asked for (Settings › Alerts):
+  // once set up they'd just be lines across the chart.
+  let zonesShown = false;
+  const zonesOnMap = () => editing || zonesShown;
   let drawing = null; // { role, shape }
   let zonesKey = "";
 
@@ -1736,15 +1740,42 @@
     zoneLayers.clear();
     for (const zone of zones) {
       const make = zone.shape === "line" ? L.polyline : L.polygon;
-      const layer = make(zone.points, { ...zoneStyle(zone), interactive: editing, pmIgnore: false }).addTo(map);
+      const layer = make(zone.points, { ...zoneStyle(zone), interactive: editing, pmIgnore: false });
       layer.bindTooltip(zone.name, { sticky: true });
       layer.on("pm:edit", () => saveZoneShape(zone.id));
       zoneLayers.set(zone.id, { zone, layer });
+      if (!zonesOnMap()) continue;
+      layer.addTo(map);
       if (editing) layer.pm.enable({ allowSelfIntersection: false, snappable: false });
       layer.bringToBack();
     }
     renderZonesList();
   }
+
+  // Show the areas on the map to check them (or hide them again); with a zone, go to it.
+  function showZones(on, zone = null) {
+    zonesShown = on;
+    zonesKey = "";
+    renderZones(lastState?.zones || []);
+    renderZonesShown();
+    const layer = zone && zoneLayers.get(zone.id)?.layer;
+    if (on && (layer || zoneLayers.size)) {
+      if (menuModal()) $("ships-dialog").close();
+      const bounds = layer ? layer.getBounds() : L.featureGroup([...zoneLayers.values()].map((e) => e.layer)).getBounds();
+      const pad = cardPadding();
+      // Clear of the menu too, where it stays open beside the map.
+      if (menu.open) pad.paddingBottomRight = [pad.paddingBottomRight[0] + menu.offsetWidth, pad.paddingBottomRight[1]];
+      map.fitBounds(bounds, { ...pad, maxZoom: 13 });
+    }
+  }
+
+  function renderZonesShown() {
+    $("areas-shown").hidden = !zonesShown || editing;
+    $("areas-show").textContent = zonesShown ? "Hide from map" : "Show on map";
+    $("areas-show").setAttribute("aria-pressed", String(zonesShown));
+  }
+  $("areas-shown").addEventListener("click", () => showZones(false));
+  $("areas-show").addEventListener("click", () => showZones(!zonesShown));
 
   const saveTimers = new Map();
   function saveZoneShape(id) {
@@ -1834,6 +1865,7 @@
     $("areas-button").hidden = !on;
     zonesKey = "";
     renderZones(lastState?.zones || []);
+    renderZonesShown();
     // Longer tracks while editing, so lines can be placed on real routes.
     const minutes = on ? 24 * 60 : TAIL_MINUTES;
     try {
@@ -1970,8 +2002,9 @@
     list.replaceChildren(...(zones.length ? zones.map((zone) => {
       const li = document.createElement("li");
       li.innerHTML = `<span class="swatch ${zone.shape}" style="background:${esc(ZONE_STYLE[zone.role]?.color || "#64748b")}"></span>`
-        + `<div class="grow"><span>${esc(zone.name)}</span><span class="small muted">${esc(ZONE_STYLE[zone.role]?.label || zone.role)}`
+        + `<div class="grow clickable" title="Show it on the map"><span>${esc(zone.name)}</span><span class="small muted">${esc(ZONE_STYLE[zone.role]?.label || zone.role)}`
         + `${zone === inArea ? " · your phone is here" : ""}</span></div>`;
+      li.querySelector(".grow").addEventListener("click", () => showZones(true, zone));
       const edit = document.createElement("button");
       edit.type = "button";
       edit.textContent = "Edit";

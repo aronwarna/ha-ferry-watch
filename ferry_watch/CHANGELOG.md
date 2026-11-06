@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.32.1
+
+- The alert areas (the inner-route lines and your phone's area) are no longer drawn on
+  the map all the time. They show while you edit them, or when you ask to check them:
+  Settings › Alerts › Show on map, or tap an area's name there to go to it. A small
+  "Alert areas shown" pill under the conditions hides them again.
+
 ## 0.32.0
 
 More in Stats, under the ship list (for the ships and direction chosen above):
