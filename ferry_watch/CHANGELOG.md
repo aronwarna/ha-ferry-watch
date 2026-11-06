@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.36.0
+
+- Weather panel in the style of Windy: one colour layer at a time from a row of chips,
+  with a colour legend on the map, a darker time bar with the days marked, and **tap
+  the map for the value there**. New colour layers: Temperature, Wind gusts, Clouds
+  (low, middle, high on tap), Rain and snow, Fog and visibility, Waves (with moving
+  swell lines), Sea temperature, Sea level, Northern lights and Light pollution. Wind
+  is now a colour layer too, with its moving lines on top. Pressure lines (isobars
+  with highs and lows) and lightning go on top of any of them.
+- The forecast layers share one run of FMI's HARMONIE model over the whole Baltic
+  (Open-Meteo if FMI is down), stored an hour per file so memory stays low; waves, sea
+  temperature and sea level come from Open-Meteo's marine forecast; lightning from FMI
+  (last hour); northern lights from NOAA's aurora nowcast with the dark and the clouds
+  taken into account, and tonight's Kp forecast in words.
+- Light pollution from the Light Pollution Atlas 2025, with the zone and sky brightness
+  (mag/arcsec²) wherever you tap. Downloaded once (about 1 MB), kept as a 9 MB file on the NAS.
+- Sunset & sunrise: how colourful each of the next two days' sunsets and sunrises is
+  likely to be, from the clouds overhead and towards the sun. Zoomed in, the best spots
+  on land with an open view that way (from the terrain's height and what's around).
+- Night sky: a star map for where your phone was last seen or the map's centre, with
+  the planets, the Moon's phase and meteor showers, played through the night or a night
+  forward and back; a list of what's worth seeing tonight; and a small note on the map
+  (not on the phone) when there's something special and the clouds allow.
+
 ## 0.35.0
 
 - Sharper Satellite view: from zoom 11 in, Finland (incl. Åland) shows the Land Survey's

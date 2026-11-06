@@ -255,7 +255,9 @@ def check_text(result: dict[str, Any] | None) -> str | None:
 
 # --- the overlay --------------------------------------------------------------------------
 
-def overlay(stations: Any = None, fetch: Fetch | None = None, **changes: Any) -> Overlay:
+def overlay(stations: Any = None, fetch: Fetch | None = None, shared: str = "", **changes: Any) -> Overlay:
+    """The wind layer: its own grid over the sea, or with `shared` the weather model's run
+    (forecast.py, over land and sea alike, one fetch for all the colour layers)."""
     queries = list(QUERIES)
 
     async def points(session: aiohttp.ClientSession | None, now: float) -> dict[str, Any]:
@@ -268,15 +270,19 @@ def overlay(stations: Any = None, fetch: Fetch | None = None, **changes: Any) ->
         return check_text(compare(run, list(stations.stations.values()), now))
 
     kw: dict[str, Any] = dict(
-        id=ID, title="Wind forecast", kind="points", points=points, check=check,
-        max_age=RUN_EVERY, refresh=1800, frame_ms=700, opacity=0.9, color="#0f766e",
+        id=ID, title="Wind", kind="points", points=None if shared else points, check=check,
+        run_of=shared, fields=list(FIELDS) if shared else None,
+        max_age=RUN_EVERY, refresh=1800, frame_ms=700, opacity=0.9, color="#0f766e", group="field", icon="wind",
         min_zoom=5, bounds=BOUNDS, valid_for=3600, attribution=ATTRIBUTION,
-        note="FMI's HARMONIE forecast for the next 48 hours: arrows where the wind blows, coloured by "
-             "speed in m/s, and moving wind lines. Step through the hours on the time bar.",
+        note="FMI's HARMONIE forecast for the next 48 hours: the map coloured by wind speed, arrows where it "
+             "blows and moving wind lines. Step through the hours on the time bar.",
     )
     kw.update(changes)
     return Overlay(**kw)
 
 
-def register(overlays: Overlays, stations: Any = None, fetch: Fetch | None = None, **changes: Any) -> None:
-    overlays.register(overlay(stations, fetch, **changes))
+def register(overlays: Overlays, stations: Any = None, fetch: Fetch | None = None, shared: str = "",
+             **changes: Any) -> None:
+    if shared:
+        changes.setdefault("bounds", overlays.registry[shared].bounds)
+    overlays.register(overlay(stations, fetch, shared, **changes))

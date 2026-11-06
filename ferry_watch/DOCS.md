@@ -283,18 +283,63 @@ panel is open; the 24 hours are fetched when you open a station.
 
 ## Weather layers and the time bar
 
-Weather layers (the sea ice chart from November to May, the rain radar and the
-wind forecast) get a switch each under **On the map**,
-with an opacity slider once switched on. While a layer with more than one time
-is on, a time bar sits above the ship chips: play, pause, step a frame back or
-forward, or drag to a time. It starts at the newest frame and keeps showing the
-newest as new ones come in. With several layers on, the bar steps through all
-their times together and each layer shows its own frame for that moment (or
-nothing, if it has none then). The bar gives way while a ship card, a replay
-or the area editor is open. Which layers are on and how see-through they are is
-remembered by each browser or phone on its own. A layer whose source can't be
-reached says so under its switch and in Settings, and tries again a few
-minutes later.
+The weather button opens the weather panel, laid out like Windy. At the top, one
+**colour layer** at a time covers the map: Wind, Temperature, Wind gusts, Clouds,
+Rain and snow, Fog and visibility, Waves, Sea temperature, Sea level, Northern
+lights, Sunset & sunrise and Light pollution. Tap a chip to show it (tap it again to
+hide it); the chosen one gets its note, opacity slider and options below the chips,
+and a colour legend sits at the bottom of the map. Under **On top** are the layers
+that can go over any colour layer: pressure lines (isobars every 2 hPa with the highs
+and lows marked), lightning, the rain radar and the sea ice chart (November to May).
+
+**Tap the map** while a layer is on to read its value there (temperature, gusts,
+cloud at each height, the wave height, period and swell, the sky's brightness...).
+The popup gives way to the ship and chart marks when you tap one of those.
+
+While a layer with more than one time is on, a dark time bar sits above the ship
+chips, with the days marked: play, pause, step a frame back or forward, or drag to a
+time. It starts at the newest frame (for forecasts, the coming hour). With several
+layers on, the bar steps through all their times together and each layer shows its
+own frame for that moment. The bar gives way while a ship card, a replay or the area
+editor is open. Which layers are on and how see-through they are is remembered by
+each browser or phone on its own. A layer whose source can't be reached says so in
+the panel and in Settings, and tries again a few minutes later.
+
+The forecast layers (wind, temperature, gusts, clouds, rain and snow, fog, pressure)
+all share one run of FMI's HARMONIE weather model on a grid of about 30 km over the
+whole Baltic from Gotland to the Bay of Bothnia, 48 hours ahead; if FMI can't be
+reached, the same from Open-Meteo. The colours blend smoothly between the grid points
+and the values are written on the map from zoom 6. Fog shows the model's own
+visibility; where it has none, a fog risk from the humidity, the dew point, the wind
+and low cloud ("estimated" on the legend). Rain turns to snow colours where it's
+below freezing.
+
+**Waves, sea temperature and sea level** come from Open-Meteo's marine forecast
+(48 hours) at the same sea points as the wind: the wave height with moving swell
+lines in the direction the waves travel (switch them off under the chip), the sea
+surface temperature, and the sea level against its mean in cm.
+
+**Lightning** shows FMI's strikes from the last hour, white when new and fading to
+red, read every 5 minutes. **Northern lights** shows NOAA's aurora nowcast (the chance
+of aurora overhead in the next half hour) and, under it, the chance of seeing it here
+with the darkness and the clouds; the panel also gives tonight's Kp forecast in words.
+
+**Light pollution** is the Light Pollution Atlas 2025 (D. Lorenz, from VIIRS
+satellite data): how much artificial light brightens the night sky, in the atlas's
+zones from 0 (pristine) to 7b (city). Tap a place for its zone and the sky's
+brightness in mag/arcsec² (a natural sky is 22.0). The add-on downloads the atlas
+for 15-35 E, 55-70 N once (about 1 MB), keeps it as an 8.6 MB file and draws the
+tiles itself.
+
+**Sunset & sunrise** rates every sunset and sunrise of the next two days, 0-100,
+from the weather model's clouds: high and middle cloud overhead catch the colours
+(best at about half cover), low cloud 40-160 km towards the sun blocks the light, low
+overcast or rain hides it all, and a clear sky gives a clean but not a fiery one. The
+time bar steps from one to the next. Zoomed in from zoom 11, the panel looks at the
+terrain (Mapzen's elevation tiles on AWS, about 30 m) for spots on land with an
+open view towards where the sun goes down or comes up: higher than their surroundings,
+looking over water, with no hill or island block in the way. The best few are
+marked; tap one for why. Treat it as a pointer to places worth checking, not a promise.
 
 **Wind forecast** shows FMI's HARMONIE forecast over Finnish waters (the Gulf of
 Finland from the Estonian islands to Vyborg Bay, the Åland Sea and the Archipelago Sea,
@@ -306,6 +351,32 @@ between the points; they pause while the map moves and **Moving wind lines** und
 the switch turns them off. The forecast is fetched at most every 3 hours, only while
 the switch is on. When the weather stations have been read, **Settings →
 Troubleshooting** says how far the forecast is from their latest readings.
+
+## Night sky
+
+**Night sky** at the top of the weather panel opens a star map: the whole sky as seen
+lying on your back, the horizon round the edge, straight up in the middle, the way you
+face (N, E, S, W) at the bottom. It shows the stars to about magnitude 5 with their
+colours, the constellations, the planets, the Moon with its phase, and the radiants of
+meteor showers that are on. The time slider and play button step through the night,
+from sunset to sunrise; ‹ and › go a night back or forward, **Tonight** comes back.
+Tap a star, planet or the Moon for its name, brightness and where to look.
+
+It is worked out for where your phone was last seen (from the companion app), or for
+the map's centre. **Tonight** lists what's worth looking at, best first: planets and
+when they're highest, close pairings of the Moon, planets and bright stars, meteor
+showers near their peak, the northern lights from the Kp forecast, the Moon's phase,
+when it's properly dark (the sun 12° down; there's no such darkness in early summer)
+and the clouds the weather model expects over the night. Tap a line to jump to that
+time.
+
+When something is really worth stepping out for (a close pairing, a big meteor shower
+at its peak, a good chance of northern lights) and the clouds won't hide it all, a
+small note shows at the top of the map from the afternoon on: once a night, closed
+with ×. Nothing is sent to the phone. The switch at the bottom of the star map turns
+the notes off. The positions are good to a fraction of a degree (planets from JPL's
+approximate orbits, the Moon from the Astronomical Almanac's short series), which is
+plenty for finding things by eye.
 
 ## Harbours
 
@@ -452,7 +523,7 @@ a day the add-on downloads Digitraffic's vessel list into a small table in its
 database, which the fleets, ship search and the other-ships layer use; it is read
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
-(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 512 MB (the zoomed-out ones, about 10 MB for all of Finland, are kept apart and served as they are). Weather layers are only fetched for the layers switched on while the panel is open (the wind forecast as seven requests to FMI at most every 3 hours, kept as a 250 kB file and in memory only while in use); their tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
+(and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 512 MB (the zoomed-out ones, about 10 MB for all of Finland, are kept apart and served as they are). Weather layers are only fetched for the layers switched on while the panel is open. The weather model behind the forecast layers is about 18 requests to FMI at most every 3 hours, and the marine forecast 3 to Open-Meteo; each is kept on disk as one small file per hour (about 20 kB each, 1 MB a run) and only the hour being shown is read, so neither is ever in memory whole. Lightning is one request every 5 minutes and the aurora two every 15 while they're on. The light pollution atlas is downloaded once (about 1 MB) and read from its 8.6 MB file without loading it; its tiles are drawn on the NAS and kept in the weather tile cache. Sunset spots and the star map are worked out in the browser; the terrain tiles for the spots come through the NAS and share the chart tile cache (about 100 kB each, only where you zoom in with that layer on); their tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
 
 ## If a ship never shows up
 
@@ -465,7 +536,12 @@ by name.
 
 - Ship positions: [Digitraffic](https://www.digitraffic.fi/en/marine-traffic/), Fintraffic, CC BY 4.0.
 - Faulty lights and buoys: Digitraffic (Fintraffic / Väylävirasto), CC BY 4.0.
-- Sea conditions, weather stations, sea ice observations, rain radar and wind forecast: [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Sea conditions, weather stations, sea ice observations, rain radar, lightning and the weather model (HARMONIE): [Finnish Meteorological Institute](https://en.ilmatieteenlaitos.fi/open-data) open data, CC BY 4.0.
+- Weather model when FMI can't be reached, and the waves, sea temperature and sea level: [Open-Meteo](https://open-meteo.com), CC BY 4.0.
+- Northern lights: NOAA Space Weather Prediction Center (OVATION aurora nowcast and the planetary Kp forecast), public domain.
+- Light pollution: [Light Pollution Atlas 2025](https://djlorenz.github.io/astronomy/lp/), David Lorenz, from VIIRS data by the Earth Observation Group, Payne Institute, Colorado School of Mines.
+- Terrain for the sunset spots: [Mapzen terrain tiles](https://registry.opendata.aws/terrain-tiles/) on AWS Open Data (in Europe mostly from EU-DEM; © the providers listed there).
+- Stars and constellations: [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD 3-Clause), from the HYG star database. Planet orbits: JPL's approximate Keplerian elements.
 - Ice chart: E.U. Copernicus Marine Service Information (FMI's Baltic sea ice concentration).
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.

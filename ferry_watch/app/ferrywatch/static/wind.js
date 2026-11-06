@@ -225,8 +225,9 @@
         this._canvas.remove();
         this._canvas = this._ctx = null;
       },
-      setGrid(g, alpha) {
+      setGrid(g, alpha, mono = null) {
         this._grid = g;
+        this._mono = mono;
         if (this._canvas) this._canvas.style.opacity = String(alpha);
         if (this._map && this._w) this._field(); // the lines carry on in the new hour's wind
       },
@@ -372,7 +373,7 @@
               any = true;
             }
             if (any) {
-              ctx.strokeStyle = STEPS[s][1];
+              ctx.strokeStyle = this._mono || STEPS[s][1];
               ctx.stroke();
             }
           }
@@ -393,7 +394,7 @@
   };
   const LINES_KEY = "fw-ov-wind-lines";
   let linesOn = store.get(LINES_KEY) !== "0";
-  let lines = null, lastMap = null, lastAlpha = 0.9;
+  let lines = null, lastMap = null, lastAlpha = 0.9, field = null;
 
   const renderer = {
     // A forecast hour: arrows into the group (cleared by overlays.js between hours), and
@@ -401,6 +402,11 @@
     draw(group, data, { opacity, canvas, map }) {
       const g = grid(data);
       gridNow = g;
+      // Windy's colours by speed under the arrows and lines.
+      if (typeof FerryFields !== "undefined") {
+        field = field || FerryFields.fieldRenderer("wind");
+        field.draw(group, data, { opacity: Math.min(opacity, 0.75), map });
+      }
       lastMap = map;
       lastAlpha = opacity;
       gaps.clear();
@@ -425,7 +431,10 @@
       lines?.remove();
       lines = null;
       gridNow = null;
+      field?.hide();
     },
+    valueAt(latlng) { return field?.valueAt(latlng) || null; },
+    legend() { return field?.legend() || null; },
     // Under the switch: the lines on or off, and the colours.
     extra() {
       const row = document.createElement("label");
@@ -452,5 +461,5 @@
     get lines() { return lines; },
   };
 
-  return { STEPS, color, stepOf, legend, uv, grid, cell, sample, thin, renderer };
+  return { STEPS, color, stepOf, legend, uv, grid, cell, sample, thin, renderer, Lines: () => linesClass() };
 });

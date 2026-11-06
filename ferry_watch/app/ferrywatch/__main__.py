@@ -27,7 +27,7 @@ from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
 from .ice import IceWatch
 from .notify import Notifier, sun_place
-from . import radar, seaice, wind
+from . import aurora, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector
 from .photos import PhotoCache
@@ -51,6 +51,9 @@ PANEL_TICK = 60  # s between sea-condition checks and phone reads while a panel 
 FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
 FLEET_REFRESH = 24 * 3600
 SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
+# Heights for the sunset spots' view (Mapzen terrain tiles on AWS Open Data: EU-DEM in
+# Finland, sea floor below 0), as terrarium PNGs: height = R*256 + G + B/256 - 32768 m.
+TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 FLEET_STORE_MOVING, FLEET_STORE_STOPPED = 60, 600  # sparser tracks than the main ships
 
 
@@ -152,8 +155,10 @@ class FerryWatch:
         self.traffic = Traffic(self.session, self.store,
                                lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
         self.stations = Stations(self.session, fake_stations)
-        # The wind forecast is checked against the stations' readings (when they are read anyway).
-        wind.register(self.overlays, self.stations, fake_forecast)
+        self._register_weather_layers()
+        # The wind is checked against the stations' readings (when they are read anyway); it
+        # comes with the weather model's run.
+        wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
@@ -521,10 +526,27 @@ class FerryWatch:
             "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
         }
 
+    def _register_weather_layers(self) -> None:
+        """The Windy-style layers: the weather and sea models, lightning, aurora, light pollution."""
+        fmi = om = noaa = lp = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import fake_fmi_fetch as fmi
+            from .simweather import fake_lp_get as lp
+            from .simweather import fake_marine_json as om
+            from .simweather import fake_noaa_get as noaa
+        forecast.register(self.overlays, fmi)
+        marine.register(self.overlays, om)
+        lightning.register(self.overlays, fmi)
+        aurora.register(self.overlays, noaa)
+        lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
+        sunset.register(self.overlays)
+
     def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
         """Upstream address of a chart or sea mark tile the panel asks for."""
         if source == "seamark":
             return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "terrain":
+            return TERRAIN_URL.format(z=z, x=x, y=y) if 8 <= z <= 13 else None
         if source == "enc":  # the panel asks for these as 512-pixel tiles one zoom out
             return enc_tile_url(self.enc, z, x, y) if 5 <= z <= 18 else None
         layer = next((l for l in (self.chart or {}).get("layers", []) if f"chart-{l['id']}" == source), None)

@@ -7,6 +7,7 @@ per-session path prefix.
 from __future__ import annotations
 
 import asyncio
+import os
 import gzip
 import json
 import logging
@@ -142,6 +143,8 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_get("/api/overlays", self.overlays)
+        r.add_get("/api/overlay-value/{overlay_id}", self.overlay_value)
+        r.add_get("/api/sky", self.sky)
         r.add_get("/api/overlay/{overlay_id}/{ts}", self.overlay_points)
         r.add_get("/api/overlay/{overlay_id}/{ts}/{z}/{x}/{y}", self.overlay_tile)
         r.add_post("/api/vchart/sample", self.vchart_sample)
@@ -182,7 +185,8 @@ class Web:
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js"):
+                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/sky-data.js",
+                     "static/sky.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -246,6 +250,10 @@ class Web:
         url = self.fw.tile_url(source, z, x, y)
         if not url or not (0 <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()
+        if source == "terrain" and os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import terrain_tile  # made-up hills and sea, offline
+            body = await asyncio.to_thread(terrain_tile, z, x, y)
+            return web.Response(body=body, content_type="image/png", headers={"Cache-Control": "max-age=86400"})
         path = await self.fw.tiles.get(source, z, x, y, url)
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
@@ -280,6 +288,41 @@ class Web:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})
         return web.json_response(data, dumps=lambda d: json.dumps(d, separators=(",", ":")),
                                  headers={"Cache-Control": "max-age=600"})
+
+    async def overlay_value(self, request: web.Request) -> web.Response:
+        try:
+            lat, lon = float(request.query["lat"]), float(request.query["lon"])
+            ts = int(float(request.query.get("t") or time.time()))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest() from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise web.HTTPBadRequest()
+        data = await self.fw.overlays.value(request.match_info["overlay_id"], lat, lon, ts)
+        if data is None:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})
+        return web.json_response(data, headers={"Cache-Control": "max-age=300"})
+
+    async def sky(self, request: web.Request) -> web.Response:
+        """For the sky map's night: the weather model's clouds at a place over the next day
+        (with clouds=1) and the Kp forecast."""
+        try:
+            lat, lon = float(request.query["lat"]), float(request.query["lon"])
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest() from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise web.HTTPBadRequest()
+        ov, now = self.fw.overlays, time.time()
+        out: dict[str, Any] = {"clouds": [], "kp": []}
+        try:
+            if request.query.get("clouds") == "1" and "forecast" in ov.registry:
+                out["clouds"] = await ov.series("forecast", lat, lon, ["cloud", "low", "mid", "high"],
+                                                now - 3600, now + 30 * 3600)
+            if "aurora" in ov.registry:
+                run = await ov.run_for("aurora", now)
+                out["kp"] = (run or {}).get("info", {}).get("kp", [])
+        except Exception as err:  # noqa: BLE001 - the sky map works without them
+            out["error"] = str(err) or type(err).__name__
+        return web.json_response(out, headers={"Cache-Control": "max-age=600"})
 
     async def vchart_tile(self, request: web.Request) -> web.Response:
         try:

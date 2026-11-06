@@ -92,6 +92,8 @@
 
   // --- the overlays on the map --------------------------------------------------------
 
+  const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
   const icon = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
   const ICONS = {
     play: icon('<path class="fill" d="M8 5.5v13l10.5-6.5z"/>'),
@@ -99,6 +101,28 @@
     back: icon('<path d="M15 6l-6 6 6 6"/>'),
     next: icon('<path d="M9 6l6 6-6 6"/>'),
   };
+  // Layer icons for the Windy-style chips (24 x 24, stroked).
+  const LAYER_ICONS = {
+    wind: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h8"/>',
+    gust: '<path d="M3 7h9a2.5 2.5 0 1 0-2.5-2.5M3 11h14a3 3 0 1 1-3 3M3 15h6M14 19l3-5h-4l3-5"/>',
+    temp: '<path d="M10 14.5V5a2 2 0 1 1 4 0v9.5a4 4 0 1 1-4 0z"/><path d="M12 9v8"/>',
+    cloud: '<path d="M7 18h10a4 4 0 0 0 .4-8 5.5 5.5 0 0 0-10.6 1.2A3.4 3.4 0 0 0 7 18z"/>',
+    rain: '<path d="M7 14h10a4 4 0 0 0 .4-8 5.5 5.5 0 0 0-10.6 1.2A3.4 3.4 0 0 0 7 14z"/><path d="M8 17l-1 3M12 17l-1 3M16 17l-1 3"/>',
+    fog: '<path d="M4 9h16M3 13h18M5 17h14M8 5h8"/>',
+    pressure: '<path d="M3 15c3-6 6-6 9 0s6 6 9 0"/><path d="M3 9c3-6 6-6 9 0s6 6 9 0" opacity=".5"/>',
+    waves: '<path d="M2 15c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0M2 19c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0M6 11c1-4 4-6 8-5-2 1-3 3-2 5"/>',
+    seatemp: '<path d="M8 12.5V4a2 2 0 1 1 4 0v8.5a3.5 3.5 0 1 1-4 0z"/><path d="M14 17c2-1.5 3.5-1.5 5 0s3 1.5 3.5 0M14 21c2-1.5 3.5-1.5 5 0"/>',
+    sealevel: '<path d="M3 15c2.5-2 4.5-2 7 0s4.5 2 7 0 3-1.5 4 0M12 3v8M9 6l3-3 3 3"/>',
+    aurora: '<path d="M3 20c2-8 4-12 6-14M8 20c1-6 3-10 6-13M13 20c1-5 3-8 7-11"/><circle class="fill" cx="18" cy="4" r="1"/>',
+    lightpollution: '<path d="M12 3v2M5.6 5.6 7 7M3 12h2M19 12h2M17 7l1.4-1.4"/><path d="M9 14a3 3 0 1 1 6 0c0 1.5-1 2-1 3.5h-4C10 16 9 15.5 9 14z"/><path d="M10 20h4"/>',
+    sunset: '<path d="M3 17h18M6 21h12M7 17a5 5 0 0 1 10 0M12 4v4M4.9 9.9l1.5 1.5M19.1 9.9l-1.5 1.5"/>',
+    bolt: '<path d="M13 2 5 13h6l-1 9 8-11h-6z"/>',
+    ice: '<path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9 3l3 3 3-3M9 21l3-3 3 3"/>',
+    radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/>',
+  };
+  const layerIcon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${LAYER_ICONS[name] || LAYER_ICONS.cloud}</svg>`;
+  const ICON_OF = { "rain-radar": "radar", "sea-ice": "ice", wind: "wind" };
+
   const LOAD_WAIT = 4000; // ms playing waits at most for the next frame's tiles
   const LAST_HOLD = 1200; // ms the last frame stays up before playing starts over
   const MIN_REFRESH = 60; // s between time list refreshes while an overlay is on
@@ -107,7 +131,7 @@
      builder; canvas(): the shared canvas for points; onChange(): the list or its errors
      changed (re-render the menu); strip: the ship chips, which the bar sits above and
      gives way with (a card, a replay or the area editor has the bottom then). */
-  function create({ map, store, switchRow, canvas, onChange = () => {}, strip = null }) {
+  function create({ map, store, switchRow, canvas, onChange = () => {}, strip = null, canTap = () => true }) {
     const pane = map.createPane("weather");
     pane.style.zIndex = 350; // over the chart tiles, under tracks and ships
     pane.style.pointerEvents = "none";
@@ -129,6 +153,7 @@
       <div class="player-main">
         <div class="player-time"><strong class="player-clock"></strong><span class="player-info"></span></div>
         <input class="player-range" type="range" min="0" max="0" step="1" value="0" aria-label="Time">
+        <div class="tb-days" aria-hidden="true"></div>
       </div>
       <button type="button" class="player-btn tb-step" data-step="1" aria-label="Later">${ICONS.next}</button>`;
     document.body.append(bar);
@@ -136,6 +161,13 @@
     const range = bar.querySelector(".player-range");
     const clockEl = bar.querySelector(".player-clock");
     const relEl = bar.querySelector(".player-info");
+    const daysEl = bar.querySelector(".tb-days");
+
+    // The colour scale of the layer on the map, bottom left like Windy's.
+    const legendEl = document.createElement("div");
+    legendEl.className = "wx-legend";
+    legendEl.hidden = true;
+    document.body.append(legendEl);
 
     // --- the list from the add-on ---
 
@@ -200,7 +232,9 @@
       refreshTimer = setTimeout(() => { if (!document.hidden) load(); else scheduleRefresh(); }, every * 1000);
     }
 
-    const active = () => [...entries.values()].filter((e) => e.on && e.ov.times?.length);
+    const shown = () => [...entries.values()].filter((e) => e.on && e.ov.times?.length);
+    // Static layers (light pollution, the latest lightning) show their one picture whatever the time.
+    const active = () => shown().filter((e) => !e.ov.static);
     const barTimes = () => union(active().map((e) => e.ov.times));
 
     // --- frames ---
@@ -270,6 +304,7 @@
         if (e.current !== ft || !e.on || !e.group) return;
         e.group.clearLayers();
         if (data) (renderers[e.ov.id] || defaultRenderer).draw(e.group, data, { opacity: e.opacity, canvas, map });
+        renderLegend();
       });
       if (nextFt != null) pointsData(e, nextFt);
     }
@@ -288,6 +323,7 @@
     function ready(e, ft) {
       if (ft == null) return true;
       if (e.ov.kind === "points") return e.loaded.has(ft);
+      if (e.ov.static) return true;
       const layer = e.frames.get(ft);
       return Boolean(layer) && !layer.isLoading();
     }
@@ -305,12 +341,14 @@
       for (const e of entries.values()) {
         if (!e.on || !e.ov.times?.length) { hide(e); continue; }
         const vf = e.ov.valid_for;
-        const ft = t == null ? null : frameAt(e.ov.times, t, vf);
-        const nft = next == null ? null : frameAt(e.ov.times, next, vf);
+        const latest = e.ov.times[e.ov.times.length - 1];
+        const ft = e.ov.static ? latest : t == null ? null : frameAt(e.ov.times, t, vf);
+        const nft = e.ov.static ? null : next == null ? null : frameAt(e.ov.times, next, vf);
         if (e.ov.kind === "points") showPoints(e, ft, nft);
         else showTiles(e, ft, nft);
       }
       renderBar(times);
+      renderLegend();
     }
 
     function renderBar(times = barTimes()) {
@@ -325,8 +363,35 @@
       const label = timeLabel(t, now());
       clockEl.textContent = label.clock;
       relEl.textContent = label.rel;
+      renderDays(times);
       bar.querySelector('[data-step="-1"]').disabled = i === 0;
       bar.querySelector('[data-step="1"]').disabled = i === times.length - 1;
+    }
+
+    // Day names under the slider where each day starts, like Windy's timeline.
+    let daysShown = "";
+    function renderDays(times) {
+      const key = `${times[0]}:${times[times.length - 1]}:${times.length}`;
+      if (key === daysShown) return;
+      daysShown = key;
+      const marks = [];
+      let last = "";
+      times.forEach((ts, i) => {
+        const d = new Date(ts * 1000);
+        const day = d.toDateString();
+        if (day !== last) {
+          marks.push([i, d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })]);
+          last = day;
+        }
+      });
+      const n = Math.max(1, times.length - 1);
+      daysEl.replaceChildren(...(marks.length > 1 || times.length > 12 ? marks : []).map(([i, text]) => {
+        const span = document.createElement("span");
+        span.textContent = text;
+        span.style.left = `${(i / n) * 100}%`;
+        return span;
+      }));
+      daysEl.hidden = !daysEl.children.length;
     }
 
     function setTime(ts) {
@@ -402,6 +467,16 @@
       if (!e) return;
       e.on = on;
       store.set(key(id), on ? "1" : "0");
+      if (on && e.ov.group === "field") {
+        // One colour layer at a time, as on Windy.
+        for (const other of entries.values()) {
+          if (other !== e && other.on && other.ov.group === "field") {
+            other.on = false;
+            store.set(key(other.ov.id), "0");
+            hide(other);
+          }
+        }
+      }
       if (!on) {
         hide(e);
         if (!active().length) { pause(); t = null; }
@@ -453,9 +528,9 @@
       return box;
     }
 
-    // One switch row per overlay, for the On the map list.
+    // One switch row per overlay that goes on top, for the weather panel.
     function rows() {
-      return [...entries.values()].map((e) => switchRow({
+      return [...entries.values()].filter((e) => e.ov.group !== "field").map((e) => switchRow({
         title: e.ov.title, color: e.ov.color, checked: e.on,
         note: e.on && e.ov.error
           ? `Couldn't reach it just now (${e.ov.error}). It tries again in a few minutes.`
@@ -464,6 +539,105 @@
         onChange: async (on) => { await setOn(e.ov.id, on); onChange(); },
       }));
     }
+
+    // The colour layers as Windy-style chips, one on at a time; under them, the one that is
+    // on: what it shows, its opacity and its own switches.
+    function fieldChips() {
+      const box = document.createElement("div");
+      box.className = "wx-fields";
+      const grid = document.createElement("div");
+      grid.className = "wx-chips";
+      grid.setAttribute("role", "group");
+      grid.setAttribute("aria-label", "Colour layer");
+      const fields = [...entries.values()].filter((e) => e.ov.group === "field");
+      for (const e of fields) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "wx-chip";
+        b.setAttribute("aria-pressed", String(e.on));
+        b.style.setProperty("--c", e.ov.color);
+        b.innerHTML = `${layerIcon(e.ov.icon || ICON_OF[e.ov.id])}<span>${esc(e.ov.title)}</span>`;
+        if (e.on && e.ov.error) b.classList.add("failing");
+        b.addEventListener("click", async () => { await setOn(e.ov.id, !e.on); onChange(); });
+        grid.append(b);
+      }
+      box.append(grid);
+      const on = fields.find((e) => e.on);
+      if (on) {
+        const sel = document.createElement("div");
+        sel.className = "wx-selected";
+        const note = document.createElement("p");
+        note.className = "small muted";
+        note.textContent = on.ov.error
+          ? `Couldn't reach it just now (${on.ov.error}). It tries again in a few minutes.`
+          : on.ov.note;
+        if (on.ov.error) note.classList.add("problem");
+        sel.append(note);
+        const summary = renderers[on.ov.id]?.summary?.();
+        if (summary) {
+          const p = document.createElement("p");
+          p.className = "small strong wx-summary";
+          p.textContent = summary;
+          sel.append(p);
+        }
+        sel.append(extras(on));
+        box.append(sel);
+      } else {
+        const p = document.createElement("p");
+        p.className = "small muted";
+        p.textContent = "Pick a layer to colour the map. Tap the map for the value there.";
+        box.append(p);
+      }
+      return box;
+    }
+
+    // --- the legend and a tap on the map ---
+
+    function renderLegend() {
+      const field = shown().find((e) => e.ov.group === "field") || shown().find((e) => renderers[e.ov.id]?.legend);
+      const lg = field && renderers[field.ov.id]?.legend?.();
+      legendEl.hidden = !lg;
+      if (!lg) return;
+      const ticks = lg.ticks.map(([p, v]) => `<span style="left:${p}%">${esc(String(v))}</span>`).join("");
+      const html = `<div class="wx-legend-head"><strong>${esc(field.ov.title)}</strong><span>${esc(lg.unit)}${lg.note ? ` · ${esc(lg.note)}` : ""}</span></div>`
+        + `<div class="wx-legend-bar" style="background:${lg.gradient}"></div><div class="wx-legend-ticks">${ticks}</div>`;
+      if (legendEl.innerHTML !== html) legendEl.innerHTML = html;
+    }
+
+    let picker = null;
+    async function showPicker(latlng) {
+      const on = shown().filter((e) => renderers[e.ov.id]?.valueAt || e.ov.has_value)
+        .sort((a, b) => (a.ov.group === "field" ? -1 : 0) - (b.ov.group === "field" ? -1 : 0));
+      if (!on.length) return;
+      const parts = [];
+      for (const e of on) {
+        let lines = null;
+        try {
+          if (renderers[e.ov.id]?.valueAt) lines = renderers[e.ov.id].valueAt(latlng, map);
+          if (!lines && e.ov.has_value) {
+            const res = await fetch(`api/overlay-value/${e.ov.id}?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&t=${t || ""}`);
+            const data = res.ok ? await res.json() : null;
+            lines = data && (renderers[e.ov.id]?.format ? renderers[e.ov.id].format(data) : [JSON.stringify(data)]);
+          }
+        } catch (err) { console.error(err); }
+        if (lines && lines[0]) parts.push(lines);
+      }
+      if (!parts.length) return;
+      const when = t != null && active().length ? `<div class="wx-pick-time">${esc(timeLabel(t, now()).clock)}</div>` : "";
+      const html = parts.map(([main, sub], i) => `<div class="wx-pick${i ? " more" : ""}"><strong>${esc(main)}</strong>${sub ? `<span>${esc(sub)}</span>` : ""}</div>`).join("") + when;
+      picker = L.popup({ className: "wx-popup", offset: [0, -4], autoPan: false, closeButton: false })
+        .setLatLng(latlng).setContent(html).openOn(map);
+    }
+
+    map.on("click", (e) => {
+      if (!shown().length || !canTap(e.latlng)) return;
+      const before = map._popup;
+      // A chart mark or station that opened its own popup for the same tap goes first.
+      setTimeout(() => {
+        if (map._popup && map._popup !== before && map._popup !== picker && map.hasLayer(map._popup)) return;
+        showPicker(e.latlng);
+      }, 0);
+    });
 
     // Overlays whose source failed last time, for Settings.
     function problems() {
@@ -476,7 +650,7 @@
     }
 
     load();
-    return { rows, problems, checks, load, setTime, play, pause, get time() { return t; }, entries };
+    return { rows, fieldChips, problems, checks, load, setTime, play, pause, get time() { return t; }, entries };
   }
 
   return { union, frameAt, indexAt, startTime, timeLabel, relative, renderers, create };

@@ -51,6 +51,9 @@
   // Made here, before anything can ask for the menu's rows or Settings.
   const overlays = FerryOverlays.create({
     map, store, switchRow, canvas: sharedCanvas, strip: $("strip"),
+    // A tap shows the weather there, unless it was for the route tool or a chart mark.
+    canTap: (latlng) => !route.on && !(activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11
+      && FerryChart.aidAt(map, latlng)),
     onChange() {
       renderWeather();
       renderSettings();
@@ -3221,7 +3224,14 @@
     const lit = stationsOn || [...overlays.entries.values()].some((e) => e.on);
     $("weather-button").classList.toggle("lit", lit);
     if ($("weather-sheet").hidden) return;
+    const onTop = document.createElement("h3");
+    onTop.className = "wx-heading";
+    onTop.textContent = "On top";
     $("weather-list").replaceChildren(
+      overlays.fieldChips(),
+      skyButton(),
+      onTop,
+      ...overlays.rows(),
       switchRow({
         title: "Sea conditions", color: "#0ea5e9", checked: weatherOn,
         note: weatherOn && w.error
@@ -3238,8 +3248,30 @@
         extra: stationsOn ? windLegend() : null,
         onChange: async (on) => { setStations(on); renderWeather(); },
       }),
-      ...overlays.rows(),
     );
+  }
+
+  // The night sky (sky.js): a star map for where the phone was last seen (or the map's
+  // centre), and a note on the map once a night when something up there is worth seeing.
+  const skyPlace = (c, label) => ({ lat: c.lat, lon: c.lng ?? c.lon, label });
+  const sky = FerrySky.create({
+    esc,
+    where() {
+      const ph = lastState?.phone;
+      if (ph && now() - ph.ts < 3 * 86400) return skyPlace(ph, "Where your phone was last seen");
+      return skyPlace(map.getCenter(), "At the map's centre (no phone position)");
+    },
+    mapCentre: () => skyPlace(map.getCenter(), "At the map's centre"),
+  });
+  window.ferrySky = sky;
+
+  function skyButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sky-open-button";
+    b.innerHTML = `<span aria-hidden="true">✦</span><span><strong>Night sky</strong><small>Stars, planets and what's up tonight</small></span><span aria-hidden="true">›</span>`;
+    b.addEventListener("click", () => { toggleWeather(false); sky.open(); });
+    return b;
   }
 
   function toggleWeather(open = $("weather-sheet").hidden) {
@@ -5393,5 +5425,8 @@
     loadHarbours();
     loadRoutes().catch(console.error);
     if (route.points.length && store.get("fw-route-open") === "1") setRouteMode(true);
+    // Tonight's sky: looked at now and every half hour while the map is open.
+    setTimeout(() => sky.note().catch(console.error), 4000);
+    setInterval(() => sky.note().catch(console.error), 30 * 60 * 1000);
   })();
 })();
