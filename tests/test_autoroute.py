@@ -58,6 +58,26 @@ def test_t_junction_and_crossing_join_the_network():
                                     + distance_m(*B, *C))
 
 
+def test_via_point_keeps_to_its_own_fairway():
+    # Two parallel fairways 300 m apart, the northern one branching off the southern one at
+    # its east end; a via point on the northern one (dragged there by the user): the route to
+    # it comes along that one, never straight across from the southern one, though that
+    # would be shorter.
+    south = merc((60.0, 24.0), (60.0, 24.2))
+    north = merc((60.0, 24.2), (60.0027, 24.17), (60.0027, 24.05))
+    g = build_graph([south, north])
+    via = (60.0027, 24.10)
+    # (The start on a fairway too, else it joins the northern one straight away.)
+    free = find_route(g, (60.0, 24.0), via, (True, False))
+    kept = find_route(g, (60.0, 24.0), via, (True, True))
+    assert "error" not in kept and "error" not in free
+    assert not any(distance_m(*p, 60.0, 24.2) < 50 for p in free["points"])  # straight across
+    assert any(distance_m(*p, 60.0, 24.2) < 50 for p in kept["points"])  # round by the branch
+    assert kept["metres"] > free["metres"]
+    # A via point that isn't near any fairway joins as a stop does.
+    assert "error" not in find_route(g, (60.0, 24.0), (60.01, 24.1), (False, True))
+
+
 def test_start_far_from_fairways():
     g = build_graph(lines_for(1.5))
     assert "error" in find_route(g, (59.40, 24.40), C)  # over 10 NM away
@@ -146,5 +166,27 @@ def test_graph_kept_only_while_small(tmp_path, monkeypatch):
         monkeypatch.setattr(autoroute, "CACHE_MAX_BYTES", 0)
         await router.route(start, end, 2.0)
         assert router._cache is None  # too big: dropped right after use
+
+    asyncio.run(run())
+
+
+def test_fairway_lines_for_snapping_on_simulated_chart(tmp_path):
+    async def run():
+        chart = VectorChart(tmp_path, None, fake_chart_layer)
+        router = AutoRouter(chart)
+        box = (59.94, 24.38, 59.98, 24.62)  # south, west, north, east
+        first = await router.lines(*box, 1.5)
+        assert first["lines"] == [] and first["missing"] > 0
+        await router.route((59.972, 24.60), (59.946, 24.40), 1.5)
+        await router._downloading
+        got = await router.lines(*box, 1.5)
+        assert got["missing"] == 0 and got["lines"], got
+        assert all(len(line) >= 2 and all(len(p) == 2 for p in line) for line in got["lines"])
+        again = await router.lines(*box, 1.5)  # from the cache
+        assert again == got
+        # Lines too shallow for a 12 m boat are left out.
+        deep = await router.lines(*box, 12)
+        assert sum(map(len, deep["lines"])) < sum(map(len, got["lines"]))
+        assert (await router.lines(59.0, 19.0, 66.0, 31.0, 1.5)) == {"lines": [], "too_big": True}
 
     asyncio.run(run())

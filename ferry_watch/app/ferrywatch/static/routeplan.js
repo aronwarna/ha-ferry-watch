@@ -3,16 +3,21 @@
    worked out by the add-on (api/autoroute). Kept apart from app.js so the tests can run it
    under Node. Planning only, not for navigation.
 
-   stops: [[lat, lon], ...], where [lat, lon, 1] is a bend: a point the user pulled the line
-   to, or a fairway turn they moved, rather than a stop they set. The route's own numbered
-   stops cut it into sections; a section is one fairway leg, one straight leg, or a line of
-   straight legs through bends.
+   stops: [[lat, lon], ...]. The route's own numbered stops are [lat, lon]; the rest are
+   points the user dragged the line to, and have no number:
+   - [lat, lon, 1] is a bend: a point off the fairways (or a fairway turn they moved),
+     with straight legs to it;
+   - [lat, lon, 2] is a via point: a point on another fairway the user dragged the route
+     onto. The fairway legs either side are planned to it and on from it, so the route
+     goes that way.
+   The numbered stops cut the route into sections; a section is one straight leg, fairway
+   legs (through any via points), or the user's own line (straight legs through bends).
    legs: [{ fw: bool, path: [[lat, lon], ...] }, ...], one fewer than the stops.
 
-   A fairway leg stays automatic until the user changes something inside it: then its
-   turns become bends joined by straight legs and are never planned again by themselves, so
-   a stretch pulled off the fairway stays where it was put. Moving one of the user's stops
-   plans the automatic fairway legs either side of it again.
+   A fairway leg stays automatic until the user changes something inside it off the
+   fairways: then its turns become bends joined by straight legs and are never planned
+   again by themselves, so a stretch pulled off the fairway stays where it was put. Moving
+   a numbered stop or a via point plans the automatic fairway legs either side of it again.
 
    Functions that change a plan change it in place and return the indexes of the legs that
    need planning again, unless they say otherwise. */
@@ -26,14 +31,18 @@
   const newLeg = (fw) => ({ fw: Boolean(fw), path: [] });
   const fairwayLegs = (legs, list) => list.filter((i) => i >= 0 && i < legs.length && legs[i].fw);
   const bend = (p) => [p[0], p[1], 1];
+  const via = (p) => [p[0], p[1], 2];
   const plain = (p) => [p[0], p[1]];
   const isBend = (p) => p.length > 2 && p[2] === 1;
+  const isVia = (p) => p.length > 2 && p[2] === 2;
+  const isOwn = (p) => !isBend(p) && !isVia(p); // one of the user's numbered stops
+  const like = (old, p) => (isBend(old) ? bend(p) : isVia(old) ? via(p) : plain(p));
 
-  // The ends of the route are always stops of their own.
+  // The ends of the route are always numbered stops.
   function fixEnds(stops) {
-    if (stops.length && isBend(stops[0])) stops[0] = plain(stops[0]);
+    if (stops.length && !isOwn(stops[0])) stops[0] = plain(stops[0]);
     const n = stops.length - 1;
-    if (n > 0 && isBend(stops[n])) stops[n] = plain(stops[n]);
+    if (n > 0 && !isOwn(stops[n])) stops[n] = plain(stops[n]);
   }
 
   // Every point of the route in order, as [lat, lon]: what is measured, drawn and saved.
@@ -55,7 +64,7 @@
     const out = [];
     let a = 0;
     for (let i = 1; i < stops.length; i++) {
-      if (i === stops.length - 1 || !isBend(stops[i])) {
+      if (i === stops.length - 1 || isOwn(stops[i])) {
         out.push([a, i]);
         a = i;
       }
@@ -73,11 +82,11 @@
     return out;
   }
 
-  // What a section is: "fw" (one automatic fairway leg), "line" (one straight leg) or
-  // "own" (straight legs through bends).
+  // What a section is: "fw" (automatic fairway legs, through any via points), "line" (one
+  // straight leg) or "own" (the user's own line, through bends).
   function sectionKind(legs, a, b) {
-    if (b - a > 1) return "own";
-    return legs[a].fw ? "fw" : "line";
+    if (legs.slice(a, b).every((l) => l.fw)) return "fw";
+    return b - a > 1 ? "own" : "line";
   }
 
   // A new last stop, its leg straight or along the fairways.
@@ -87,10 +96,10 @@
     return stops.length > 1 ? fairwayLegs(legs, [legs.length - 1]) : [];
   }
 
-  // A stop moved. When it's one of the user's own, the automatic fairway legs either side
-  // are planned again; a bend's legs are straight.
+  // A stop moved, staying what it is. The automatic fairway legs either side are planned
+  // again (a bend's legs are straight).
   function moveStop(stops, legs, i, p) {
-    stops[i] = isBend(stops[i]) ? bend(p) : plain(p);
+    stops[i] = like(stops[i], p);
     const touched = fairwayLegs(legs, [i - 1, i]);
     for (const k of touched) legs[k] = newLeg(true);
     return touched;
@@ -137,6 +146,32 @@
     return i + 1;
   }
 
+  // A via point at p on fairway leg i: the leg becomes two, planned to it and on from it.
+  // Returns the legs to plan; the via point is stop i + 1.
+  function insertVia(stops, legs, i, p) {
+    stops.splice(i + 1, 0, via(p));
+    legs.splice(i, 1, newLeg(true), newLeg(true));
+    return [i, i + 1];
+  }
+
+  // Stop i (a bend) becomes a via point at p: the legs either side follow the fairways.
+  function toVia(stops, legs, i, p) {
+    stops[i] = via(p);
+    const touched = [i - 1, i].filter((k) => k >= 0 && k < legs.length);
+    for (const k of touched) legs[k] = newLeg(true);
+    return touched;
+  }
+
+  // Via point i moved off the fairways, to p: a bend with straight legs to the fairway turns
+  // either side (the fairway legs unpacked, as when a turn is dragged). Returns the bend's
+  // stop index; nothing is planned again.
+  function viaToBend(stops, legs, i, p) {
+    if (i < legs.length) unpackLeg(stops, legs, i);
+    const before = i > 0 ? unpackLeg(stops, legs, i - 1) : 0;
+    stops[i + before] = bend(p);
+    return i + before;
+  }
+
   // Everything between stops a and b (a < b) becomes one leg, straight or along the
   // fairways. Stops and bends between them go.
   function setSection(stops, legs, a, b, fw) {
@@ -153,13 +188,13 @@
   }
 
   // For saving: the points; where the stops are among them (wp), which legs follow the
-  // fairways (fw) and which stops are bends (bend, as indexes into wp). A route with only
-  // straight legs between stops of the user's own needs no plan.
+  // fairways (fw), which stops are bends and which via points (bend, via: indexes into wp).
+  // A route with only straight legs between numbered stops needs no plan.
   function toSaved(stops, legs) {
     const pts = points(stops, legs);
-    const bends = [];
-    stops.forEach((p, i) => { if (isBend(p)) bends.push(i); });
-    if (!legs.some((l) => l.fw) && !bends.length) return { points: pts, plan: null };
+    const bends = [], vias = [];
+    stops.forEach((p, i) => { if (isBend(p)) bends.push(i); else if (isVia(p)) vias.push(i); });
+    if (!legs.some((l) => l.fw) && !bends.length && !vias.length) return { points: pts, plan: null };
     const wp = [];
     let n = 0;
     stops.forEach((_, i) => {
@@ -168,6 +203,7 @@
     });
     const plan = { wp, fw: legs.map((l) => (l.fw ? 1 : 0)) };
     if (bends.length) plan.bend = bends;
+    if (vias.length) plan.via = vias;
     return { points: pts, plan };
   }
 
@@ -179,7 +215,8 @@
       && wp[0] === 0 && wp[wp.length - 1] === pts.length - 1 && wp.every((v, k) => k === 0 || v > wp[k - 1]);
     if (!ok) return { stops: pts.map(plain), legs: pts.slice(1).map(() => newLeg(false)) };
     const bends = new Set(Array.isArray(plan.bend) ? plan.bend : []);
-    const stops = wp.map((k, i) => (bends.has(i) ? bend(pts[k]) : plain(pts[k])));
+    const vias = new Set(Array.isArray(plan.via) ? plan.via : []);
+    const stops = wp.map((k, i) => (vias.has(i) ? via(pts[k]) : bends.has(i) ? bend(pts[k]) : plain(pts[k])));
     const legs = fw.map((f, k) => (f ? { fw: true, path: pts.slice(wp[k] + 1, wp[k + 1]).map(plain) } : null));
     // A straight leg with points between its stops (not saved by this tool): those are stops too.
     for (let k = legs.length - 1; k >= 0; k--) {
@@ -193,7 +230,8 @@
   }
 
   return {
-    points, legPoints, sections, sectionOf, sectionPoints, sectionKind, isBend, addStop, moveStop, removeStop,
-    unpackLeg, turnStop, insertBend, setSection, setLegMode, toSaved, fromSaved,
+    points, legPoints, sections, sectionOf, sectionPoints, sectionKind, isBend, isVia, isOwn, addStop, moveStop,
+    removeStop, unpackLeg, turnStop, insertBend, insertVia, toVia, viaToBend, setSection, setLegMode, toSaved,
+    fromSaved,
   };
 });

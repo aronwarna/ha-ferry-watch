@@ -780,6 +780,29 @@ body.attribution-open .strip { visibility: hidden; }
   cursor: grab;
 }
 .rp-bend-icon:hover .rp-bend { width: 16px; height: 16px; }
+/* A via point: the route is planned through it, along the fairway it's on */
+.rp-via {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border-radius: 2px;
+  background: #c026d3;
+  border: 2.5px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
+  cursor: grab;
+}
+.rp-via::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 1px;
+  background: #fff;
+}
+.rp-via-icon:hover .rp-via { width: 17px; height: 17px; }
 .route-picking { cursor: pointer; }
 .route-picking .rp-mid-icon .rp-mid { border-style: dashed; }
 .route-dragging .rp-mid-icon:not(.leaflet-drag-target), .route-dragging .leg-label { visibility: hidden; }

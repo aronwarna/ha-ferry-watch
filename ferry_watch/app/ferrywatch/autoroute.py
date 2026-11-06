@@ -35,6 +35,11 @@ DRAUGHT_MARGIN = 0.3  # m under the keel beyond the boat's draught
 CONNECT_M = 3 * NM  # straight legs from the start and end to the fairways, normally
 CONNECT_MAX_M = 10 * NM  # beyond this the start or end is too far from any fairway
 CONNECT_EDGES = 3  # fairway pieces the start and end may join
+# A via point (the user dragged the route onto a fairway) joins only the fairway it's on, so
+# the route goes along that one and not straight across to another nearby: the nearest
+# piece and those as near as it give or take this...
+JOIN_ON_M = 25
+ON_FAIRWAY_M = 300  # ...when it's this near a fairway at all
 PAD_M = 6000  # around the start and end when choosing blocks...
 PAD_MAX_M = 10000  # ...a little more on long routes, which may detour
 MAX_BLOCKS = 60
@@ -44,6 +49,10 @@ CACHE_MAX_BYTES = 1024 * 1024  # a bigger graph isn't kept between requests
 FULL_LEVEL = len(LEVELS) - 1  # the blocks' full-detail level
 MAX_POINTS = 60  # in the answer
 SIMPLIFY_M = 20
+# The fairways in view, for the panel to snap a dragged route onto (see AutoRouter.lines).
+LINES_MAX_BLOCKS = 48
+LINES_SIMPLIFY_M = 6
+LINES_CACHE = 160  # blocks' lines kept (a few kB each)
 
 
 class Graph:
@@ -237,9 +246,11 @@ def _nearest_edges(g: Graph, x: float, y: float, limit: int) -> list[tuple[float
     return out
 
 
-def find_route(g: Graph, start: tuple[float, float], end: tuple[float, float]) -> dict[str, Any]:
+def find_route(g: Graph, start: tuple[float, float], end: tuple[float, float],
+               on: tuple[bool, bool] = (False, False)) -> dict[str, Any]:
     """The shortest way from start to end (lat, lon) along the fairways: {"points":
-    [[lat, lon], ...], "metres": length} or {"error": why}."""
+    [[lat, lon], ...], "metres": length} or {"error": why}. ``on``: whether the start and the
+    end are via points the user put on a fairway (see JOIN_ON_M)."""
     if g.n == 0:
         return {"error": "There are no marked fairways around here deep enough for this draught."}
     lat = list(g.lat)
@@ -259,13 +270,15 @@ def find_route(g: Graph, start: tuple[float, float], end: tuple[float, float]) -
     s, e = add_node(*start), add_node(*end)
     feet: dict[tuple[int, int], list[int]] = {}
     warnings = []
-    for point, which, label in ((start, s, "start"), (end, e, "end")):
+    for point, which, label, on_fw in ((start, s, "start", on[0]), (end, e, "end", on[1])):
         x, y = lonlat_to_mercator(point[1], point[0])
         near = _nearest_edges(g, x, y, CONNECT_EDGES)
         if not near or near[0][0] > CONNECT_MAX_M:
             return {"error": f"The {label} is more than {CONNECT_MAX_M / NM:.0f} NM from a marked fairway "
                              "deep enough for this draught."}
-        if near[0][0] > CONNECT_M:
+        if on_fw and near[0][0] <= ON_FAIRWAY_M:
+            near = [n for n in near if n[0] <= near[0][0] + JOIN_ON_M]
+        elif near[0][0] > CONNECT_M:
             warnings.append(f"The {label} is {near[0][0] / NM:.1f} NM from the nearest marked fairway: "
                             "check that straight leg on the chart.")
             near = near[:1]
@@ -342,10 +355,38 @@ def blocks_between(start: tuple[float, float], end: tuple[float, float]) -> list
     return [(bx, by) for by in range(y0, y1 + 1) for bx in range(x0, x1 + 1) if near_finland(block_bounds(bx, by))]
 
 
+def blocks_in(south: float, west: float, north: float, east: float) -> list[tuple[int, int]]:
+    """Chart blocks over an area (lat/lon), that could hold Finnish fairways."""
+    (x0, y0), (x1, y1) = lonlat_to_mercator(west, south), lonlat_to_mercator(east, north)
+    size = 2 * HALF / 2**BLOCK_Z
+    bx0, bx1 = math.floor((x0 + HALF) / size), math.floor((x1 + HALF) / size)
+    by0, by1 = math.floor((HALF - y1) / size), math.floor((HALF - y0) / size)
+    if (bx1 - bx0 + 1) * (by1 - by0 + 1) > LINES_MAX_BLOCKS * 4:
+        return [(-1, -1)] * (LINES_MAX_BLOCKS + 1)
+    return [(bx, by) for by in range(by0, by1 + 1) for bx in range(bx0, bx1 + 1) if near_finland(block_bounds(bx, by))]
+
+
+def lines_latlon(lines: list[list[tuple[float, float]]]) -> list[list[list[float]]]:
+    """Fairway lines (mercator metres) thinned and as [[lat, lon], ...] for the panel."""
+    out = []
+    for line in lines:
+        if not line:
+            continue
+        tol = LINES_SIMPLIFY_M / _metres_per_unit(line[0][1])
+        pts = []
+        for x, y in simplify(line, tol):
+            lon, lat = mercator_to_lonlat(x, y)
+            pts.append([round(lat, 5), round(lon, 5)])
+        if len(pts) >= 2:
+            out.append(pts)
+    return out
+
+
 class AutoRouter:
     def __init__(self, vchart: Any):
         self.vchart = vchart
         self._cache: tuple[tuple, float, Graph] | None = None  # one graph: (key, built, graph)
+        self._lines: dict[tuple, list] = {}  # (bx, by, draught, file time) -> lines (lines_latlon)
         self._downloading: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
@@ -393,7 +434,8 @@ class AutoRouter:
         self._cache = (cache_key, now, graph) if graph.nbytes() <= CACHE_MAX_BYTES else None
         return graph
 
-    async def route(self, start: tuple[float, float], end: tuple[float, float], draught: float) -> dict[str, Any]:
+    async def route(self, start: tuple[float, float], end: tuple[float, float], draught: float,
+                    on: tuple[bool, bool] = (False, False)) -> dict[str, Any]:
         keys = blocks_between(start, end)
         if len(keys) > MAX_BLOCKS:
             return {"error": "Too far for automatic planning: plan it in parts of up to about 50 NM."}
@@ -403,9 +445,44 @@ class AutoRouter:
             self._downloading = asyncio.create_task(self._download(missing))
         async with self._lock:  # one graph built at a time keeps memory down
             graph = await self._graph(ready, draught)
-            result = await in_thread(find_route, graph, start, end)
+            result = await in_thread(find_route, graph, start, end, on)
+            if "error" in result and any(on):
+                # The fairway it's on doesn't join the rest in the chart data: let it join
+                # the nearest others, as a stop off the fairways does.
+                result = await in_thread(find_route, graph, start, end)
         result.update({"blocks": len(keys), "downloading": len(missing)})
         if missing and "error" in result:
             result["error"] = (f"Chart data for {len(missing)} of the {len(keys)} areas along the way is "
                                "still downloading. Try again in a minute.")
         return result
+
+    async def lines(self, south: float, west: float, north: float, east: float, draught: float) -> dict[str, Any]:
+        """The fairway lines deep enough for the draught in an area, from the chart blocks on
+        disk: {"lines": [[[lat, lon], ...], ...], "missing": blocks not downloaded yet}, or
+        {"lines": [], "too_big": True} for an area of more than LINES_MAX_BLOCKS blocks."""
+        keys = blocks_in(south, west, north, east)
+        if len(keys) > LINES_MAX_BLOCKS:
+            return {"lines": [], "too_big": True}
+        out: list = []
+        missing = 0
+        for bx, by in keys:
+            path = self.vchart._path(bx, by, "fw")
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                missing += 1
+                continue
+            key = (bx, by, round(draught, 1), mtime)
+            got = self._lines.pop(key, None)
+            if got is None:
+                try:
+                    fline = await self._fairways(bx, by)
+                except (asyncio.TimeoutError, OSError, ValueError, EOFError):
+                    continue
+                got = await in_thread(lines_latlon, block_lines(fline, bx, by, draught)) if fline is not None else []
+                del fline
+            self._lines[key] = got  # newest last
+            while len(self._lines) > LINES_CACHE:
+                del self._lines[next(iter(self._lines))]
+            out += got
+        return {"lines": out, "missing": missing}

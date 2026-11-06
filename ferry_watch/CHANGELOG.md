@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.34.0
+
+- Route tool: drag the automatic route onto another fairway and it goes that way. While
+  you drag a dot on the line, the fairways deep enough for your draught glow faintly and
+  the dot snaps onto one when it comes near (a ring shows where). Let go there and the
+  route is planned again through that point, along that fairway; the point stays as a
+  small diamond you can drag on or remove. Let go anywhere else and it's a bend off the
+  fairways, as before. Works with a finger and with a mouse (hold Shift or Alt for a bend
+  right next to a fairway). Snapping works from zoom 11.
+- Fairway legs from a bend or a via point keep to the fairway they start on, instead of
+  cutting straight across to another one nearby.
+- Saved routes keep their via points.
+
 ## 0.33.0
 
 - Other ships now show zoomed out too, down to all of Finland (was only from zoom 8,

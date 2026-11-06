@@ -68,9 +68,10 @@ def _points(value: Any, minimum: int) -> list[list[float]]:
 
 def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
     """A saved route's plan: wp, the indexes of its stops among the points (first and last
-    included, rising); fw, 1 for each leg between stops that follows the fairways; and bend,
+    included, rising); fw, 1 for each leg between stops that follows the fairways; bend,
     which of the stops (as indexes into wp, neither end) are bends the user pulled the line
-    to rather than stops of their own. None for none, or one that doesn't fit the points."""
+    to rather than stops of their own; and via, which are points on a fairway they dragged
+    the route onto. None for none, or one that doesn't fit the points."""
     if not isinstance(value, dict):
         return None
     wp, fw = value.get("wp"), value.get("fw")
@@ -80,13 +81,19 @@ def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
         return None
     if wp[0] != 0 or wp[-1] != n - 1 or any(b <= a for a, b in zip(wp, wp[1:])):
         return None
-    bend = value.get("bend") or []
-    if not isinstance(bend, list) or not all(type(v) is int and 0 < v < len(wp) - 1 for v in bend) \
-            or any(b <= a for a, b in zip(bend, bend[1:])):
+    marks = {}
+    for name in ("bend", "via"):
+        got = value.get(name) or []
+        if not isinstance(got, list) or not all(type(v) is int and 0 < v < len(wp) - 1 for v in got) \
+                or any(b <= a for a, b in zip(got, got[1:])):
+            return None
+        if got:
+            marks[name] = got
+    if set(marks.get("bend", ())) & set(marks.get("via", ())):
         return None
-    if not any(fw) and not bend:
+    if not any(fw) and not marks:
         return None
-    return {"wp": wp, "fw": fw, **({"bend": bend} if bend else {})}
+    return {"wp": wp, "fw": fw, **marks}
 
 
 def _mmsi(request: web.Request) -> int:
@@ -149,6 +156,7 @@ class Web:
         r.add_post("/api/routes", self.save_route)
         r.add_delete("/api/routes/{route_id}", self.delete_route)
         r.add_get("/api/autoroute", self.autoroute)
+        r.add_get("/api/fairways", self.fairways)
         r.add_get("/api/stations", self.stations)
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
@@ -661,7 +669,21 @@ class Web:
             draught = math.nan
         if not 0 <= draught <= 15:
             raise web.HTTPBadRequest(text="Draught must be 0–15 m")
-        return web.json_response(await self.fw.autoroute.route(start, end, draught))
+        # Which ends are via points the user put on a fairway (see autoroute.JOIN_ON_M).
+        on = set(request.query.get("on", "").split(","))
+        return web.json_response(await self.fw.autoroute.route(start, end, draught, ("from" in on, "to" in on)))
+
+    async def fairways(self, request: web.Request) -> web.Response:
+        """The fairway lines in an area deep enough for a draught, for the route tool to snap
+        a dragged route onto: bbox=south,west,north,east and draught."""
+        try:
+            south, west, north, east = (float(v) for v in request.query["bbox"].split(","))
+            draught = float(request.query.get("draught", 1.5))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox is needed as south,west,north,east") from None
+        if not (-85 <= south < north <= 85 and -180 <= west < east <= 180) or not 0 <= draught <= 15:
+            raise web.HTTPBadRequest(text="bbox or draught out of range")
+        return web.json_response(await self.fw.autoroute.lines(south, west, north, east, draught))
 
     async def stations(self, request: web.Request) -> web.Response:
         stations = await self.fw.stations.latest()

@@ -522,7 +522,9 @@ def _spread_islands(islands):
 
 SIM_ISLANDS = list(_spread_islands(SIM_ISLANDS))
 SIM_FAIRWAY = [(24.95, 60.05), (24.62, 59.975), (24.38, 59.945), (24.0, 59.935)]
-SIM_BOAT_ROUTE = [(24.37, 60.06), (24.395, 60.032), (24.445, 60.0), (24.5, 59.98)]
+# The boat route joins the main fairway, as they do in the real data (a way round the
+# islands for the route tool to be dragged onto).
+SIM_BOAT_ROUTE = [(24.37, 60.06), (24.395, 60.032), (24.445, 60.0), (24.5, 59.98), (24.515, 59.9619)]
 SIM_SMALL_ROUTE = [(24.5, 59.98), (24.53, 60.0), (24.56, 60.03)]
 # Wrecks and underwater sites: lon, lat, register id, name, class, sub-type, dating, accuracy
 SIM_HERITAGE = [

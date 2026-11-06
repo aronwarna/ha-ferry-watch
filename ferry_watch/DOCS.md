@@ -235,19 +235,26 @@ than your draught plus 0.3 m. A fairway leg has a white line down its middle and
 a small dot at each turn. Every further tap adds another leg the same way, so
 you can mix straight legs and fairway legs.
 
-To take the route off the fairway where you want:
+To change the way the route goes:
 
 - **Drag a dot on the line.** The filled dots are the fairway's turns (and bends
-  you've made): drag one to move it. The hollow dot halfway along each piece
-  pulls out a new bend. Only the bit you pull moves; the route isn't planned
-  again, so it stays where you put it.
+  you've made); the hollow dot halfway along each piece pulls the line out.
+  While you drag, the fairways deep enough for your draught glow faintly (from
+  zoom 11), and the dot snaps onto one when it comes near, with a ring:
+  - **Let go on another fairway** and the route is planned again through that
+    point, along that fairway. The point stays as a small diamond (a via point);
+    drag it along to change the way again, or tap it to remove it.
+  - **Let go anywhere else** and it's a bend: straight lines from the turns
+    either side to it, and nothing else moves. Drag a via point off the
+    fairways and it becomes a bend the same way. On a computer, hold Shift (or
+    Alt) while dragging for a bend right next to a fairway, without snapping.
 - **Cut a corner:** tap a stop, a dot or the line, choose **Straight from here
   to…**, then tap where to rejoin the route. Everything between becomes one
   straight line, so a loop round an island is gone; drag its hollow dot to bend
   it through a sound.
 - **Tap a leg** (on the map, or in the panel's list) for **Along the fairways**
-  (plan that leg along the fairways again), **Straight line**, or **Add a point
-  here**.
+  (plan that leg along the fairways again; **Fairways, the shortest way** when it
+  has via points, which drops them), **Straight line**, or **Add a point here**.
 - Moving one of your numbered stops plans the fairway legs next to it again,
   unless you've bent them by hand. Changing the draught plans all fairway legs
   again.

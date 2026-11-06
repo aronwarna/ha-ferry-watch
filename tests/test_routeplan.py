@@ -68,6 +68,36 @@ out.endFixed = s2;
 // Removing a stop between two fairway legs: one fairway leg, planned again.
 s2 = [A, B, C]; l2 = [{ fw: true, path: [T1] }, { fw: true, path: [] }];
 out.removeFw = P.removeStop(s2, l2, 1);
+
+// Drag the fairway leg onto another fairway at V: a via point, both halves planned to it.
+const V = [60.04, 24.2], W = [60.045, 24.22];
+const s3 = [A, B, C], l3 = [{ fw: true, path: [T1, T2] }, { fw: false, path: [] }];
+out.via = P.insertVia(s3, l3, 0, V);
+out.viaStops = copy(s3);
+out.viaSections = P.sections(s3);
+out.viaKinds = out.viaSections.map(([a, b]) => P.sectionKind(l3, a, b));
+l3[0].path = [T1]; l3[1].path = [T2];
+out.viaSaved = P.toSaved(s3, l3);
+out.viaBack = P.fromSaved(out.viaSaved.points, out.viaSaved.plan).stops;
+out.viaMoved = P.moveStop(s3, l3, 1, W);
+out.viaMovedStop = s3[1];
+l3[0].path = [T1]; l3[1].path = [T2];
+// ...then off the fairways: a bend between the turns either side.
+out.viaBend = P.viaToBend(s3, l3, 1, X);
+out.viaBendStops = copy(s3);
+out.viaBendFw = l3.map((l) => l.fw);
+// A bend dragged onto a fairway becomes a via point.
+out.toVia = P.toVia(s3, l3, 2, V);
+out.toViaStop = s3[2];
+out.toViaFw = l3.map((l) => l.fw);
+// Removing a via point between two fairway legs: one fairway leg, planned again.
+const s4 = [A, V.concat(2), C], l4 = [{ fw: true, path: [] }, { fw: true, path: [] }];
+out.viaRemoved = P.removeStop(s4, l4, 1);
+out.viaRemovedStops = s4;
+// A via point at either end is a numbered stop.
+const s5 = [A, V.concat(2)], l5 = [{ fw: true, path: [] }];
+P.removeStop(s5, l5, 0);
+out.viaEnd = s5;
 console.log(JSON.stringify(out));
 """
 
@@ -107,3 +137,18 @@ def test_route_plan():
     assert out["afterRefw"]["stops"] == [A, B, C] and [l["fw"] for l in out["afterRefw"]["legs"]] == [True, False]
     assert out["endFixed"] == [A, [60.02, 24.1]]
     assert out["removeFw"] == [0]
+
+    V, W = [60.04, 24.2], [60.045, 24.22]
+    assert out["via"] == [0, 1]
+    assert out["viaStops"] == [A, V + [2], B, C]
+    assert out["viaSections"] == [[0, 2], [2, 3]] and out["viaKinds"] == ["fw", "line"]  # no number on it
+    assert out["viaSaved"] == {"points": [A, T1, V, T2, B, C], "plan": {"wp": [0, 2, 4, 5], "fw": [1, 1, 0], "via": [1]}}
+    assert out["viaBack"] == [A, V + [2], B, C]
+    assert out["viaMoved"] == [0, 1] and out["viaMovedStop"] == W + [2]
+    assert out["viaBend"] == 2
+    assert out["viaBendStops"] == [A, T1 + [1], X + [1], T2 + [1], B, C]
+    assert out["viaBendFw"] == [False] * 5
+    assert out["toVia"] == [1, 2] and out["toViaStop"] == V + [2]
+    assert out["toViaFw"] == [False, True, True, False, False]
+    assert out["viaRemoved"] == [0] and out["viaRemovedStops"] == [A, C]
+    assert out["viaEnd"] == [V]

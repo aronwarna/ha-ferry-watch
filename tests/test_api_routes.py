@@ -94,6 +94,12 @@ def test_autoroute_endpoint(tmp_path):
         assert "error" not in data and data["points"][0] == [59.972, 24.6] and data["points"][-1] == [59.946, 24.4]
         for bad in ("from=1&to=2,3", "from=59,24&to=60,25&draught=x", "from=59,24&to=60,25&draught=20", "to=60,25"):
             assert (await client.get(f"/api/autoroute?{bad}")).status == 400, bad
+        on = await (await client.get(url + "&on=to")).json()
+        assert "error" not in on and on["points"][-1] == [59.946, 24.4]
+        lines = await (await client.get("/api/fairways?bbox=59.94,24.38,59.98,24.62&draught=1.5")).json()
+        assert lines["lines"] and lines["missing"] == 0
+        for bad in ("bbox=1,2,3", "bbox=60,24,59,25", "bbox=59,24,60,25&draught=99", ""):
+            assert (await client.get(f"/api/fairways?{bad}")).status == 400, bad
 
     run_with_client(tmp_path, body)
 
@@ -140,6 +146,17 @@ def test_route_plan_saved_with_the_points(tmp_path):
             r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts,
                                                               "plan": {**bent, "bend": bad_bend}})).json()
             assert "plan" not in r, bad_bend
+        # Via points on a fairway the user dragged the route onto.
+        via = {"wp": [0, 1, 2, 3], "fw": [1, 1, 0], "via": [1], "bend": [2]}
+        r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts, "plan": via})).json()
+        assert r["plan"] == via
+        for bad_via in ([0], [2, 1], ["1"]):
+            r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts,
+                                                              "plan": {**via, "via": bad_via}})).json()
+            assert "plan" not in r, bad_via
+        r = await (await client.post("/api/routes", json={"id": route["id"], "points": pts,
+                                                          "plan": {**via, "via": [2]}})).json()
+        assert "plan" not in r  # a bend and a via point at once
         assert (await client.post("/api/routes", json={"points": [[60, 24]] * 500})).status == 200
 
     run_with_client(tmp_path, body)
