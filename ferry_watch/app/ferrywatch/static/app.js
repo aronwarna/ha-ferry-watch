@@ -2934,6 +2934,7 @@
   function renderFleets() {
     const box = $("fleets-list");
     const fleets = lastState?.fleets || [];
+    renderTrafficRow();
     box.replaceChildren(...fleets.map((fleet) => {
       const section = document.createElement("details");
       section.className = "fleet fleet-fold";
@@ -3133,6 +3134,20 @@
     return ul;
   }
 
+  // "Other ships": the same switch in Layers and at the end of the Ships tab.
+  function trafficRow() {
+    return switchRow({
+      compact: true,
+      title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
+      note: trafficNote || "Every ship Digitraffic hears (AIS), coloured by type, in the part of the map you're looking at, down to all of Finland. Refreshed every 30 seconds while switched on and the map is open. Tap one for its photo and links.",
+      extra: trafficOn ? trafficLegend() : null,
+      onChange: async (on) => { setTraffic(on); renderLayers(); renderTrafficRow(); },
+    });
+  }
+  function renderTrafficRow() {
+    $("traffic-row")?.replaceChildren(trafficRow());
+  }
+
   function renderLayers() {
     const faultCount = faultsData?.faults?.length;
     $("layers-list").replaceChildren(
@@ -3164,13 +3179,7 @@
         onChange: async (on) => { contoursOn = on; store.set("fw-contours", on ? "1" : "0"); applyHeritage(); },
       }),
       groupHead("Traffic"),
-      switchRow({
-        compact: true,
-        title: "Other ships", color: "#64748b", checked: trafficOn, count: trafficOn ? trafficCount : "",
-        note: trafficNote || "All AIS traffic around the view (zoomed in a little), refreshed every 30 seconds while switched on and the map is open.",
-        extra: trafficOn ? trafficLegend() : null,
-        onChange: async (on) => { setTraffic(on); renderLayers(); },
-      }),
+      trafficRow(),
       renderAircraftSection(),
     );
     renderRoutesList();
@@ -3641,6 +3650,7 @@
       trafficNote = String(err.message || err);
     } finally {
       trafficBusy = false;
+      renderTrafficRow();
     }
   }
 

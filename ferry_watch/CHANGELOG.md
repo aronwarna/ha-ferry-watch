@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.36.2
+
+- The "Other ships" switch (every ship on AIS) is now also at the end of the Ships tab,
+  under All ships, not only in Layers › Traffic. Its count updates while the menu is open.
+
 ## 0.36.1
 
 - Passage replays from Stats show the whole trip the passage was part of, from leaving
