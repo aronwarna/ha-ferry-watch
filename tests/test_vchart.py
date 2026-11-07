@@ -1013,12 +1013,14 @@ def test_overview_tiles(tmp_path, monkeypatch):
         for key in ("sounding", "rock", "height", "building", "sign", "heritage", "farea"):
             assert key not in t
     assert "Suomenlahti" in [n[2] for n in t8["name"]]  # (at 59.80, south of the zoom-9 tile)
+    # Zoom 8 is made from zoom 9's tiles, as calm as zoom 7: its lighthouses, no sector lights.
+    assert {a[2] for a in t9["aid"]} == {"m", "s"} and {a[2] for a in t8["aid"]} == {"m"}
     assert not ok9 and not ok8  # not every block of them is there yet
     # Nothing fetched up north: only the base map (Natural Earth's land, lakes and sea).
     assert empty["cover"] == 0 and not ok_empty
     assert set(empty) <= {"e", "cover", "land", "depth", "lake"} and all(row[0] == 4 for row in empty.get("depth", ()))
     # Nothing Finnish out there at all: the base map's sea.
-    assert ok_sea and set(sea) <= {"e", "depth", "land", "lake"} and [row[0] for row in sea["depth"]] == [4]
+    assert ok_sea and set(sea) <= {"e", "depth", "land", "lake"} and {row[0] for row in sea["depth"]} == {4}
     assert list((tmp_path / "overview").iterdir())
     assert not chart._memory_bytes or len(chart._memory) <= vchart.MEMORY_BLOCKS  # nothing kept for overviews
     # Kept, and read back from disk after a restart.
@@ -1862,3 +1864,44 @@ def test_zoomed_out_contours_leave_out_single_shoals():
     assert len(z9["contour"]) == 1
     z12 = vchart.make_tile(12, key[0] * 2, key[1] * 2 + 1, {key: vchart.layers_from_rows(rows)})
     assert len(z12["contour"]) == 2  # closer in, every one
+    # Zooms 10-12 leave out the smallest rings too (ben: "make the zooms less messy"), from
+    # zoom 13 every one: a ring about 60 m across shows from zoom 13, one about 150 m from 12.
+    tiny = [(30000, 50000), (30400, 50000), (30400, 50400), (30000, 50400), (30000, 50000)]
+    rows["contour"].append([[3], None, tiny])
+    layers = vchart.layers_from_rows(rows)
+
+    def depths(z, x, y):
+        return sorted(row[0] for row in vchart.make_tile(z, x, y, {key: layers}).get("contour", ()))
+
+    assert depths(10, key[0] >> 1, key[1] >> 1) == [20]
+    assert depths(11, *key) == [20]
+    assert depths(12, key[0] * 2, key[1] * 2 + 1) == [20, 20]
+    assert depths(13, key[0] * 4 + 1, key[1] * 4 + 3) == [3]
+
+
+def test_crowded_lit_marks_thinned_zoomed_out():
+    # Lit spar buoys every 6 units along a fairway, a sector light among them, and a lone
+    # lit buoy out at sea (what one looks for).
+    def aid(x, y, kind="v"):
+        return [x, y, kind, 1, 1, None, "W"]
+    fairway = [aid(20 + 6 * i, 200) for i in range(80)]
+    light = aid(200, 205, "s")
+    lone = aid(300, 450, "p")
+    aids = fairway + [light, lone]
+    for z, (x, y) in ((10, (1000, 500)), (11, (2000, 1000))):
+        cell = vchart.AID_THIN[z]
+        thin = vchart.thin_aids(aids, z, x, y)
+        assert light in thin and lone in thin
+        kept = [a for a in thin if a in fairway]
+        cells = [(a[0] // cell, a[1] // cell) for a in kept]
+        assert len(set(cells)) == len(cells) and (200 // cell, 205 // cell) not in cells  # one a cell, none by the light
+        assert 4 <= len(kept) <= 512 / cell, (z, len(kept))
+        if z == 11:  # room for the neighbours: none right beside another, nor by the light
+            assert all(math.hypot(a[0] - b[0], a[1] - b[1]) >= 0.8 * cell for a in kept for b in kept if a is not b)
+            assert all(math.hypot(a[0] - 200, a[1] - 205) >= cell for a in kept)
+        # The tile to the right judges the marks by their shared edge alike.
+        shift = [[a[0] - 512, *a[1:]] for a in aids]
+        right = vchart.thin_aids(shift, z, x + 1, y)
+        near_edge = lambda rows, dx: {(a[0] + dx, a[1]) for a in rows if 512 - 60 <= a[0] + dx <= 512 + 60}
+        assert near_edge(thin, 0) == near_edge(right, 512)
+    assert vchart.thin_aids(aids, 12, 4000, 2000) == aids  # closer in, every one

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.39.0
+
+- Drawn chart, zoom 8 (the middle overview zoom) is made the way zoom 7 is: from zoom 9's
+  tiles, each halved into its quarter. The squares there are gone: in the Archipelago
+  Sea zoom 8 showed whole chart blocks white or light blue (zoom 9, from the same data,
+  was right). It also shows what zoom 7 does: the lighthouses but not every sector light,
+  and only the bigger contours, so it is no longer more cluttered than both zooms beside it.
+- Zooms 10 and 11: lit buoys and beacons that crowd each other (along a fairway, round a
+  harbour) are thinned to one in each small square of the map, the most important one,
+  and they give way to a lighthouse or sector light right beside them. A lone lit buoy
+  out at sea stays, and from zoom 12 every lit mark shows as before.
+- Zooms 10-12 leave out the smallest contour rings round single shoals (zoom 10 under
+  about 12 px across, 11 under 7 px, 12 under 5 px). The light blue still shows every
+  shoal under 10 m, and from zoom 13 every contour is drawn.
+
 ## 0.38.0
 
 - Nature reserves: on the drawn chart (zoom 11 and in, where their green dashed borders

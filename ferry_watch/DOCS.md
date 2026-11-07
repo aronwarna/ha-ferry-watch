@@ -20,7 +20,10 @@ sidebar.
     sheet edges. Tap a buoy, beacon or light to see what it is. It is drawn at
     every zoom, all of Finland at once included: zoomed out it shows fewer and
     smoother depth contours, only the major lights and the seas' names, as
-    small-scale charts do, and where the chart has no data yet (or none at all,
+    small-scale charts do (at zooms 7 and 8 only the lighthouses; at zooms 10
+    and 11 lit buoys and beacons that crowd each other are thinned, while a lone
+    one out at sea stays; from zoom 13 every contour and mark shows), and where
+    the chart has no data yet (or none at all,
     inland) the land, islands and lakes come from Natural Earth's world map, so
     there are no gaps or squares. The first time you look at an area the add-on
     downloads its data, so it takes a moment to appear; **Keep chart on the

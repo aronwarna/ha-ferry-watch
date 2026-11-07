@@ -146,8 +146,9 @@
 
   // Where a tile's water areas were cut (see fillRings): outside the tile, and zoomed out
   // where the chart's blocks (zoom-11 tiles) meet, the pieces reaching a unit past it. Tiles
-  // further out than zoom 8 are made from four halved ones: there the blocks' edges are on
-  // the grid, and the quarters meet a unit either side of the middle.
+  // from zoom 8 out are made from four halved ones (zoom 8's blocks' edges come halved, half
+  // a unit from the grid; the quarters meet a unit either side of the middle, which is on
+  // it too); further out the blocks' edges are on the grid.
   function cutLines(zoom, e) {
     if (zoom >= 11) return (c) => c <= 0 || c >= e;
     const step = e / 2 ** (11 - zoom);

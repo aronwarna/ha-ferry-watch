@@ -735,6 +735,13 @@ def _fake_chart_layer(key: str, bbox) -> list[dict]:
             for lon, lat, r in SIM_ISLANDS:
                 feats.append({"geometry": {"type": "LineString", "coordinates": _sim_ring(lon, lat, r, s)},
                               "properties": {"VALDCO": depth}})
+        if os.environ.get("FW_FAKE_CROWD"):
+            # Small 20 m rings round single shoals all over the gulf (the clutter zoomed out).
+            rnd = random.Random(5)
+            for _ in range(300):
+                lon, lat, r = rnd.uniform(23.7, 25.0), rnd.uniform(59.82, 59.95), rnd.uniform(60, 700)
+                feats.append({"geometry": {"type": "LineString", "coordinates": _sim_ring(lon, lat, r, 1.0, 0.2)},
+                              "properties": {"VALDCO": 20}})
         # Deeper contours out in the gulf, for the overview.
         for depth, lat in ((20, 59.955), (50, 59.875)):
             line = [(23.8 + i * 0.05, lat + 0.004 * math.sin(i)) for i in range(25)]
@@ -796,6 +803,19 @@ def _fake_chart_layer(key: str, bbox) -> list[dict]:
             (24.445, 60.0, "Viitta", 8, "E", "Turvavesi"), (24.5, 59.98, "Poiju", 9, "E", "Erikois"),
             (24.36, 59.975, "Reunamerkki", 2, "K", "Reuna"),
         ]
+        if os.environ.get("FW_FAKE_CROWD"):
+            # FW_FAKE_CROWD=1: lit spar buoys in pairs every 300 m along the main fairway and
+            # round a harbour, as along the real coastal fairways (the piles of flares ben saw).
+            for (lon0, lat0), (lon1, lat1) in zip(SIM_FAIRWAY, SIM_FAIRWAY[1:]):
+                steps = int(math.hypot((lon1 - lon0) * 0.5, lat1 - lat0) * 111000 / 300)
+                for i in range(steps):
+                    t = i / steps
+                    lon, lat = lon0 + (lon1 - lon0) * t, lat0 + (lat1 - lat0) * t
+                    for side, cat in ((0.0012, 1), (-0.0012, 2)):
+                        aids.append((lon, lat + side, "Viitta", cat, "K", f"Crowd {i}"))
+            for i in range(24):
+                a = 2 * math.pi * i / 24
+                aids.append((24.53 + 0.012 * math.cos(a), 60.015 + 0.006 * math.sin(a), "Viitta", 1 + i % 2, "K", f"Harbour {i}"))
         for lon, lat, kind, cat, lit, name in aids:
             feats.append({"geometry": {"type": "MultiPoint", "coordinates": [list(lonlat_to_mercator(lon, lat))]},
                           "properties": {"turvalaitetyyppifi": kind, "navigointilajikoodi": cat,
