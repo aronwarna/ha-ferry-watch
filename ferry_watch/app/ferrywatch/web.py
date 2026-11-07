@@ -172,6 +172,7 @@ class Web:
         r.add_get("/api/stations", self.stations)
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
+        r.add_get("/api/reserves", self.reserves)
         r.add_static("/static/", STATIC, append_version=False)
         if DEV:
             # Every chart symbol drawn by vchart.js, for checking against Traficom's key.
@@ -189,7 +190,7 @@ class Web:
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
                      "static/overlays.js", "static/wind.js", "static/fields.js", "static/sky-data.js",
-                     "static/sky.js"):
+                     "static/sky.js", "static/reserves.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -784,6 +785,18 @@ class Web:
         if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
             raise web.HTTPBadRequest(text="The box is too big; zoom in")
         return web.json_response(self.fw.harbours.in_view(south, west, north, east))
+
+    async def reserves(self, request: web.Request) -> web.Response:
+        """Nature reserves touching a box (bbox=west,south,east,north), with their outlines."""
+        try:
+            west, south, east, north = (float(v) for v in request.query["bbox"].split(","))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox=west,south,east,north is needed") from None
+        if not (south <= north and west <= east):
+            raise web.HTTPBadRequest(text="bbox=west,south,east,north is needed")
+        resp = web.json_response(self.fw.reserves.in_view(south, west, north, east))
+        resp.enable_compression()  # outlines: a national park can be a few hundred kB
+        return resp
 
     async def test_notification(self, request: web.Request) -> web.Response:
         try:

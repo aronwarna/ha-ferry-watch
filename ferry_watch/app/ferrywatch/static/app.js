@@ -31,6 +31,8 @@
   // Harbours (see below) are drawn differently on the chart, so switching maps redraws them.
   let harboursOn = store.get("fw-harbours") !== "0";
   let harbourLayer = null;
+  // Nature reserves (static/reserves.js): made once the map is up, see below.
+  let reserves = null;
   // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
   // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
   // the marks on the first.
@@ -3204,6 +3206,13 @@
         note: "Up close (zoom 14 and in), the depth contours the paper chart leaves out, as faint lines like the official chart's. Shown on the drawn chart.",
         onChange: async (on) => { contoursOn = on; store.set("fw-contours", on ? "1" : "0"); applyHeritage(); },
       }),
+      switchRow({
+        compact: true,
+        title: "Highlight nature reserves", color: "#3f9a4f", checked: Boolean(reserves?.all),
+        count: reserves?.all && reserves.count ? `${reserves.count} in view` : "",
+        note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. From OpenStreetMap.",
+        onChange: async (on) => { reserves?.setAll(on); renderLayers(); },
+      }),
       groupHead("Traffic"),
       trafficRow(),
       renderAircraftSection(),
@@ -3226,6 +3235,7 @@
       [icon('<rect x="2" y="3" width="24" height="12" rx="4" fill="#0f766e"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1.4 m</text>'), "Wave buoy (wave height) or sea temperature"],
       [icon(`<g style="color:${HARBOUR_RED}">${boat}</g>`), "Harbour on the chart"],
       [icon(`<rect x="7" y="0.5" width="14" height="17" rx="4" fill="#1d4ed8"/><g style="color:#fff" transform="translate(0.3 0.2) scale(1)">${boat}</g>`), "Harbour on the map and satellite views"],
+      [icon('<path d="M3 4h22v10H3z" stroke="#2f7d3d" stroke-width="2" fill="#3f9a4f" fill-opacity="0.25"/>'), "Nature reserve, highlighted (tap one on the drawn chart for its card)"],
       [icon('<circle cx="14" cy="9" r="7" fill="#fff" stroke="#dc2626" stroke-width="2.5"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="800" fill="#dc2626">!</text>'), "Faulty light or buoy"],
     ];
     const list = document.createElement("ul");
@@ -5194,6 +5204,21 @@
   const harbourMarks = new Map(); // osm id -> HarbourMark
   let harbourCanvas = null, harbourBox = null, harbourTimer = null, harbourMoveTimer = null, harbourBusy = false;
   let harbourCount = 0, harbourNote = "";
+
+  // Nature reserves: tap inside one on the drawn chart (where their borders show) or with
+  // the highlight switch on, for its card. Buoys, lights and wrecks win the tap.
+  reserves = FerryReserves.create({
+    map, api, esc, store,
+    canTap: () => !route.on && activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11,
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  map.on("click", (e) => {
+    if (route.on) return;
+    if (activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11 && FerryChart.aidAt(map, e.latlng)) return;
+    reserves.tap(e.latlng);
+  });
   const SERVICE_INFO = {
     guest: ["Guest berths", '<path d="M12 3v14M8 7h8M5 13a7 7 0 0 0 14 0M5 13H3M19 13h2"/><circle cx="12" cy="4" r="1.5"/>'],
     fuel: ["Fuel", '<path d="M5 20V5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15M3.5 20h11M5 10h8M13 9l3 2.5V17a1.5 1.5 0 0 0 3 0V8.5L16 6"/>'],

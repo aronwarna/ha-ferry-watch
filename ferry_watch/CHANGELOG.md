@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.38.0
+
+- Nature reserves: on the drawn chart (zoom 11 and in, where their green dashed borders
+  show) tap inside a reserve or national park to fill it with green and see its card: names
+  in Finnish and Swedish, what kind of area it is, size, year protected, who manages it,
+  access or landing restrictions, register id, and links (its website, luontoon.fi for
+  state areas, Wikipedia, Wikidata, OpenStreetMap) plus "Show all of it". Where areas
+  overlap the card lists the others to switch to. Tap again (or elsewhere) to clear it.
+  Buoys, lights and wrecks still win the tap.
+- Layers › "Highlight nature reserves" tints and names every reserve in view from zoom 10,
+  on any map.
+- From OpenStreetMap (Finland's reserves there come from SYKE's register), downloaded per
+  area of about 22 km when first looked at and kept two weeks; left out of backups.
+
 ## 0.37.0
 
 - Sunset & sunrise worked out properly: besides the high and middle cloud to light up

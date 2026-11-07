@@ -230,3 +230,49 @@ def fake_forecast(params: list[tuple[str, str]]) -> str:
 
 async def fake_forecast_fetch(params: list[tuple[str, str]]) -> str:
     return fake_forecast(params)
+
+
+def fake_reserves() -> list[dict[str, Any]]:
+    """Overpass `out tags geom` elements for nature reserves in the simulator's made-up coast
+    (simscene): the reserve south of Rönnbåda whose border the chart draws, a national park
+    round it with a hole, and a reserve mapped as a relation of two ways."""
+    from .simscene import _lonlat
+
+    def pts(kms):
+        return [{"lat": lat, "lon": lon} for lon, lat in (_lonlat(x, y) for x, y in kms)]
+
+    islets = pts([(8.2, 1.2), (9.6, 1.0), (9.9, 2.0), (8.6, 2.3), (8.2, 1.2)])
+    park_out = pts([(5.0, 0.2), (11.8, 0.2), (11.8, 6.0), (7.5, 7.0), (5.0, 4.5), (5.0, 0.2)])
+    park_hole = pts([(6.0, 3.0), (7.2, 3.0), (7.2, 4.2), (6.0, 4.2), (6.0, 3.0)])
+    a = pts([(2.0, 8.0), (3.4, 8.0), (3.4, 9.2)])
+    b = pts([(3.4, 9.2), (2.0, 9.2), (2.0, 8.0)])
+    return [
+        {"type": "way", "id": 990001, "geometry": islets,
+         "tags": {"leisure": "nature_reserve", "boundary": "protected_area", "protect_class": "4",
+                  "name": "Rönnbådan luodot", "name:sv": "Rönnbåda skär",
+                  "protection_title": "Yksityinen luonnonsuojelualue", "ref": "YSA201234", "start_date": "1994-05-12",
+                  "access:conditional": "no @ (Apr 01-Aug 15)", "description": "Seabird nesting islets."}},
+        {"type": "relation", "id": 990002, "members": [
+            {"type": "way", "ref": 1, "role": "outer", "geometry": park_out},
+            {"type": "way", "ref": 2, "role": "inner", "geometry": park_hole}],
+         "tags": {"boundary": "national_park", "leisure": "nature_reserve", "protect_class": "2",
+                  "name": "Simuloitu saariston kansallispuisto", "name:sv": "Simulerade skärgårdens nationalpark",
+                  "protection_title": "Kansallispuisto", "operator": "Metsähallitus", "start_date": "1989",
+                  "website": "https://www.luontoon.fi/", "wikipedia": "fi:Tammisaaren saariston kansallispuisto",
+                  "wikidata": "Q1468155"}},
+        {"type": "relation", "id": 990003, "members": [
+            {"type": "way", "ref": 3, "role": "outer", "geometry": a},
+            {"type": "way", "ref": 4, "role": "outer", "geometry": b}],
+         "tags": {"leisure": "nature_reserve", "name": "Lövön lehto", "protection_title": "Luonnonsuojelualue"}},
+    ]
+
+
+async def fake_reserves_fetch(query: str) -> dict[str, Any]:
+    import re
+
+    m = re.search(r"\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\)", query)
+    s, w, n, e = (float(v) for v in m.groups()) if m else (-90, -180, 90, 180)
+    els = [el for el in fake_reserves()
+           if any(s <= p["lat"] <= n and w <= p["lon"] <= e
+                  for g in [el.get("geometry") or [q for mm in el.get("members", []) for q in mm["geometry"]]] for p in g)]
+    return {"version": 0.6, "generator": "Overpass API (simulated)", "elements": els}
