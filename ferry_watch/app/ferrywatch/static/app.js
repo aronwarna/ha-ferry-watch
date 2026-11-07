@@ -99,18 +99,20 @@
     maxZoom: 19, maxNativeZoom: 18, zIndex: 10, attribution: "Sea marks © OpenSeaMap",
   });
 
+  // Aerial photos where a country gives them away (Finland 0.5 m, Estonia), fetched and
+  // kept by the add-on, over Esri's imagery. Off unless switched on in Layers: ben
+  // prefers Esri's look. Elsewhere, and where they have no picture, Esri shows through.
+  let aerialOn = store.get("fw-aerial") === "1";
+  const aerialPhotos = L.tileLayer("api/tiles/photo/{z}/{x}/{y}.jpg", {
+    minZoom: 11, maxZoom: 19, maxNativeZoom: 18, zIndex: 2,
+    attribution: "Aerial photos © Maanmittauslaitos (via Kapsi), Maa-amet",
+  });
+
   const layers = {
     map: streets(),
     satellite: L.layerGroup([
       L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER, zIndex: 1, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-      }),
-      // Sharper aerial photos where a country gives them away (Finland 0.5 m, Estonia),
-      // fetched and kept by the add-on. Elsewhere, and where they have no picture, the
-      // add-on sends nothing and Esri's imagery shows through.
-      L.tileLayer("api/tiles/photo/{z}/{x}/{y}.jpg", {
-        minZoom: 11, maxZoom: 19, maxNativeZoom: 18, zIndex: 2,
-        attribution: "Aerial photos © Maanmittauslaitos (via Kapsi), Maa-amet",
       }),
       L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER, zIndex: 3,
@@ -118,6 +120,13 @@
     ]),
     chart: null, // built by buildChartLayer below
   };
+  if (aerialOn) layers.satellite.addLayer(aerialPhotos);
+  function setAerial(on) {
+    aerialOn = on;
+    store.set("fw-aerial", on ? "1" : "0");
+    if (on) layers.satellite.addLayer(aerialPhotos);
+    else layers.satellite.removeLayer(aerialPhotos);
+  }
   let activeLayer = null;
 
   // "drawn": the add-on's own seamless chart (vchart.js), at every zoom. "official": Traficom's electronic chart (S-57 view service), drawn
@@ -3203,6 +3212,13 @@
         title: "More depth contours", color: "#a3bccd", checked: contoursOn,
         note: "Up close (zoom 14 and in), the depth contours the paper chart leaves out, as faint lines like the official chart's. Shown on the drawn chart.",
         onChange: async (on) => { contoursOn = on; store.set("fw-contours", on ? "1" : "0"); applyHeritage(); },
+      }),
+      groupHead("On the satellite view"),
+      switchRow({
+        compact: true,
+        title: "Aerial photos (Finland, Estonia)", color: "#4d7c0f", checked: aerialOn,
+        note: "From zoom 11 in, the Land Survey's and Maa-amet's own aerial photos (0.5 m, summer) over Esri's satellite images. Sharper close up, but a different look; off shows Esri's as before.",
+        onChange: async (on) => { setAerial(on); },
       }),
       groupHead("Traffic"),
       trafficRow(),

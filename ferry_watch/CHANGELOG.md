@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.37.1
+
+- Satellite view: Esri's satellite images again by default. The Finnish and Estonian
+  aerial photos from 0.35.0 are now a switch, Layers › On the satellite view › Aerial
+  photos (Finland, Estonia), off unless you turn it on.
+
 ## 0.37.0
 
 - Sunset & sunrise worked out properly: besides the high and middle cloud to light up
