@@ -25,6 +25,7 @@ from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
+from .tracker import STOP_SPEED
 from .vchart import MIN_Z
 
 SAMPLES_KEPT = 10  # chart samples kept in the media folder (newest)
@@ -39,6 +40,8 @@ _LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
+# A passage replay shows its whole trip, port to port, but no more than this either side.
+REPLAY_MAX_SPAN = 18 * 3600
 FLEET_PUSH_SECONDS = 5
 
 
@@ -214,6 +217,15 @@ class Web:
             since = None if since_q == "voyage" else int(since_q)
         except ValueError:
             raise web.HTTPBadRequest(text="Invalid time") from None
+        if "around" in request.query:
+            # A recorded passage: the whole trip it was part of, port to port.
+            try:
+                around = int(request.query["around"])
+            except ValueError:
+                raise web.HTTPBadRequest(text="Invalid time") from None
+            since, until = self.fw.store.voyage_around(mmsi, around, STOP_SPEED, REPLAY_MAX_SPAN)
+            points = self.fw.store.track(mmsi, since, until, speed=True)
+            return web.json_response({"mmsi": mmsi, "since": since, "until": until, "points": points})
         if until is not None:
             # A stretch of history (passage replay); works for removed ships too.
             points = self.fw.store.track(mmsi, since or 0, until, speed=True)

@@ -239,6 +239,20 @@ class Store:
         ).fetchall()
         return [list(r) if speed else [r[0], r[1], r[2]] for r in rows]
 
+    def voyage_around(self, mmsi: int, ts: int, stop_speed: float, max_span: int) -> tuple[int, int]:
+        """The stretch of a trip around ts: from the last stopped position before it
+        (leaving port) to the first one after it (arriving), at most max_span either side."""
+        before = self.db.execute(
+            "SELECT MAX(ts) FROM positions WHERE mmsi = ? AND ts < ? AND ts >= ? AND sog < ?",
+            (mmsi, ts, ts - max_span, stop_speed),
+        ).fetchone()[0]
+        after = self.db.execute(
+            "SELECT MIN(ts) FROM positions WHERE mmsi = ? AND ts > ? AND ts <= ? AND sog < ?",
+            (mmsi, ts, ts + max_span, stop_speed),
+        ).fetchone()[0]
+        return (before if before is not None else ts - max_span,
+                after if after is not None else ts + max_span)
+
     def stopped_since(self, mmsi: int, stop_speed: float) -> int | None:
         """Start of the stop the ship is currently in, or None if it is moving."""
         last_moving = self.db.execute(

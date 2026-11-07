@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.36.1
+
+- Passage replays from Stats show the whole trip the passage was part of, from leaving
+  port to the next port (Mariehamn or Helsinki for the Stockholm ferries, at most 18
+  hours either side), not just the hour before and after. The map still opens on the
+  stretch around the passage; zoom out for the rest, and Play runs the whole trip.
+
 ## 0.36.0
 
 - Weather panel in the style of Windy: one colour layer at a time from a row of chips,
