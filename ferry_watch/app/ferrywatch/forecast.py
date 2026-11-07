@@ -1,17 +1,19 @@
 """The weather model behind the Windy-style colour layers: wind, temperature, gusts, clouds,
-rain, fog and pressure over southern and central Finland, the Gulf of Finland, Estonia and
-the Stockholm archipelago, for the next 48 hours.
+rain, fog and pressure from southern Sweden and the Baltic states to the Bay of Bothnia and
+Karelia, for the next 48 hours. It reaches well beyond Finland on purpose: a sunset there
+depends on the clouds up to 450 km towards the sun.
 
 FMI's HARMONIE forecast (MEPS) from the open WFS, the same point query the wind layer
-uses: a regular grid of 725 points about 33 km apart (0.3 degrees of latitude, 0.6 of
-longitude), over land and sea alike, in requests of 42 points one after the other. One run
+uses: a regular grid of 1287 points about 33 km apart (0.3 degrees of latitude, 0.6 of
+longitude), over land and sea alike, in requests of 64 points one after the other. One run
 is fetched at most every 3 hours, only while a panel shows one of its layers, and kept as
-one small binary file per forecast hour (about 17 KB each), so the NAS never holds more
-than the hour a panel asks for.
+one small binary file per forecast hour (about 33 KB each), so the NAS never holds more
+than the hours it is reading.
 
 If FMI doesn't answer (or knows neither stored query), the same fields come from
 Open-Meteo's forecast API instead (free for non-commercial use, CC BY 4.0), which blends
-the same Nordic HARMONIE model with others.
+the same Nordic HARMONIE model with others, on every other point of the grid (Open-Meteo
+counts every place as a call).
 
 The run is registered once, hidden; each colour layer is an overlay sharing it and sending
 the panel only its own fields.
@@ -53,7 +55,7 @@ OM_PARAMS = {"t": "temperature_2m", "p": "pressure_msl", "ms": "wind_speed_10m",
              "rain": "precipitation", "rh": "relative_humidity_2m", "td": "dew_point_2m", "vis": "visibility"}
 HOURS = 48
 RUN_EVERY = 3 * 3600
-BATCH = 42
+BATCH = 64
 OM_BATCH = 100
 TIMEOUT = 30
 MAX_BYTES = 4 * 1024 * 1024
@@ -61,9 +63,10 @@ MATCH = 0.06
 ATTRIBUTION = "Weather: Finnish Meteorological Institute, HARMONIE (CC BY 4.0)"
 OM_ATTRIBUTION = "Weather: Open-Meteo.com (CC BY 4.0)"
 
-LATS = [round(57.6 + 0.3 * i, 2) for i in range(29)]
-LONS = [round(17.0 + 0.6 * j, 2) for j in range(25)]
+LATS = [round(55.5 + 0.3 * i, 2) for i in range(39)]  # 55.5-66.9 N
+LONS = [round(13.4 + 0.6 * j, 2) for j in range(33)]  # 13.4-32.6 E
 GRID = [(lat, lon) for lat in LATS for lon in LONS]
+OM_GRID = [(lat, lon) for lat in LATS[::2] for lon in LONS[::2]]  # 20 x 17, 1.2 degrees apart
 BOUNDS = (LATS[0], LONS[0], LATS[-1], LONS[-1])
 
 Fetch = Callable[[str, list[tuple[str, str]]], Awaitable[str]]
@@ -168,9 +171,9 @@ def add_open_meteo(b: RunBuilder, first: int, answer: Any) -> None:
 
 
 async def fetch_open_meteo(now: float, get_json: Callable[[str, dict[str, str]], Awaitable[Any]]) -> dict[str, Any]:
-    b = RunBuilder(hours(now), FIELDS, GRID, SCALE)
-    for i in range(0, len(GRID), OM_BATCH):
-        batch = GRID[i:i + OM_BATCH]
+    b = RunBuilder(hours(now), FIELDS, OM_GRID, SCALE)
+    for i in range(0, len(OM_GRID), OM_BATCH):
+        batch = OM_GRID[i:i + OM_BATCH]
         params = {"latitude": ",".join(f"{p[0]:.2f}" for p in batch),
                   "longitude": ",".join(f"{p[1]:.2f}" for p in batch),
                   "hourly": ",".join(OM_PARAMS.values()), "wind_speed_unit": "ms", "timeformat": "unixtime",

@@ -613,7 +613,7 @@
       for (const e of on) {
         let lines = null;
         try {
-          if (renderers[e.ov.id]?.valueAt) lines = renderers[e.ov.id].valueAt(latlng, map);
+          if (renderers[e.ov.id]?.valueAt) lines = await renderers[e.ov.id].valueAt(latlng, map);
           if (!lines && e.ov.has_value) {
             const res = await fetch(`api/overlay-value/${e.ov.id}?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&t=${t || ""}`);
             const data = res.ok ? await res.json() : null;
@@ -624,7 +624,7 @@
       }
       if (!parts.length) return;
       const when = t != null && active().length ? `<div class="wx-pick-time">${esc(timeLabel(t, now()).clock)}</div>` : "";
-      const html = parts.map(([main, sub], i) => `<div class="wx-pick${i ? " more" : ""}"><strong>${esc(main)}</strong>${sub ? `<span>${esc(sub)}</span>` : ""}</div>`).join("") + when;
+      const html = parts.map(([main, ...rest], i) => `<div class="wx-pick${i ? " more" : ""}"><strong>${esc(main)}</strong>${rest.filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join("")}</div>`).join("") + when;
       picker = L.popup({ className: "wx-popup", offset: [0, -4], autoPan: false, closeButton: false })
         .setLatLng(latlng).setContent(html).openOn(map);
     }

@@ -498,6 +498,21 @@ class Overlays:
             return await asyncio.to_thread(_read_values, self._run_path(src), ts, run)
         return run["values"].get(str(ts))
 
+    async def raw_values(self, overlay_id: str, ts: int) -> array | list | None:
+        """Like values_at, but a binary run's hour as its stored array('h') (points x fields,
+        value x the field's scale, MISSING for none): 2 bytes a value instead of a Python
+        float each, for an overlay that reads many hours of another's."""
+        o = self.registry.get(overlay_id)
+        if not o:
+            return None
+        src = self._source(o)
+        run = await self._run(src, time.time())
+        if not run or ts not in run["times"]:
+            return None
+        if run.get("binary"):
+            return await asyncio.to_thread(_read_array, self._run_path(src), ts, run)
+        return run["values"].get(str(ts))
+
 
 def _check_run(run: dict[str, Any]) -> dict[str, Any]:
     """A points run in the shape the panel expects, or ValueError."""
@@ -565,6 +580,16 @@ def _write_binary(path: Path, run: dict[str, Any]) -> dict[str, Any]:
     meta["binary"] = True
     _write_run(path, meta)
     return meta
+
+
+def _read_array(path: Path, ts: int, run: dict[str, Any]) -> array | None:
+    try:
+        raw = (path.with_suffix("") / f"{ts}.bin").read_bytes()
+    except OSError:
+        return None
+    a = array("h")
+    a.frombytes(raw)
+    return a if len(a) == len(run["points"]) * len(run["fields"]) else None
 
 
 def _read_values(path: Path, ts: int, run: dict[str, Any]) -> list[list[float | None]] | None:

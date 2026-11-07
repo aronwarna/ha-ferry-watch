@@ -50,8 +50,9 @@
       [120, 120, 20, 80, 230]], ticks: [-60, -30, 0, 30, 60, 100] },
     aurora: { unit: "%", stops: [[0, 30, 90, 50, 0], [3, 30, 110, 60, 0], [5, 40, 140, 70, 90], [15, 40, 190, 80, 150],
       [30, 120, 230, 80, 190], [50, 230, 230, 60, 210], [70, 240, 120, 50, 220], [90, 220, 40, 60, 230]], ticks: [5, 15, 30, 50, 70, 90] },
-    sunset: { unit: "%", stops: [[0, 45, 45, 75, 140], [20, 80, 70, 120, 160], [40, 170, 80, 140, 185],
-      [60, 240, 110, 90, 205], [80, 255, 170, 60, 220], [100, 255, 225, 120, 235]], ticks: [0, 20, 40, 60, 80, 100] },
+    sunset: { unit: "of 100", stops: [[0, 45, 45, 75, 140], [20, 80, 70, 120, 160], [40, 170, 80, 140, 185],
+      [60, 240, 110, 90, 205], [80, 255, 170, 60, 220], [100, 255, 225, 120, 235]], ticks: [10, 30, 50, 70, 90],
+      names: { 10: "dull", 30: "fair", 50: "good", 70: "great", 90: "fiery" } },
   };
 
   const LUT_SIZE = 512;
@@ -253,15 +254,7 @@
       scale: "sunset", value: (g, la, lo) => sample(g, "score", la, lo),
       fade: (z) => (z >= 11 ? 0.35 : z >= 9 ? 0.7 : 1), // the spots matter more close in
       label: (v) => `${Math.round(v)}`,
-      tap: (g, la, lo) => {
-        const v = sample(g, "score", la, lo);
-        if (Number.isNaN(v)) return null;
-        const kind = g.info?.kinds?.[String(g.time)] || "sunset";
-        const at = nearest(g, "at", la, lo), az = nearest(g, "az", la, lo), tw = sample(g, "toward", la, lo);
-        const clock = Number.isNaN(at) ? "" : new Date(at * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-        return [`${Math.round(v)}% ${kind} quality`,
-          `${kind[0].toUpperCase()}${kind.slice(1)} ${clock} toward ${Math.round(az)}° (${compass(az)})${Number.isNaN(tw) ? "" : ` · low cloud that way ${Math.round(tw)}%`}`];
-      },
+      tap: (g, la, lo) => sunsetWhy(g, la, lo),
     },
     wind: {
       scale: "wind", value: (g, la, lo) => sample(g, "ms", la, lo),
@@ -448,7 +441,7 @@
     const grad = s.map((st) => `rgba(${st[1]},${st[2]},${st[3]},${Math.max(0.35, st[4] / 255).toFixed(2)}) ${pos(st[0]).toFixed(1)}%`).join(",");
     const note = id === "fog" && g && !g.f.vis ? "estimated" : g?.info?.source === "open-meteo" ? "Open-Meteo" : "";
     return { unit: scale.unit, gradient: `linear-gradient(90deg, ${grad})`,
-      ticks: scale.ticks.map((v) => [Math.max(0, Math.min(100, pos(v))), v]), note };
+      ticks: scale.ticks.map((v) => [Math.max(0, Math.min(100, pos(v))), scale.names?.[v] ?? v]), note };
   }
 
   // --- pressure isobars -----------------------------------------------------------------
@@ -743,14 +736,54 @@
 
   const SPOT_ZOOM = 11;
   const TERRAIN_Z = 12; // about 30 m a pixel here
-  const RAY_KM = 6; // how far the view is checked towards the sun
+  const RAY_KM = 10; // how far the view is checked towards the sun
+  // The colours spread over the sky either side of the sun, and up here the sun slides
+  // along the horizon as it sets: the view is checked in five directions.
+  const RAYS = [[-16, 0.5], [-8, 0.8], [0, 1], [8, 0.8], [16, 0.5]];
   const terrain = new Map(); // "z/x/y" -> Float32Array of heights, or a promise while loading
   const TERRAIN_KEEP = 80;
+  const SUN_WORDS = [[80, "Fiery"], [60, "Great"], [40, "Good"], [20, "Fair"], [0, "Dull"]];
+  const sunWord = (v) => SUN_WORDS.find(([limit]) => v >= limit)[1];
+  const hm = (ts) => new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const weekday = (ts) => new Date(ts * 1000).toLocaleDateString("en-GB", { weekday: "short" });
+
+  // Why a sunset (or sunrise) got its score, from the run's reasons at a place:
+  // [headline, when and where, why].
+  function sunsetWhy(g, la, lo) {
+    const v = sample(g, "score", la, lo);
+    if (Number.isNaN(v)) return null;
+    const kind = g.info?.kinds?.[String(g.time)] || "sunset";
+    const n = (f) => nearest(g, f, la, lo), m = (f) => sample(g, f, la, lo);
+    const at = g.time + n("at") * 60, glow = g.time + n("glow") * 60, az = n("az");
+    const way = compass(az);
+    const colours = kind === "sunset" ? `best colours about ${hm(at - 300)}–${hm(glow)}` : `best colours about ${hm(glow)}–${hm(at + 300)}`;
+    const canvas = m("canvas"), high = m("high"), mid = m("mid"), gap = m("gap"), low = m("low");
+    const vis = m("vis"), seen = m("seen"), rain = m("rain");
+    const why = [];
+    if (canvas < 10) {
+      why.push(`clear sky: a clean ${kind} with little colour`);
+      if (gap < 60) why.push(`low cloud on the horizon to the ${way} hides the sun`);
+    } else {
+      const amount = canvas < 30 ? "some" : canvas < 70 ? "plenty of" : "a lot of";
+      const what = high >= mid ? "high cloud" : "middle cloud";
+      why.push(`${amount} ${what} to light up (high ${Math.round(high)}%, middle ${Math.round(mid)}%)`);
+      why.push(gap >= 70 ? `a clear way in for the light from the ${way}` : gap >= 40
+        ? `low cloud towards the ${way} lets only part of the light in` : `low cloud towards the ${way} keeps the light out: grey`);
+    }
+    if (low >= 35) why.push(`${Math.round(low)}% low cloud over you hides ${low >= 70 ? "it" : "much of it"}`);
+    if (rain >= 0.3) why.push(`rain (${r1(rain)} mm/h)`);
+    if (vis < 5) why.push(vis < 1 ? "fog" : "haze");
+    if (seen < 60) why.push("the forecast doesn't reach far enough towards the sun to be sure");
+    const text = why.join("; ");
+    return [`${sunWord(v)} ${kind} · ${Math.round(v)}/100`,
+      `${weekday(at)} ${hm(at)} towards ${Math.round(az)}° (${way}), ${colours}`,
+      `${text[0].toUpperCase()}${text.slice(1)}.`];
+  }
 
   function terrainTile(z, x, y) {
     const key = `${z}/${x}/${y}`;
     const have = terrain.get(key);
-    if (have) { terrain.delete(key); terrain.set(key, have); return have; } // most recently used last
+    if (have !== undefined) { terrain.delete(key); terrain.set(key, have); return have; } // most recently used last
     const p = new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -783,7 +816,7 @@
     return t[(Math.floor(y) % 256) * 256 + (Math.floor(x) % 256)];
   }
 
-  // Load the terrain tiles a box needs; resolves when they're all in.
+  // Load the terrain tiles a box needs; null when they're all in, else a promise for them.
   function loadTerrain(s, w, n, e) {
     const N = 2 ** TERRAIN_Z;
     const tx = (lon) => Math.floor(((lon + 180) / 360) * N);
@@ -796,25 +829,42 @@
     return jobs.length ? Promise.all(jobs).then(() => true) : null;
   }
 
-  // How good the view is from a place towards a bearing: the horizon's height (degrees,
-  // with the earth's curve), how much of the view is open water, and how far above its
-  // surroundings the place stands.
+  // The box of terrain the view needs: the map's view, and RAY_KM beyond it towards the sun.
+  function terrainBox(b, az) {
+    const pad = 0.6 / 111.2, k = Math.cos((b.getCenter().lat * Math.PI) / 180);
+    let s = b.getSouth() - pad, n = b.getNorth() + pad, w = b.getWest() - pad / k, e = b.getEast() + pad / k;
+    for (const [db] of [RAYS[0], RAYS[RAYS.length - 1]]) {
+      const r = ((az + db) * Math.PI) / 180;
+      const dLat = (RAY_KM * Math.cos(r)) / 111.2, dLon = (RAY_KM * Math.sin(r)) / (111.2 * k);
+      s = Math.min(s, b.getSouth() + dLat - pad); n = Math.max(n, b.getNorth() + dLat + pad);
+      w = Math.min(w, b.getWest() + dLon - pad / k); e = Math.max(e, b.getEast() + dLon + pad / k);
+    }
+    return [s, w, n, e];
+  }
+
+  // How good the view is from a place towards a bearing: how open the horizon is (degrees,
+  // with the earth's curve) in five directions around it, how much open water there is
+  // that way, and how far above its surroundings the place stands.
   function view(lat, lon, bearing) {
     const h0 = heightAt(lat, lon);
     if (Number.isNaN(h0) || h0 <= 0.3) return null; // the sea itself
     const eye = h0 + 2;
     const kLon = 1 / (111.2 * Math.cos((lat * Math.PI) / 180));
-    let worst = -90, water = 0, steps = 0;
-    for (const db of [-6, 0, 6]) {
+    let open = 0, weights = 0, horizon = -90, waterKm = 0;
+    for (const [db, w] of RAYS) {
       const b = ((bearing + db) * Math.PI) / 180, sb = Math.sin(b), cb = Math.cos(b);
-      for (let d = 0.04; d <= RAY_KM; d *= 1.08) {
+      let top = -90;
+      for (let d = 0.04; d <= RAY_KM; d *= 1.1) {
         const h = heightAt(lat + (d * cb) / 111.2, lon + d * sb * kLon);
         if (Number.isNaN(h)) continue;
         const drop = (d * d) / (2 * 6371) * 1000 * 0.87; // m, the curve less refraction
         const ang = Math.atan2(Math.max(h, 0) - drop - eye, d * 1000) * 180 / Math.PI;
-        if (ang > worst) worst = ang;
-        if (db === 0) { steps++; if (h <= 0.3) water++; }
+        if (ang > top) top = ang;
+        if (db === 0 && h <= 0.3) waterKm += d * 0.1; // this step's length
       }
+      open += w * Math.max(0, Math.min(1, (1.2 - top) / 1.6));
+      weights += w;
+      if (db === 0) horizon = top;
     }
     let around = 0, k = 0;
     for (let a = 0; a < 360; a += 45) {
@@ -823,29 +873,37 @@
       if (!Number.isNaN(h)) { around += Math.max(h, 0); k++; }
     }
     const prominence = k ? h0 - around / k : 0;
-    const open = Math.max(0, Math.min(1, (1.2 - worst) / 1.6));
-    const wet = steps ? water / steps : 0;
-    const score = 0.6 * open + 0.2 * wet + 0.2 * Math.max(0, Math.min(1, prominence / 25));
-    return { score, horizon: worst, water: wet, prominence, height: h0 };
+    open /= weights;
+    const water = Math.min(1, waterKm / RAY_KM);
+    const score = 0.6 * open + 0.2 * water + 0.2 * Math.max(0, Math.min(1, prominence / 25));
+    return { score, open, horizon, water, waterKm, prominence, height: h0 };
+  }
+
+  function viewText(v, az) {
+    return [`view towards the ${compass(az)} ${v.open >= 0.8 ? "open" : v.open >= 0.5 ? "partly open" : "blocked"} (${Math.round(v.open * 100)}%)`,
+      `horizon ${v.horizon <= 0 ? "below eye level" : `${v.horizon.toFixed(1)}° up`}`,
+      v.waterKm >= 0.3 ? `${v.waterKm < 10 ? v.waterKm.toFixed(1) : Math.round(v.waterKm)} km of open water that way` : "",
+      `${Math.round(v.height)} m high${v.prominence > 3 ? `, ${Math.round(v.prominence)} m above the area` : ""}`]
+      .filter(Boolean).join(" · ");
   }
 
   function sunsetRenderer() {
     const base = fieldRenderer("sunset");
-    let spots = [], layer = null, mapNow = null, opacityNow = 0.8, waiting = false;
+    let spots = [], layer = null, mapNow = null, opacityNow = 0.8, waiting = false, viewAz = null;
     const spotLayer = () => canvasLayer(function (ctx, w, h, map) {
       spots = [];
+      viewAz = null;
       const g = base.grid;
       if (!g || map.getZoom() < SPOT_ZOOM) return;
-      const bounds = map.getBounds().pad(0.1);
       const c = map.getCenter();
       const az = nearest(g, "az", c.lat, c.lng);
       if (Number.isNaN(az)) return;
-      const margin = RAY_KM / 111.2 + 0.01;
-      const ready = loadTerrain(bounds.getSouth() - margin, bounds.getWest() - margin * 2, bounds.getNorth() + margin, bounds.getEast() + margin * 2);
+      const ready = loadTerrain(...terrainBox(map.getBounds(), az));
       if (ready) {
         if (!waiting) { waiting = true; ready.then(() => { waiting = false; layer?.redraw(); }); }
         return;
       }
+      viewAz = az;
       const STEP_PX = 12;
       const cand = [];
       for (let y = STEP_PX / 2; y < h; y += STEP_PX) {
@@ -872,14 +930,24 @@
         if (spots.some((s) => (s.x - v.x) ** 2 + (s.y - v.y) ** 2 < 90 * 90)) continue;
         spots.push(v);
       }
-      const rad = (az * Math.PI) / 180;
+      const rad = (az * Math.PI) / 180, spread = (RAYS[RAYS.length - 1][0] * Math.PI) / 180;
       for (const s of spots) {
+        // The way to look: a soft wedge over the directions checked.
+        const grad = ctx.createRadialGradient(s.x, s.y, 6, s.x, s.y, 64);
+        grad.addColorStop(0, "rgba(251,146,60,0.55)");
+        grad.addColorStop(1, "rgba(251,146,60,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.arc(s.x, s.y, 64, rad - spread - Math.PI / 2, rad + spread - Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
         ctx.strokeStyle = "rgba(124,45,18,0.9)";
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
-        ctx.lineTo(s.x + Math.sin(rad) * 34, s.y - Math.cos(rad) * 34);
+        ctx.lineTo(s.x + Math.sin(rad) * 40, s.y - Math.cos(rad) * 40);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = "#f97316";
@@ -897,6 +965,18 @@
         ctx.stroke();
       }
     });
+
+    // The coming sunsets and sunrises at a place, from the add-on (one line).
+    async function comingUp(ll) {
+      try {
+        const res = await fetch(`api/overlay-value/sunset?lat=${ll.lat.toFixed(4)}&lon=${ll.lng.toFixed(4)}`);
+        const data = res.ok ? await res.json() : null;
+        const evs = (data?.events || []).filter((e) => e.glow > Date.now() / 1000 - 1800);
+        if (evs.length < 2) return "";
+        return `Here: ${evs.map((e) => `${weekday(e.at)} ${e.kind} ${hm(e.at)} ${e.word} ${Math.round(e.score)}`).join(" · ")}`;
+      } catch { return ""; }
+    }
+
     return {
       draw(group, data, opts) {
         base.draw(group, data, { ...opts, opacity: opts.opacity * 0.85 });
@@ -906,34 +986,36 @@
         layer.setOpacity(Math.min(1, opacityNow + 0.15));
       },
       hide() { base.hide(); layer?.remove(); layer = null; spots = []; },
-      valueAt(ll, map) {
+      async valueAt(ll, map) {
+        const sky = base.valueAt(ll);
+        let lines = null;
         if (map && spots.length) {
           const p = map.latLngToContainerPoint(ll);
           const s = spots.find((q) => (q.x - p.x) ** 2 + (q.y - p.y) ** 2 < 20 * 20);
           if (s) {
-            const g = base.grid, az = nearest(g, "az", s.lat, s.lng);
-            const bits = [`horizon ${s.horizon <= 0 ? "below eye level" : `${s.horizon.toFixed(1)}° up`}`,
-              s.water > 0.05 ? `${Math.round(s.water * RAY_KM * 10) / 10} km of water that way` : "",
-              s.prominence > 3 ? `${Math.round(s.prominence)} m above the area` : "", `${Math.round(s.height)} m high`];
-            return [`Good spot: view ${Math.round(s.score * 100)}%, sky ${Number.isNaN(s.sky) ? "–" : `${Math.round(s.sky)}%`}`,
-              `Towards ${Math.round(az)}° (${compass(az)}): ${bits.filter(Boolean).join(" · ")}`];
+            lines = [`Good spot · view ${Math.round(s.score * 100)}%${Number.isNaN(s.sky) ? "" : `, sky ${Math.round(s.sky)}/100`}`,
+              viewText(s, viewAz)];
           }
         }
-        return base.valueAt(ll);
+        if (!lines && map && viewAz != null && map.getZoom() >= SPOT_ZOOM) {
+          const v = view(ll.lat, ll.lng, viewAz);
+          if (v) lines = sky ? null : [`View from here ${Math.round(v.score * 100)}%`, viewText(v, viewAz)];
+          if (v && sky) sky.push(`From here: ${viewText(v, viewAz)}`);
+        }
+        const out = lines ? [...lines, ...(sky ? sky.slice(1).map((x, i) => (i ? x : `${sky[0]}: ${x}`)) : [])] : sky;
+        if (!out) return null;
+        const more = await comingUp(ll);
+        return more ? [...out, more] : out;
       },
       legend: () => base.legend(),
       summary() {
         const g = base.grid;
         if (!g) return null;
-        const kind = g.info?.kinds?.[String(g.time)] || "sunset";
-        const at = nearest(g, "at", 60.17, 24.94), az = nearest(g, "az", 60.17, 24.94);
-        if (Number.isNaN(at)) return null;
-        const d = new Date(at * 1000);
-        const day = d.toLocaleDateString("en-GB", { weekday: "short" });
-        const clock = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-        return `${kind[0].toUpperCase()}${kind.slice(1)} ${day} ${clock} in Helsinki, towards ${Math.round(az)}° (${compass(az)}). `
-          + `Zoom in to see spots with an open view (from zoom ${SPOT_ZOOM}).`;
+        const c = mapNow ? mapNow.getCenter() : { lat: 60.17, lng: 24.94 };
+        const lines = sunsetWhy(g, c.lat, c.lng);
+        return lines ? `At the map's centre: ${lines[0].replace(" · ", ", ").toLowerCase()}, at ${lines[1].replace(/^\w+ /, "")}.` : null;
       },
+      view,
     };
   }
 
@@ -943,5 +1025,5 @@
   for (const id of Object.keys(LAYERS)) if (!renderers[id] && id !== "wind") renderers[id] = fieldRenderer(id);
 
   return { SCALES, LAYERS, colourAt, lut, grid, cell, sample, nearest, fogVis, contours, extremes, legendFor, fieldRenderer,
-    canvasLayer, renderers, compass, strikeColour, kpSummary };
+    canvasLayer, renderers, compass, strikeColour, kpSummary, sunsetWhy, sunWord };
 });

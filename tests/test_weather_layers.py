@@ -5,6 +5,7 @@ sky map, and the sky map's astronomy (static/sky.js, under Node)."""
 import asyncio
 import gzip
 import json
+import math
 import shutil
 import subprocess
 import time
@@ -115,7 +116,7 @@ def test_weather_model_falls_back_to_open_meteo(tmp_path):
         return [one] * n if n > 1 else one
 
     run = asyncio.run(forecast.fetch_run(None, now, broken, om))
-    assert len(asked) == -(-len(forecast.GRID) // forecast.OM_BATCH)
+    assert len(asked) == -(-len(forecast.OM_GRID) // forecast.OM_BATCH)
     assert run["info"]["source"] == "open-meteo"
     first = run["values"][str(run["times"][0])]
     assert first[0] == 125  # tenths of a degree
@@ -224,7 +225,7 @@ def test_light_pollution_atlas(tmp_path):
 
 # --- sunset and sunrise ------------------------------------------------------------------
 
-def test_sun_events_and_score():
+def test_sun_events_and_glow():
     # 6 Nov 2026 at Helsinki: sunrise about 07:55 EET (05:55 UTC), sunset about 16:10 EET (14:10 UTC).
     day = 1793923200  # 2026-11-06 00:00 UTC
     ev = sunset.events(60.17, 24.94, day, day + 86400)
@@ -233,16 +234,69 @@ def test_sun_events_and_score():
     rise, set_ = ev[0], ev[1]
     assert abs(rise[0] - (day + 5 * 3600 + 55 * 60)) < 15 * 60 and 115 < rise[2] < 135
     assert abs(set_[0] - (day + 14 * 3600 + 10 * 60)) < 15 * 60 and 225 < set_[2] < 245
-    # Midsummer in Lapland: none.
+    # The colours: until the sun is 3.5 degrees down, about 25 minutes in November.
+    assert 15 * 60 < sunset.glow_time(60.17, 24.94, set_[0], "sunset") - set_[0] < 40 * 60
+    assert 15 * 60 < rise[0] - sunset.glow_time(60.17, 24.94, rise[0], "sunrise") < 40 * 60
+    # Midsummer in Lapland: none; in Oulu the sun sets but never gets 3.5 degrees down: 90 minutes.
     assert sunset.events(69.0, 27.0, 1781913600, 1781913600 + 86400) == []
-    # Half high cloud with a clear way to the sun beats a clear sky, which beats low overcast or rain.
-    good = sunset.score(50, 20, 0, 0, 0)
-    clear = sunset.score(0, 0, 0, 0, 0)
-    assert good > 80 and 30 < clear < 50
-    assert sunset.score(50, 20, 0, 90, 0) < 0.3 * good  # low cloud towards the sun blocks the light
-    assert sunset.score(100, 100, 100, 100, 2.0) < 5
+    mid = sunset.events(65.0, 25.5, 1781913600, 1781913600 + 86400)
+    dusk = next(t for t, k, _ in mid if k == "sunset")
+    assert sunset.glow_time(65.0, 25.5, dusk, "sunset") - dusk == 5400
     lat, lon = sunset.destination(60.0, 24.0, 270, 111.2)
     assert abs(lat - 60.0) < 0.05 and abs(lon - 22.0) < 0.05
+    assert [sunset.word(v) for v in (5, 25, 45, 65, 85)] == ["dull", "fair", "good", "great", "fiery"]
+
+
+HERE = (60.0, 24.4)  # Porkkala; the sun sets to the south-west (225)
+
+
+def _sky(weather, t=1794060000):
+    """A made-up weather model hour on a fine grid: weather(km from HERE) -> fields."""
+    lats = [56 + 0.25 * i for i in range(33)]
+    lons = [16 + 0.5 * j for j in range(33)]
+    points = [(la, lo) for la in lats for lo in lons]
+    fields = ["low", "mid", "high", "rain", "vis", "rh"]
+    k = math.cos(math.radians(HERE[0]))
+    rows = []
+    for la, lo in points:
+        km = math.hypot((la - HERE[0]) * 111.2, (lo - HERE[1]) * 111.2 * k)
+        w = {"low": 0, "mid": 0, "high": 0, "rain": 0, "vis": 30, "rh": 70, **weather(km)}
+        rows.append([w[f] for f in fields])
+    grid = sunset.Grid({"points": points, "fields": fields})
+    return sunset.Sky(grid, {t: rows}, t)
+
+
+def test_sunset_score_follows_the_light():
+    rate = lambda weather: sunset.rate(_sky(weather), *HERE, 225)  # noqa: E731
+    fiery = rate(lambda km: {"high": 50 if km < 150 else 0})
+    clear = rate(lambda km: {})
+    # Half high cloud overhead and towards the sun, nothing in the light's way: the best.
+    assert fiery["score"] > 90 and fiery["canvas"] == 50 and fiery["gap"] > 95 and fiery["seen"] == 100
+    # A clear sky: a clean sunset, fair.
+    assert 30 < clear["score"] < 45 and clear["canvas"] == 0
+    # Low cloud 150-500 km towards the sun keeps the light from the same high cloud: grey.
+    grey = rate(lambda km: {"high": 50 if km < 150 else 0, "low": 100 if km > 150 else 0})
+    assert grey["score"] < 0.25 * fiery["score"] and grey["gap"] < 20
+    # Low cloud over you hides it; fog dims it; rain spoils it.
+    hidden = rate(lambda km: {"high": 50 if km < 150 else 0, "low": 100 if km < 40 else 0})
+    assert hidden["score"] < 20 and hidden["low"] > 90
+    foggy = rate(lambda km: {"high": 50 if km < 150 else 0, "vis": 0.5})
+    assert foggy["score"] < 0.35 * fiery["score"] and foggy["vis"] == 0.5
+    wet = rate(lambda km: {"high": 50 if km < 150 else 0, "rain": 1.5 if km < 30 else 0})
+    assert wet["score"] < 0.5 * fiery["score"] and wet["rain"] == 1.5
+    # Overcast high cloud still glows if the light gets in under it.
+    overcast = rate(lambda km: {"high": 100})
+    assert 45 < overcast["score"] < 65
+    # But a middle-level deck all the way to the horizon is grey.
+    assert rate(lambda km: {"mid": 100})["score"] < 25
+    # Times between the model's hours: halfway, half of each.
+    t = 1794060000
+    a, b = _sky(lambda km: {"high": 0}, t), _sky(lambda km: {"high": 100}, t + 3600)
+    both = sunset.Sky(a.grid, {t: a.parts[0][0], t + 3600: b.parts[0][0]}, t + 1800)
+    assert both(*HERE, "high") == pytest.approx(50)
+    # Near the model's edge, looking out of it: less of the way is seen.
+    edge = sunset.rate(_sky(lambda km: {"high": 50}), 57.0, 17.5, 225)
+    assert edge["seen"] < 50
 
 
 def test_sunset_run_from_the_weather_model(tmp_path):
@@ -254,13 +308,20 @@ def test_sunset_run_from_the_weather_model(tmp_path):
         sunset.register(ov)
         listing = {o["id"]: o for o in await ov.listing({"sunset"}, now)}
         times = listing["sunset"]["times"]
-        assert 2 <= len(times) <= 5
+        assert 2 <= len(times) <= 5 and listing["sunset"]["has_value"]
         frame = await ov.points("sunset", times[0], now)
-        assert frame["fields"] == ["score", "az", "at", "cloud", "toward"]
+        assert frame["fields"] == sunset.FIELDS
+        kind = frame["info"]["kinds"][str(times[0])]
         assert set(frame["info"]["kinds"].values()) <= {"sunset", "sunrise"}
-        scored = [p for p in frame["points"] if p[2] is not None]
+        scored = [dict(zip(frame["fields"], p[2:])) for p in frame["points"] if p[2] is not None]
         assert len(scored) > 0.5 * len(frame["points"])
-        assert all(0 <= p[2] <= 100 and abs(p[4] - times[0]) < 4 * 3600 for p in scored)
+        for p in scored:
+            assert 0 <= p["score"] <= 100 and abs(p["at"]) <= 240 and 0 <= p["gap"] <= 100
+            assert (p["glow"] > p["at"]) if kind == "sunset" else (p["glow"] < p["at"])
+        assert (tmp_path / "points" / "sunset").is_dir()  # kept as binary hours
+        here = await ov.value("sunset", 60.1, 24.4, 0)
+        assert [e["t"] for e in here["events"]] == times
+        assert all(e["word"] == sunset.word(e["score"]) and e["kind"] in ("sunset", "sunrise") for e in here["events"])
 
     asyncio.run(main())
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.37.0
+
+- Sunset & sunrise worked out properly: besides the high and middle cloud to light up
+  (now over you and in the part of the sky towards the sun), it checks the light's way
+  in. The reddest light skims low over the earth 80-450 km towards the sun before it
+  reaches the clouds, so low cloud there turns the sky grey. Also new: each place's
+  own sunset minute (between the model's hours), haze and fog, a middle-level deck
+  that reaches the horizon, and softer handling of a passing shower.
+- Tap the map for why: "Great sunset · 75/100", when it sets or rises there and when
+  the colours are best (until the sun is 3.5° down), what makes or spoils it, and the
+  other sunsets and sunrises coming up at that place. The legend reads dull to fiery,
+  and the panel gives the score at the map's centre.
+- Zoomed in: the open-view spots check 10 km out in five directions 16° either side of
+  the sun (was 6 km in three), show a wedge the way to look, and tapping any place on
+  land tells its view (open, horizon height, water that way, height).
+- The weather model now reaches from southern Sweden and Latvia to Karelia
+  (1287 points, 21 requests a run; the Open-Meteo fallback uses every other point).
+
 ## 0.36.4
 
 - Stats › Times past Porkkala now times every passage at one fixed place per route, to the
