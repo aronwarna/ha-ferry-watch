@@ -14,6 +14,12 @@
 - From OpenStreetMap (Finland's reserves there come from SYKE's register), downloaded per
   area of about 22 km when first looked at and kept two weeks; left out of backups.
 
+## 0.37.1
+
+- Satellite view: Esri's satellite images again by default. The Finnish and Estonian
+  aerial photos from 0.35.0 are now a switch, Layers › On the satellite view › Aerial
+  photos (Finland, Estonia), off unless you turn it on.
+
 ## 0.37.0
 
 - Sunset & sunrise worked out properly: besides the high and middle cloud to light up
