@@ -157,10 +157,15 @@ window.FerryStatsMore = (() => {
 
   // --- times past Porkkala ---
 
-  function timing(rows, ships, now) {
+  function timing(rows, ships, now, onShowLine) {
     const recent = rows.filter((p) => p.ts >= now - TIMING_DAYS * DAY);
-    const s = section("Times past Porkkala", `Each dot a passage in the last ${TIMING_DAYS} days, the inner ones ringed in orange. `
-      + "The line is the usual time, the big dot the latest.");
+    const s = section("Times past Porkkala", `Each dot a passage in the last ${TIMING_DAYS} days. Inner ones (ringed in orange) `
+      + "are timed where the ship goes between Utterböte and Östra Styrskär, outer ones where it crosses 24.40° E. "
+      + "The line is the usual time and the big dot the latest. ");
+    const show = el("button", "link-button", "Show the lines on the map");
+    show.type = "button";
+    show.addEventListener("click", onShowLine);
+    s.querySelector(".sm-note").append(show);
     let any = false;
     for (const [dir, title] of DIRS) {
       const these = recent.filter((p) => p.direction === dir);
@@ -268,8 +273,10 @@ window.FerryStatsMore = (() => {
   }
 
   /* rows: the passages Stats counts (its ship and direction choices, every year), as
-     { ts, mmsi, route, direction, wind_ms, wind_dir, sog, notified, minute }.
-     ctx: { ships: [{ mmsi, name, color }], year, wind: { ms, dir } | null, firstTs, onDay(ts) } */
+     { ts, mmsi, route, direction, wind_ms, wind_dir, sog, notified, minute } (minute: the
+     time of day it passed its route's timing place off Porkkala, where known).
+     ctx: { ships: [{ mmsi, name, color }], year, wind: { ms, dir } | null, firstTs, onDay(ts),
+     onShowLine() } */
   function render(box, rows, ctx) {
     if (!rows.length) { box.replaceChildren(); return; }
     const now = Date.now() / 1000;
@@ -277,7 +284,7 @@ window.FerryStatsMore = (() => {
     box.replaceChildren(...[
       highlights(rows, ships, now),
       windNow(rows, ctx.wind),
-      timing(rows, ships, now),
+      timing(rows, ships, now, ctx.onShowLine),
       yearGrid(rows, ctx.year, now, ctx.firstTs, ctx.onDay),
     ].filter(Boolean));
   }

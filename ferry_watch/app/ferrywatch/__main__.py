@@ -29,7 +29,7 @@ from .ice import IceWatch
 from .notify import Notifier, sun_place
 from . import aurora, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
-from .passages import Detector
+from .passages import Detector, backfill_timing
 from .photos import PhotoCache
 from .satellite import Satellite
 from .predict import Predictor
@@ -72,6 +72,11 @@ class FerryWatch:
         self.fleet_tracker.load()
         self.notifier = Notifier(self)
         self.detector = Detector(self.store, self.notifier.on_passage)
+        if not self.store.kv_get("passages_timed"):
+            # Passages from before 0.36.4 timed at their timing place off Porkkala too, from
+            # the tracks still kept (once; older ones keep their own time in the stats).
+            _LOGGER.info("Timed %s earlier passages off Porkkala", backfill_timing(self.store, 0))
+            self.store.kv_set("passages_timed", True)
         self.predictor = Predictor(self.store, self._next_passage_changed)
         self.next_sensor: NextPassageSensor | None = None
         self._background: set[asyncio.Task] = set()

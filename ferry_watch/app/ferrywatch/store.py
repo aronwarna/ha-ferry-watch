@@ -107,6 +107,9 @@ ADDED_COLUMNS = [
     ("passages", "ice", "TEXT"),
     ("passages", "ice_cm", "REAL"),
     ("passages", "ice_conc", "REAL"),
+    # When the ship passed its route's timing place off Porkkala on that passage (inner:
+    # between Utterböte and Östra Styrskär; outer: the meridian), for the stats.
+    ("passages", "porkkala_ts", "INTEGER"),
     ("meta", "eta_ts", "INTEGER"),
     ("meta", "draught", "REAL"),
     ("vessels", "imo", "INTEGER"),
@@ -402,6 +405,22 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    def set_porkkala_ts(self, passage_id: int, ts: int) -> None:
+        self.db.execute("UPDATE passages SET porkkala_ts = ? WHERE id = ?", (ts, passage_id))
+        self.db.commit()
+
+    def passage_without_porkkala(self, mmsi: int, since_ts: int) -> dict[str, Any] | None:
+        """The ship's latest passage since a time not yet timed at its timing place."""
+        row = self.db.execute("SELECT * FROM passages WHERE mmsi = ? AND ts >= ? AND porkkala_ts IS NULL "
+                              "ORDER BY ts DESC LIMIT 1", (mmsi, since_ts)).fetchone()
+        return dict(row) if row else None
+
+    def passages_to_time(self, since_ts: int) -> list[dict[str, Any]]:
+        """Passages since a time with no timing-place time yet, and every inner one."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, mmsi, ts, route, porkkala_ts FROM passages WHERE ts >= ? "
+            "AND (porkkala_ts IS NULL OR route = 'inner') ORDER BY ts", (since_ts,))]
+
     def recent_passages_for(self, mmsi: int, limit: int = 12) -> list[dict[str, Any]]:
         """Latest passages at the route lines, the ship's own first, then the other ships'
         (for predictions); outer passages at the Porkkala meridian (zone 0) aren't lines."""
@@ -447,9 +466,10 @@ class Store:
 
     def passage_rows(self) -> list[tuple]:
         """Every passage as (ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified,
-        speed in knots), oldest first, for the stats."""
+        speed in knots, time at its timing place off Porkkala), oldest first, for the stats."""
         return [tuple(r) for r in self.db.execute(
-            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice, notified, round(sog, 1) "
+            "SELECT ts, mmsi, route, direction, round(wind_ms, 1), round(wind_dir), ice, notified, round(sog, 1), "
+            "porkkala_ts "
             "FROM passages ORDER BY ts").fetchall()]
 
     # --- sea ice -----------------------------------------------------------

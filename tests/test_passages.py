@@ -1,6 +1,6 @@
 from ferrywatch.config import DEFAULT_ZONES
 from ferrywatch.geo import line_crossed, point_in_polygon, segments_cross
-from ferrywatch.passages import COOLDOWN, Detector
+from ferrywatch.passages import COOLDOWN, INNER_TIMING_GATE, Detector
 from ferrywatch.store import Position, Store
 
 MMSI = 230184000
@@ -161,3 +161,81 @@ def test_no_meridian_passages_with_outer_lines_or_far_away(tmp_path):
     det.on_position(pos(1000, 59.30, 24.45))  # far south of the Porkkala sailings
     det.on_position(pos(1060, 59.30, 24.35))
     assert got == []
+
+
+def gate_at(t0, lon0, lon1, lat=59.96):
+    """When a steady move along lat from lon0 (at t0) to lon1 (a minute later) goes
+    between Utterböte and Östra Styrskär."""
+    (la, lo_a), (lb, lo_b) = INNER_TIMING_GATE
+    gate_lon = lo_a + (lo_b - lo_a) * (lat - la) / (lb - la)
+    return round(t0 + 60 * (gate_lon - lon0) / (lon1 - lon0))
+
+
+def test_outer_passages_are_timed_at_the_meridian(tmp_path):
+    store, det, got = make(tmp_path, [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 59.86, 24.45))  # 24.40 a half of the way to the next report
+    det.on_position(pos(1060, 59.86, 24.35))
+    assert got[0]["porkkala_ts"] == 1030
+    assert [r[9] for r in store.passage_rows()] == [1030]
+
+
+def test_inner_passages_are_timed_between_utterbote_and_ostra_styrskar(tmp_path):
+    # Westbound: recorded at the east line, timed where it then goes through the gate
+    # (the meridian after that changes nothing).
+    store, det, got = make(tmp_path, [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    for i, lon in enumerate((24.60, 24.50, 24.46, 24.44, 24.38, 24.30)):
+        det.on_position(pos(1000 + i * 60, 59.96, lon))
+    inner = store.passages(route="inner")[0]
+    assert inner["ts"] == 1060 and inner["porkkala_ts"] == gate_at(1120, 24.46, 24.44)
+    # Eastbound: the meridian comes first and stands in until the gate is reached.
+    store, det, got = make(sub(tmp_path, "east"), [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    for i, lon in enumerate((24.20, 24.30, 24.38, 24.42)):
+        det.on_position(pos(1000 + i * 60, 59.96, lon, cog=90))
+    assert store.passages()[0]["porkkala_ts"] == 1150
+    det.on_position(pos(1240, 59.96, 24.44, cog=90))
+    det.on_position(pos(1300, 59.96, 24.47, cog=90))
+    assert [(p["route"], p["porkkala_ts"]) for p in store.passages()] == [("inner", gate_at(1240, 24.44, 24.47))]
+    # One line only: the meridian made an outer passage, the inner one replaces it and
+    # takes the gate's time.
+    store, det, got = make(sub(tmp_path, "one"), [("East", "inner", "line", EAST_END)])
+    for i, lon in enumerate((24.36, 24.42, 24.44, 24.47, 24.53, 24.57)):
+        det.on_position(pos(1000 + i * 60, 59.96, lon, cog=90))
+    assert [p["route"] for p in got] == ["outer", "inner"]
+    assert [(p["route"], p["porkkala_ts"]) for p in store.passages()] == [("inner", gate_at(1120, 24.44, 24.47))]
+    assert got[1]["porkkala_ts"] == gate_at(1120, 24.44, 24.47)
+
+
+def test_inner_passage_missing_the_gate_is_timed_at_the_meridian(tmp_path):
+    store, det, got = make(tmp_path, [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    t = 1000
+    for i, lon in enumerate((24.60, 24.50, 24.42, 24.38, 24.30)):
+        det.on_position(pos(t + i * 60, 60.0, lon))  # north of Utterböte
+    inner = store.passages(route="inner")[0]
+    assert inner["ts"] < inner["porkkala_ts"] == t + 2 * 60 + 30
+    # One line only: the inner passage takes over the dropped outer one's time.
+    store, det, got = make(sub(tmp_path, "one"), [("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 60.0, 24.45))
+    det.on_position(pos(1060, 60.0, 24.35))
+    det.on_position(pos(1120, 60.0, 24.22))
+    assert [(p["route"], p["porkkala_ts"]) for p in store.passages()] == [("inner", 1030)]
+
+
+def test_earlier_passages_are_timed_from_the_tracks(tmp_path):
+    from ferrywatch.passages import backfill_timing
+    store = Store(tmp_path / "t.db")
+    inner = store.add_passage({"mmsi": MMSI, "ts": 2000, "route": "inner", "direction": "west", "zone_id": 1,
+                               "lat": 59.96, "lon": 24.5, "sog": 17.0})
+    store.set_porkkala_ts(inner, 2350)  # timed at the meridian by 0.36.1-era code
+    outer = store.add_passage({"mmsi": MMSI, "ts": 90000, "route": "outer", "direction": "west", "zone_id": 0,
+                               "lat": 59.86, "lon": 24.4, "sog": 17.0})  # no track kept for it
+    for ts, lon in ((2000, 24.50), (2240, 24.46), (2300, 24.44), (2400, 24.36), (2500, 24.30)):
+        store.insert_position(pos(ts, 59.96, lon))
+    assert backfill_timing(store, 0) == 1
+    by_id = {p["id"]: p for p in store.passages()}
+    assert by_id[inner]["porkkala_ts"] == gate_at(2240, 24.46, 24.44)
+    assert by_id[outer]["porkkala_ts"] is None
+    # An outer passage with its track is timed at the meridian.
+    store.insert_position(pos(89970, 59.86, 24.45))
+    store.insert_position(pos(90030, 59.86, 24.35))
+    assert backfill_timing(store, 0) == 2
+    assert {p["id"]: p for p in store.passages()}[outer]["porkkala_ts"] == 90000

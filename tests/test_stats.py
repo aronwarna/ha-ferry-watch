@@ -53,5 +53,5 @@ def test_csv(tmp_path):
                            "11.0", "1.2", "12.0", "ice", "31", "90"]
     assert rows[2][1:] == ["Silja Serenade", "1", "inner", "towards Stockholm", "17.2", "sent", "", "",
                            "", "", "", "", "", ""]
-    assert stats.payload(store)["passages"][1][4:] == [8.4, 225.0, "ice", 0, 17.3]  # speed in knots last
+    assert stats.payload(store)["passages"][1][4:] == [8.4, 225.0, "ice", 0, 17.3, None]  # speed in knots, then the time at the Porkkala meridian
     assert stats.payload(store)["passages"][0][7] == 1  # its alert was sent

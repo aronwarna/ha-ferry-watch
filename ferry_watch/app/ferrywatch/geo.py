@@ -65,6 +65,18 @@ def segments_cross(p1: tuple[float, float], p2: tuple[float, float],
         ((d3 > 0 > d4) or (d3 < 0 < d4) or d3 == 0 or d4 == 0)
 
 
+def crossing_fraction(p1: tuple[float, float], p2: tuple[float, float],
+                      q1: tuple[float, float], q2: tuple[float, float]) -> float | None:
+    """How far along the move p1 -> p2 (0 to 1) it crosses segment q1-q2, under
+    segments_cross's rules; None if it doesn't cross."""
+    if not segments_cross(p1, p2, q1, q2):
+        return None
+    lat0 = (p1[0] + p2[0] + q1[0] + q2[0]) / 4
+    a, b, c, d = (_xy(*pt, lat0) for pt in (p1, p2, q1, q2))
+    d1, d2 = _orient(c, d, a), _orient(c, d, b)
+    return d1 / (d1 - d2)
+
+
 def line_crossed(p1: tuple[float, float], p2: tuple[float, float], line: list[list[float]]) -> bool:
     """True if the move p1 -> p2 crosses any segment of a polyline [[lat, lon], ...]."""
     return any(segments_cross(p1, p2, tuple(a), tuple(b)) for a, b in zip(line, line[1:]))

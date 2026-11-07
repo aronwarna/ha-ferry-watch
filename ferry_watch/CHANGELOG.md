@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.36.4
+
+- Stats › Times past Porkkala now times every passage at one fixed place per route, to the
+  second between two position reports. Inner-route passages are timed where the ship goes
+  between Utterböte and Östra Styrskär off the Porkkala cape; outer-route passages where
+  the ship crosses 24.40° E (between 59.55° and 60.15° N). An inner sailing that misses
+  that gap is timed at 24.40° E instead. The Time view and the usual times use these too.
+  Before, an inner passage was timed where it first crossed your inner-route line, up to
+  a quarter of an hour away, so inner dots looked early.
+- Passages from the last 60 days are re-timed from the stored tracks once after the
+  update; older ones keep their own time.
+- "Show the lines on the map" under Times past Porkkala zooms to both places and labels
+  them (your inner-route lines are shown too); the "Passage lines shown" pill hides them.
+
 ## 0.36.3
 
 - Ship photos: Wikimedia Commons is also searched for files that mention the ship's IMO
