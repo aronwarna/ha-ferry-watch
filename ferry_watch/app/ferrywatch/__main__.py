@@ -289,6 +289,9 @@ class FerryWatch:
                                             "by_name": passenger, "imo_first": True})
         return self.other_photos.public_info(mmsi)
 
+    def ship_photo_miss(self, mmsi: int) -> dict[str, Any]:
+        return self.other_photos.miss(mmsi)
+
     async def _fleet_photos(self) -> None:
         """Look up photos for followed fleet ships, one at a time (each is looked up once)."""
         changed = False

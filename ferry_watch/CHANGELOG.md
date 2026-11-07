@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.36.3
+
+- Ship photos: Wikimedia Commons is also searched for files that mention the ship's IMO
+  number (many aren't in an "IMO" category), and ships that found nothing are tried again.
+- When there's no free photo, the other-ship popup says so with a link to the ship's
+  VesselFinder page (their photos are theirs and can't be copied into the app), or says
+  the lookup failed and why. Lookup failures are also written to the log.
+
 ## 0.36.2
 
 - The "Other ships" switch (every ship on AIS) is now also at the end of the Ships tab,

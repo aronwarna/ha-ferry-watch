@@ -30,7 +30,7 @@ COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 IMAGE_MIMES = ("image/jpeg", "image/png", "image/webp")
 # Bumped when new sources are added, so ships that found nothing before are tried again.
-LOOKUP_REV = 2
+LOOKUP_REV = 3
 THUMB_WIDTH = 640
 RETRY_AFTER = 7 * 24 * 3600
 MAX_UPLOAD = 8 * 1024 * 1024
@@ -48,6 +48,7 @@ class PhotoCache:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.session = session
         self._locks: dict[int, asyncio.Lock] = {}
+        self._warned = 0.0
 
     def _info_path(self, mmsi: int) -> Path:
         return self.dir / f"{mmsi}.json"
@@ -111,22 +112,44 @@ class PhotoCache:
                 for lang, title in self.candidates(ship)]
             by_imo: list[tuple[str, Any]] = [] if not imo or ship.get("wiki") else [
                 (f"Commons IMO {imo}", lambda: self._fetch_from_commons(mmsi, imo)),
-                (f"Wikidata IMO {imo}", lambda: self._fetch_from_wikidata(mmsi, imo))]
+                (f"Wikidata IMO {imo}", lambda: self._fetch_from_wikidata(mmsi, imo)),
+                (f"Commons search {imo}", lambda: self._search_commons(mmsi, imo))]
             # A ship known only by its AIS name may share it with a famous one: IMO first.
             lookups = by_imo + by_name if ship.get("imo_first") else by_name + by_imo
-            failed = False
+            error = None
             for label, lookup in lookups:
                 try:
                     if await lookup():
                         self._trim()
                         return True
                 except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, IndexError, TypeError, ValueError) as err:
-                    failed = True
-                    _LOGGER.debug("Photo lookup for %s (%s) failed: %s", mmsi, label, err)
+                    error = f"{label}: {err or type(err).__name__}"
+                    if time.time() - self._warned > 600:
+                        self._warned = time.time()
+                        _LOGGER.warning("Photo lookup for %s (%s) failed: %s", mmsi, label, err or type(err).__name__)
             # A network fault is retried after an hour, "nothing there" after a week.
-            when = int(time.time()) - (RETRY_AFTER - 3600 if failed else 0)
-            self._write_info(mmsi, {"failed_ts": when, "rev": LOOKUP_REV})
+            when = int(time.time()) - (RETRY_AFTER - 3600 if error else 0)
+            why = "error" if error else ("none" if lookups else "no_imo")
+            self._write_info(mmsi, {"failed_ts": when, "rev": LOOKUP_REV, "why": why, "error": error})
             return False
+
+    def miss(self, mmsi: int) -> dict[str, Any]:
+        """Why there is no photo: {"why": "none" | "no_imo" | "error", "error": text}."""
+        info = self.info(mmsi)
+        return {"why": info.get("why", "none"), "error": info.get("error")}
+
+    async def _search_commons(self, mmsi: int, imo: int) -> bool:
+        """Commons files whose description mentions the IMO number (many aren't categorised)."""
+        data = await self._get_json(COMMONS_API, {
+            "action": "query", "generator": "search", "gsrsearch": f'"{imo}"', "gsrnamespace": "6",
+            "gsrlimit": "5", "prop": "imageinfo", "iiprop": "url|mime", "iiurlwidth": str(THUMB_WIDTH)})
+        pages = sorted(data.get("query", {}).get("pages", []), key=lambda p: p.get("index", 0))
+        for page in pages:
+            ii = (page.get("imageinfo") or [{}])[0]
+            if ii.get("mime") in IMAGE_MIMES and (ii.get("thumburl") or ii.get("url")):
+                return await self._download(mmsi, ii.get("thumburl") or ii["url"],
+                                            ii.get("descriptionurl"), "Wikimedia Commons")
+        return False
 
     async def _get_json(self, url: str, params: dict[str, Any]) -> Any:
         headers = {"User-Agent": USER_AGENT}

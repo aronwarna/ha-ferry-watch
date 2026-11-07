@@ -3568,13 +3568,30 @@
   function vesselPhoto(mmsi) {
     if (vesselPhotos.has(mmsi)) return vesselPhotos.get(mmsi);
     const lookup = api(`api/vessels/${mmsi}/photo`)
-      .then((d) => { vesselPhotos.set(mmsi, d.photo || null); return d.photo || null; })
-      .catch(() => { vesselPhotos.delete(mmsi); return null; });
+      .then((d) => {
+        const p = d.photo || { missing: true, why: d.miss?.why, error: d.miss?.error };
+        vesselPhotos.set(mmsi, p);
+        return p;
+      })
+      .catch((err) => { vesselPhotos.delete(mmsi); return { missing: true, why: "error", error: String(err.message || err) }; });
     vesselPhotos.set(mmsi, lookup);
     return lookup;
   }
+  const PHOTO_MISS = {
+    none: "No free photo on Wikimedia. See its photo on VesselFinder ›",
+    no_imo: "No IMO number in its AIS data. Look on VesselFinder ›",
+  };
   function showVesselPhoto(a, mmsi, photo) {
-    if (!photo) { a.hidden = true; return; }
+    const note = a.nextElementSibling?.classList.contains("photo-miss") ? a.nextElementSibling : null;
+    if (!photo || photo.missing) {
+      a.hidden = true;
+      if (note && photo) {
+        note.textContent = PHOTO_MISS[photo.why] || `Couldn't look up a photo just now (${photo.error || "network"}).`;
+        note.hidden = false;
+      }
+      return;
+    }
+    if (note) note.hidden = true;
     a.querySelector("img").src = `api/photo/${mmsi}?v=${photo.version}`;
     a.querySelector(".credit").textContent = `Photo: ${photo.source || "Wikipedia"}`;
     if (photo.credit_url) a.href = photo.credit_url;
@@ -3706,8 +3723,16 @@
     pic.querySelector("img").addEventListener("load", () => boat.getPopup()?.update());
     const photo = vesselPhoto(mmsi);
     if (photo instanceof Promise) photo.then((p) => { showVesselPhoto(pic, mmsi, p); boat.getPopup()?.update(); });
-    else showVesselPhoto(pic, mmsi, photo);
-    el.append(pic);
+    // No free photo: a link to VesselFinder's page, which shows theirs (their photos may
+    // not be copied into the app).
+    const miss = document.createElement("a");
+    miss.className = "photo-miss small";
+    miss.href = SHIP_SITES[0][1](mmsi);
+    miss.target = "_blank";
+    miss.rel = "noopener";
+    miss.hidden = true;
+    el.append(pic, miss);
+    if (!(photo instanceof Promise)) showVesselPhoto(pic, mmsi, photo);
     const title = document.createElement("strong");
     title.textContent = name || `MMSI ${mmsi}`;
     el.append(title);

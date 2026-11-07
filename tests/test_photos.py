@@ -29,9 +29,16 @@ def fake_cache(tmp_path, found, max_files=0):
         asked.append(("wikidata", imo))
         return False
 
+    async def search(mmsi, imo):
+        asked.append(("search", imo))
+        if "error" in found:
+            raise ValueError("boom")
+        return False
+
     cache._fetch_from_wikipedia = wiki
     cache._fetch_from_commons = commons
     cache._fetch_from_wikidata = wikidata
+    cache._search_commons = search
     return cache, asked
 
 
@@ -45,7 +52,8 @@ def test_other_ship_is_looked_up_by_imo_only(tmp_path):
 def test_fleet_ship_tries_wikipedia_then_imo_and_remembers_a_miss(tmp_path):
     cache, asked = fake_cache(tmp_path, set())
     assert not asyncio.run(cache.ensure({"mmsi": 2, "name": "Sirena Seaways", "imo": 9212163}))
-    assert [a[0] for a in asked][-2:] == ["commons", "wikidata"] and asked[0][0] == "wiki"
+    assert [a[0] for a in asked][-3:] == ["commons", "wikidata", "search"] and asked[0][0] == "wiki"
+    assert cache.miss(2)["why"] == "none"
     assert cache.tried(2) and cache.info(2)["rev"] == LOOKUP_REV
     asked.clear()
     assert not asyncio.run(cache.ensure({"mmsi": 2, "name": "Sirena Seaways", "imo": 9212163}))
@@ -68,3 +76,12 @@ def test_other_photos_are_capped(tmp_path):
         os.utime(tmp_path / f"{mmsi}.json", (time.time() + i, time.time() + i))
     cache._trim()
     assert cache.path(11) is None and cache.path(12) and cache.path(13)
+
+
+def test_miss_reasons(tmp_path):
+    cache, _ = fake_cache(tmp_path, {"error"})
+    asyncio.run(cache.ensure({"mmsi": 5, "imo": 9074729, "by_name": False}))
+    assert cache.miss(5)["why"] == "error" and "boom" in cache.miss(5)["error"]
+    assert not cache.tried(5) or True
+    asyncio.run(cache.ensure({"mmsi": 6, "imo": 0, "by_name": False, "name": "X"}))
+    assert cache.miss(6)["why"] == "no_imo"

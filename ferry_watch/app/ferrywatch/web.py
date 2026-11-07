@@ -367,7 +367,9 @@ class Web:
 
     async def vessel_photo(self, request: web.Request) -> web.Response:
         """Looks up (once) and describes a photo of any vessel; the image is at api/photo/<mmsi>."""
-        return web.json_response({"photo": await self.fw.any_ship_photo(_mmsi(request))})
+        mmsi = _mmsi(request)
+        photo = await self.fw.any_ship_photo(mmsi)
+        return web.json_response({"photo": photo, "miss": None if photo else self.fw.ship_photo_miss(mmsi)})
 
     async def upload_photo(self, request: web.Request) -> web.Response:
         mmsi = _mmsi(request)
