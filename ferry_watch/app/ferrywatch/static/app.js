@@ -1006,9 +1006,9 @@
     if (!statsData || Date.now() - statsLoadedAt > 5 * 60000) refreshStatsData();
     if (!statsData) { box.hidden = true; return; }
     const today = new Date();
-    const mine = statsData.passages.filter(([, mmsi]) => mmsi === info.mmsi).map(([ts, , route, direction]) => {
-      const d = new Date(ts * 1000);
-      return { ts, route, direction, year: d.getFullYear(), month: d.getMonth(), minute: d.getHours() * 60 + d.getMinutes() };
+    const mine = statsData.passages.filter(([, mmsi]) => mmsi === info.mmsi).map(([ts, , route, direction, , , , , , porkkala]) => {
+      const d = new Date(ts * 1000), at = new Date((porkkala || ts) * 1000);
+      return { ts, route, direction, year: d.getFullYear(), month: d.getMonth(), minute: at.getHours() * 60 + at.getMinutes() };
     });
     const inner = mine.filter((p) => p.route === "inner");
     const year = inner.filter((p) => p.year === today.getFullYear());
@@ -1768,15 +1768,28 @@
   }
 
   // Show the areas on the map to check them (or hide them again); with a zone, go to it.
-  function showZones(on, zone = null) {
+  // With porkkala, the meridian every passage is timed at too (Stats › Times past Porkkala;
+  // passages.py PORKKALA_MERIDIAN and MERIDIAN_LATS).
+  const PORKKALA_LINE = [[59.55, 24.40], [60.15, 24.40]];
+  let porkkalaLine = null;
+  function showZones(on, zone = null, { porkkala = false } = {}) {
     zonesShown = on;
     zonesKey = "";
     renderZones(lastState?.zones || []);
+    if (on && porkkala) {
+      porkkalaLine ||= L.polyline(PORKKALA_LINE, { color: "#8b5cf6", weight: 3, opacity: 0.9, dashArray: "8 6", interactive: false })
+        .bindTooltip("Passages are timed here: 24.40° E", { permanent: true, direction: "right", className: "porkkala-tip" });
+      porkkalaLine.addTo(map);
+    } else if (porkkalaLine && !on) {
+      porkkalaLine.remove();
+    }
     renderZonesShown();
     const layer = zone && zoneLayers.get(zone.id)?.layer;
-    if (on && (layer || zoneLayers.size)) {
+    if (on && (layer || zoneLayers.size || porkkala)) {
       if (menuModal()) $("ships-dialog").close();
-      const bounds = layer ? layer.getBounds() : L.featureGroup([...zoneLayers.values()].map((e) => e.layer)).getBounds();
+      const all = [...zoneLayers.values()].map((e) => e.layer);
+      if (porkkala) all.push(porkkalaLine);
+      const bounds = layer ? layer.getBounds() : L.featureGroup(all).getBounds();
       const pad = cardPadding();
       // Clear of the menu too, where it stays open beside the map.
       if (menu.open) pad.paddingBottomRight = [pad.paddingBottomRight[0] + menu.offsetWidth, pad.paddingBottomRight[1]];
@@ -1786,6 +1799,7 @@
 
   function renderZonesShown() {
     $("areas-shown").hidden = !zonesShown || editing;
+    $("areas-shown").firstElementChild.textContent = porkkalaLine?._map ? "Passage lines shown" : "Alert areas shown";
     $("areas-show").textContent = zonesShown ? "Hide from map" : "Show on map";
     $("areas-show").setAttribute("aria-pressed", String(zonesShown));
   }
@@ -2331,12 +2345,13 @@
   function statsRows() {
     if (statsRowsOf !== statsData) {
       statsRowsOf = statsData;
-      statsRowsAll = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified, sog]) => {
+      statsRowsAll = statsData.passages.map(([ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified, sog, porkkala]) => {
         const d = new Date(ts * 1000);
+        const at = new Date((porkkala || ts) * 1000); // timed at the Porkkala meridian, where known
         return {
           ts, mmsi, route, direction, wind_ms, wind_dir, ice, notified, sog,
           year: d.getFullYear(), month: d.getMonth(), date: d.getDate(), week: isoWeek(d), weekday: (d.getDay() + 6) % 7,
-          minute: d.getHours() * 60 + d.getMinutes(),
+          minute: at.getHours() * 60 + at.getMinutes(),
         };
       });
     }
@@ -2790,6 +2805,7 @@
       year: statsYear,
       wind: w.enabled !== false && fresh(w.wind) ? w.wind : null,
       firstTs: all.length ? all[0].ts : null,
+      onShowLine: () => showZones(true, null, { porkkala: true }),
       onDay: (ts) => {
         const d = new Date(ts * 1000);
         statsView = "month";

@@ -161,3 +161,38 @@ def test_no_meridian_passages_with_outer_lines_or_far_away(tmp_path):
     det.on_position(pos(1000, 59.30, 24.45))  # far south of the Porkkala sailings
     det.on_position(pos(1060, 59.30, 24.35))
     assert got == []
+
+
+def test_every_passage_is_timed_at_the_meridian(tmp_path):
+    store, det, got = make(tmp_path, [("East", "inner", "line", EAST_END), ("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 59.86, 24.45))  # outer: 24.40 a half of the way to the next report
+    det.on_position(pos(1060, 59.86, 24.35))
+    assert got[0]["porkkala_ts"] == 1030
+    # Inner: recorded at the east line, timed where it then crosses the meridian.
+    t = 1000 + COOLDOWN + 60
+    for i, lon in enumerate((24.60, 24.50, 24.42, 24.38, 24.30)):
+        det.on_position(pos(t + i * 60, 60.0, lon))
+    inner = store.passages(route="inner")[0]
+    assert inner["ts"] < inner["porkkala_ts"] == t + 2 * 60 + 30
+    assert [r[9] for r in store.passage_rows()] == [1030, t + 150]
+    # One line only: the inner passage takes over the dropped outer one's time.
+    store, det, got = make(sub(tmp_path, "one"), [("West", "inner", "line", WEST_END)])
+    det.on_position(pos(1000, 60.0, 24.45))
+    det.on_position(pos(1060, 60.0, 24.35))
+    det.on_position(pos(1120, 60.0, 24.22))
+    assert [(p["route"], p["porkkala_ts"]) for p in store.passages()] == [("inner", 1030)]
+
+
+def test_earlier_passages_are_timed_from_the_tracks(tmp_path):
+    from ferrywatch.passages import backfill_porkkala
+    store = Store(tmp_path / "t.db")
+    pid = store.add_passage({"mmsi": MMSI, "ts": 2000, "route": "inner", "direction": "west", "zone_id": 1,
+                             "lat": 60.0, "lon": 24.5, "sog": 17.0})
+    store.add_passage({"mmsi": MMSI, "ts": 90000, "route": "outer", "direction": "west", "zone_id": 0,
+                       "lat": 59.86, "lon": 24.4, "sog": 17.0})  # no track kept for it
+    for ts, lon in ((2000, 24.50), (2300, 24.44), (2400, 24.36), (2500, 24.30)):
+        store.insert_position(pos(ts, 60.0, lon))
+    assert backfill_porkkala(store, 0) == 1
+    by_id = {p["id"]: p for p in store.passages()}
+    assert by_id[pid]["porkkala_ts"] == 2350
+    assert [p["porkkala_ts"] for p in store.passages() if p["id"] != pid] == [None]

@@ -14,6 +14,11 @@ therefore recorded as an outer passage (zone 0), unless outer-route lines exist.
 meridian lies between the two ends of the inner route, so on the inner route the line
 has already been crossed; should an inner passage still follow (one line only), it
 replaces the outer one.
+
+Every passage, on either route, is also timed where the ship crosses that meridian
+(porkkala_ts, to the second between two reports), so the stats compare like with like:
+an inner passage's own time is where it first crossed an inner-route line, which can be
+quarter of an hour away.
 """
 
 from __future__ import annotations
@@ -47,13 +52,22 @@ def direction(prev: Position, pos: Position) -> str:
     return "east" if cog is not None and 0 < cog < 180 else "west"
 
 
-def crosses_meridian(prev: Position, pos: Position) -> bool:
-    """The move crosses (or ends on) the Porkkala meridian between the outer route and the coast."""
+def meridian_time(prev: Any, pos: Any) -> int | None:
+    """When the move crossed (or ended on) the Porkkala meridian between the outer route
+    and the coast, assuming a steady move between the two reports; None if it didn't."""
     m = PORKKALA_MERIDIAN
     if not ((prev.lon - m) * (pos.lon - m) < 0 or (pos.lon == m and prev.lon != m)):
-        return False
-    lat = prev.lat + (pos.lat - prev.lat) * (m - prev.lon) / (pos.lon - prev.lon)
-    return MERIDIAN_LATS[0] <= lat <= MERIDIAN_LATS[1]
+        return None
+    f = (m - prev.lon) / (pos.lon - prev.lon)
+    lat = prev.lat + (pos.lat - prev.lat) * f
+    if not MERIDIAN_LATS[0] <= lat <= MERIDIAN_LATS[1]:
+        return None
+    return round(prev.ts + (pos.ts - prev.ts) * f)
+
+
+def crosses_meridian(prev: Position, pos: Position) -> bool:
+    """The move crosses (or ends on) the Porkkala meridian between the outer route and the coast."""
+    return meridian_time(prev, pos) is not None
 
 
 class Detector:
@@ -99,14 +113,24 @@ class Detector:
                         found.append(self._record(zone, run[0], run[1]))
                 else:
                     self.area_run.pop(key, None)
-        if (self.auto_outer and prev and moving and pos.ts - prev.ts <= MAX_GAP and not any(found)
-                and crosses_meridian(prev, pos)):
-            inner = self.store.last_passage(pos.mmsi, "inner")
-            if not inner or pos.ts - inner["ts"] >= COOLDOWN:
-                found.append(self._record(AUTO_OUTER, prev, pos))
+        at = meridian_time(prev, pos) if prev and moving and pos.ts - prev.ts <= MAX_GAP else None
+        if at is not None:
+            if self.auto_outer and not any(found):
+                inner = self.store.last_passage(pos.mmsi, "inner")
+                if not inner or pos.ts - inner["ts"] >= COOLDOWN:
+                    found.append(self._record(AUTO_OUTER, prev, pos, porkkala_ts=at))
+            # The passage this crossing belongs to (an inner one is recorded at its first
+            # line, before the meridian) is timed here.
+            recent = self.store.passage_without_porkkala(pos.mmsi, pos.ts - COOLDOWN)
+            if recent:
+                self.store.set_porkkala_ts(recent["id"], at)
+                for p in found:
+                    if p and p["id"] == recent["id"]:
+                        p["porkkala_ts"] = at
         return [p for p in found if p]
 
-    def _record(self, zone: dict[str, Any], prev: Position, pos: Position) -> dict[str, Any] | None:
+    def _record(self, zone: dict[str, Any], prev: Position, pos: Position,
+                porkkala_ts: int | None = None) -> dict[str, Any] | None:
         last = self.store.last_passage(pos.mmsi, zone["role"])
         if last and pos.ts - last["ts"] < COOLDOWN:
             return None
@@ -121,9 +145,33 @@ class Detector:
             "sog": pos.sog,
         }
         if passage["route"] == "inner":
-            self.store.delete_auto_outer(pos.mmsi, pos.ts - COOLDOWN)
+            # Its meridian crossing was the outer passage's (one inner line only).
+            porkkala_ts = self.store.delete_auto_outer(pos.mmsi, pos.ts - COOLDOWN) or porkkala_ts
         passage["id"] = self.store.add_passage(passage)
+        if porkkala_ts is not None:
+            self.store.set_porkkala_ts(passage["id"], porkkala_ts)
+            passage["porkkala_ts"] = porkkala_ts
         _LOGGER.info("%s: %s route passage %s", pos.mmsi, passage["route"], passage["direction"])
         if self.on_passage:
             self.on_passage(passage)
         return passage
+
+
+def backfill_porkkala(store: Store, since_ts: int) -> int:
+    """Time the passages recorded before porkkala_ts existed at the meridian, from the
+    tracks still stored (once). Returns how many got a time."""
+    done = 0
+    for p in store.passages_without_porkkala(since_ts):
+        track = store.track(p["mmsi"], p["ts"] - COOLDOWN, p["ts"] + COOLDOWN, speed=True)
+        best = None
+        for a, b in zip(track, track[1:]):
+            if b[2] - a[2] > MAX_GAP or b[3] is None or b[3] < MIN_SPEED:
+                continue
+            at = meridian_time(Position(p["mmsi"], a[2], a[0], a[1], a[3], None, None),
+                               Position(p["mmsi"], b[2], b[0], b[1], b[3], None, None))
+            if at is not None and (best is None or abs(at - p["ts"]) < abs(best - p["ts"])):
+                best = at
+        if best is not None:
+            store.set_porkkala_ts(p["id"], best)
+            done += 1
+    return done

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.36.1
+
+- Every passage is now also timed where the ship crosses 24.40° E off Porkkala (between
+  59.55° and 60.15° N), on either route, to the second between two position reports.
+  Stats › Times past Porkkala, the Time view and the usual times use that, so inner and
+  outer passages are compared at the same place. Before, an inner passage was timed where
+  it first crossed your inner-route line, up to quarter of an hour away, so inner dots
+  looked early. Passages from the last 60 days are re-timed from the stored tracks once
+  after the update; older ones keep their own time.
+- "Show the line on the map" under Times past Porkkala draws that line (and your
+  inner-route lines) on the map; the "Passage lines shown" pill hides them again.
+
 ## 0.36.0
 
 - Weather panel in the style of Windy: one colour layer at a time from a row of chips,
