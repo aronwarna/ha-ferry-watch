@@ -1,5 +1,8 @@
+import time
+from datetime import datetime, timedelta, timezone
+
 from ferrywatch.store import Store
-from ferrywatch.tracker import PORT_STOP_SECONDS, Tracker, parse_location
+from ferrywatch.tracker import PORT_STOP_SECONDS, Tracker, decode_eta, parse_location
 
 MMSI = 230184000
 HELSINKI = (60.160, 24.956)
@@ -108,3 +111,57 @@ def test_track_returns_since_voyage(tmp_path):
         tracker.on_location(MMSI, loc(1000 + i, sog=15))
     pts = store.track(MMSI, tracker.voyage_start(MMSI))
     assert len(pts) == 20 and pts[0][2] == 1000
+
+
+def test_stopped_at_a_port_counts_as_in_port_right_away(tmp_path):
+    from ferrywatch.store import Store
+    from ferrywatch.tracker import Tracker
+    store = Store(tmp_path / "t.db")
+    store.add_ship(1, "Ship", "#111111")
+    tracker = Tracker(store)
+    tracker.load()
+    # One report alongside in Helsinki South Harbour, then silence.
+    tracker.on_location(1, {"time": 1000, "lat": 60.1655, "lon": 24.9555, "sog": 0.0, "cog": 0, "heading": 0})
+    summary = tracker.ship_summary(1)
+    assert summary["in_port"] and summary["port"] == "Helsinki"
+    assert summary["stopped_since"] == 1000
+
+
+def _packed(month, day, hour, minute):
+    return month << 16 | day << 11 | hour << 6 | minute
+
+
+def test_decode_eta_takes_the_nearest_year():
+    now = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc).timestamp()
+    assert decode_eta(_packed(10, 20, 7, 45), now) == datetime(2026, 10, 20, 7, 45, tzinfo=timezone.utc).timestamp()
+    # Early January seen in late December belongs to next year, and the other way round.
+    dec = datetime(2026, 12, 30, tzinfo=timezone.utc).timestamp()
+    assert decode_eta(_packed(1, 2, 6, 0), dec) == datetime(2027, 1, 2, 6, 0, tzinfo=timezone.utc).timestamp()
+    jan = datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp()
+    assert decode_eta(_packed(12, 31, 22, 0), jan) == datetime(2026, 12, 31, 22, 0, tzinfo=timezone.utc).timestamp()
+    # "Not available" (month 0, day 0, hour 24, minute 60) and impossible dates.
+    assert decode_eta(_packed(0, 0, 24, 60), now) is None
+    assert decode_eta(0, now) is None
+    assert decode_eta(_packed(2, 30, 10, 0), now) is None
+    assert decode_eta(None, now) is None
+
+
+def test_metadata_eta_and_draught_reach_the_summary(tmp_path):
+    store, tracker = make(tmp_path)
+    soon = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(hours=5)
+    tracker.on_metadata(MMSI, {"name": "SILJA SERENADE", "destination": "SE STO", "draught": 71,
+                               "eta": _packed(soon.month, soon.day, soon.hour, soon.minute),
+                               "timestamp": int(time.time() * 1000)})
+    summary = tracker.ship_summary(MMSI)
+    assert summary["eta_ais"] == int(soon.timestamp())
+    assert summary["draught"] == 7.1
+    assert store.meta(MMSI)["eta_ts"] == int(soon.timestamp())
+    # A missing draught or ETA keeps the last one.
+    tracker.on_metadata(MMSI, {"draught": 0, "eta": _packed(0, 0, 24, 60), "timestamp": int(time.time() * 1000)})
+    assert tracker.ship_summary(MMSI)["draught"] == 7.1
+
+
+def test_old_eta_is_not_shown(tmp_path):
+    store, tracker = make(tmp_path)
+    tracker.ships[MMSI].meta["eta_ts"] = int(time.time()) - 3 * 3600
+    assert tracker.ship_summary(MMSI)["eta_ais"] is None
