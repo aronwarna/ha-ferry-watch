@@ -40,7 +40,7 @@ TIMEOUT = 120
 MAX_BYTES = 48 * 1024 * 1024
 KEEP = 8  # cells kept parsed in memory
 SIMPLIFY_M = 6  # outline points within this of the line between their neighbours are dropped
-FILE_REV = 1  # cell files written with an older revision are fetched again
+FILE_REV = 2  # cell files written with an older revision are fetched again (2: broken outlines closed)
 CREDIT = "© OpenStreetMap contributors (ODbL)"
 
 Fetch = Callable[[str], Awaitable[Any]]
@@ -177,6 +177,32 @@ def _join(ways: list[list]) -> list[list]:
     return join_ways(ways)
 
 
+def _close(chains: list[list]) -> list[list]:
+    """Rings from joined ways, mending broken outlines as OpenStreetMap sometimes has them
+    (a member way missing or ending a little short of the next, or a reserve drawn as an
+    open way): the open pieces are chained end to nearest end and the last one closed."""
+    rings = [list(c) for c in chains if len(c) >= 4 and c[0] == c[-1]]
+    open_ = [list(c) for c in chains if len(c) >= 2 and c[0] != c[-1]]
+    while open_:
+        cur = open_.pop(0)
+        while open_:
+            end = cur[-1]
+            best, k_best, flip = math.inf, -1, False
+            for k, w in enumerate(open_):
+                for f, p in ((False, w[0]), (True, w[-1])):
+                    d = (p[0] - end[0]) ** 2 + (p[1] - end[1]) ** 2
+                    if d < best:
+                        best, k_best, flip = d, k, f
+            # Nearer to closing on itself than to any other piece: this ring is done.
+            if (cur[0][0] - end[0]) ** 2 + (cur[0][1] - end[1]) ** 2 < best:
+                break
+            w = open_.pop(k_best)
+            cur += w[::-1] if flip else w
+        if len(cur) >= 3:
+            rings.append(cur + [cur[0]])
+    return rings
+
+
 def _ring_area_m2(ring: list[tuple[float, float]]) -> float:
     if len(ring) < 3:
         return 0.0
@@ -196,7 +222,7 @@ def parse_overpass(data: Any) -> list[dict[str, Any]]:
         kind = el.get("type")
         if kind == "way":
             g = [(p["lon"], p["lat"]) for p in el.get("geometry") or [] if p]
-            outer, inner = ([g] if len(g) >= 4 and g[0] == g[-1] else []), []
+            outer, inner = _close([g]), []
         elif kind == "relation":
             ways = {"outer": [], "inner": []}
             for m in el.get("members") or ():
@@ -205,11 +231,11 @@ def parse_overpass(data: Any) -> list[dict[str, Any]]:
                 pts = [(p["lon"], p["lat"]) for p in m["geometry"] if p]
                 ways["inner" if m.get("role") == "inner" else "outer"].append(pts)
             outer, inner = _join(ways["outer"]), _join(ways["inner"])
-            outer = [r for r in outer if r[0] == r[-1]]
-            inner = [r for r in inner if r[0] == r[-1]]
+            outer, inner = _close(outer), _close(inner)
         else:
             continue  # a reserve as a single node has no area to highlight
         if not outer:
+            _LOGGER.info("Nature reserve %s%s (%s) has no outline to fill", kind[0], el.get("id"), tags.get("name", "unnamed"))
             continue
         area = sum(_ring_area_m2(r) for r in outer) - sum(_ring_area_m2(r) for r in inner)
         rings = []

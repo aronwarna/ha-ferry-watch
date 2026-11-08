@@ -129,3 +129,22 @@ def test_panel_geometry():
     assert out["since"] == ["1994", "1989", "before 1950"]
     assert out["links"] == ["Find on luontoon.fi", "Wikidata", "OpenStreetMap"]
     assert out["privateLinks"] == ["OpenStreetMap"]
+
+
+def test_broken_outlines_are_closed():
+    # A relation whose outer ring is three ways, one of them ending short of the next (a gap),
+    # and a reserve drawn as an open way: both still get a ring to fill.
+    pt = lambda lat, lon: {"lat": lat, "lon": lon}  # noqa: E731
+    data = {"elements": [
+        {"type": "relation", "id": 7, "tags": {"leisure": "nature_reserve", "name": "Gap"}, "members": [
+            {"type": "way", "role": "outer", "geometry": [pt(60.0, 24.0), pt(60.0, 24.02)]},
+            {"type": "way", "role": "outer", "geometry": [pt(60.01, 24.02), pt(60.0, 24.0201)]},  # reversed, 10 m short
+            {"type": "way", "role": "outer", "geometry": [pt(60.01, 24.02), pt(60.01, 24.0), pt(60.0, 24.0)]}]},
+        {"type": "way", "id": 8, "tags": {"leisure": "nature_reserve"},
+         "geometry": [pt(60.1, 24.0), pt(60.1, 24.02), pt(60.11, 24.02), pt(60.11, 24.0)]},
+    ]}
+    got = {r["id"]: r for r in R.parse_overpass(data)}
+    assert set(got) == {"r7", "w8"}
+    for r in got.values():
+        assert len(r["rings"]) == 1 and r["rings"][0][0] == r["rings"][0][-1]
+        assert 1.0e6 < r["area_m2"] < 1.4e6  # about 1.1 x 1.1 km
