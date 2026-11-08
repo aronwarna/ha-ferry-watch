@@ -17,8 +17,9 @@ Data is fetched lazily in blocks (zoom-11 map tiles, about 10 km across) the
 first time part of the map is viewed, kept on the NAS for a month, and cut into
 small map tiles on request. Land is whatever isn't water: the panel paints the
 Finnish area in the land colour and draws the depth areas over it, so islands
-line up exactly with the depths around them. Zoomed out (zooms 8-9) tiles are cut
-from a coarse copy at the head of each block file on disk, and kept on disk too.
+line up exactly with the depths around them. Zoomed out, zoom-9 tiles are cut from a
+coarse copy at the head of each block file on disk, and further out tiles are made from
+their four children; all are kept on disk too.
 
 Which layers each service has is read from its capabilities once a day, so a layer
 a service doesn't have (or names differently) is left out instead of failing.
@@ -92,7 +93,11 @@ OSM_QUERIES = {
 BLOCK_Z = 11  # blocks are zoom-11 map tiles, about 10 km across
 BLOCK_MIN_Z = 10  # tiles from this zoom are cut from blocks' levels, below it from their overview levels
 MIN_Z = 5  # the lowest zoom the chart is drawn at
-OVERVIEW_MIN_Z = 8  # overview tiles from this zoom are cut from the blocks; below it see merge_tiles
+# Overview tiles from this zoom are cut from the blocks' overview levels; below it they're
+# made from their children (see merge_tiles). Zoom 8 was cut straight from 64 blocks too, and
+# showed whole blocks white or light blue in the Archipelago Sea where zoom 9, cut from the
+# same blocks, was right (ben, Nov 2026); made from zoom 9's tiles it is, and as calm as zoom 7.
+OVERVIEW_MIN_Z = 9
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
@@ -129,12 +134,12 @@ PART_WAIT = 2.0
 # being looked at, and on a small NAS those MB are better left to the rest of the system.
 IDLE_FORGET = 300
 # s an overview tile is shown as cut although blocks in it changed since: while blocks are
-# being fetched one after another, a zoom-8 tile isn't cut again from 64 blocks for each.
+# being fetched one after another, a zoom-9 tile isn't cut again from 16 blocks for each.
 OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 34  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 35  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -145,7 +150,7 @@ HALF = 20037508.342789244  # half the web-mercator world, in metres
 # units, smallest feature kept in block units). Zoomed-out tiles read only the first.
 LEVELS = ((11, 24, 64), (13, 8, 16), (99, 0, 0))
 # A coarser copy of what overview charts show, ahead of LEVELS in each file, from which the
-# zoom-8 and 9 tiles are cut (192 block units is about 60 m on the ground).
+# zoom-9 tiles are cut (192 block units is about 60 m on the ground).
 OVERVIEW_LEVEL = (9, 192, 512)
 # Land Survey data is digitised to a metre or so; simplifying the full detail by about half a
 # metre is invisible on the chart and halves the size of contours and roads.
@@ -389,7 +394,10 @@ XDEPTH_MIN_RING = 2.0  # tile units: foreign depth rings smaller than this aren'
 # shapes, not every shoal's ring (ben, Nov 2026: "no need to show exactly all of them"; in
 # the Archipelago Sea a zoom-8 tile had over 3000, nearly all of them such rings).
 CONTOUR_MIN = 16
-CONTOUR_MIN_AT = {9: 20, 8: 32}  # zoomed further out, bigger
+# Zoomed further out, bigger (8: when made from zoom 9's tiles). Zooms 10-12 leave out the
+# smallest rings too, unsmoothed (ben, Nov 2026: "make the zooms less messy"; the light blue
+# still shows each shoal under 10 m), and from zoom 13 every contour is drawn.
+CONTOUR_MIN_AT = {12: 10, 11: 14, 10: 24, 9: 20, 8: 32}
 HOLE_MIN = 1.5  # tile units: zoomed out, a hole in a depth area smaller than this (an islet) is filled
 LINE_MARGIN = UNITS * TILE_BUFFER // EXTENT  # block units lines are kept past a block's edge (see build_into)
 
@@ -2467,13 +2475,13 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
                         if z < EXTRA_CONTOUR_Z or d is None or d <= 0:
                             continue
                         target = rows.setdefault("contourx", [])
-                    if z < BLOCK_Z:
-                        # Zoomed out, only contours that make a shape: no rings round single
-                        # shoals (a piece reaching the block's margin is part of a longer one).
-                        if max(fx1 - fx0, fy1 - fy0) * k < CONTOUR_MIN_AT.get(z, CONTOUR_MIN) and fx0 > -LINE_MARGIN + 1 \
-                                and fy0 > -LINE_MARGIN + 1 and fx1 < UNITS + LINE_MARGIN - 1 and fy1 < UNITS + LINE_MARGIN - 1:
-                            continue
-                        smooth = True
+                    small = CONTOUR_MIN_AT.get(z, CONTOUR_MIN if z < BLOCK_Z else 0)
+                    # Zoomed out, only contours that make a shape: no rings round single
+                    # shoals (a piece reaching the block's margin is part of a longer one).
+                    if max(fx1 - fx0, fy1 - fy0) * k < small and fx0 > -LINE_MARGIN + 1 \
+                            and fy0 > -LINE_MARGIN + 1 and fx1 < UNITS + LINE_MARGIN - 1 and fy1 < UNITS + LINE_MARGIN - 1:
+                        continue
+                    smooth = z < BLOCK_Z
                 if key == "fline" and z < 11 and p[0] is None:
                     continue  # boat routes only once zoomed in
                 if key == "height" and z < 15 and not _multiple(_height_m(p[0]), HEIGHT_STEP.get(z, 20)):
@@ -2673,7 +2681,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
       public, industry, church or other
     - landmark: [x, y, kind, height, name] kind mast, chimney, wind, tower or church;
       height in metres or null
-    - cover (overview tiles, zooms 8-9): the share of the tile's blocks the overview has, 0..1;
+    - cover (overview tiles, zoom 9 and out): the share of the tile's blocks the overview has, 0..1;
       where it's under 1 the rest is not drawn yet
     """
     def vl(jnro: Any) -> int | None:
@@ -2792,7 +2800,7 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
             if lean is not None:
                 row.append(lean)  # a spar buoy's or buoy's lean, degrees clockwise from upright
             aids.append(row)
-        tile["aid"] = aids
+        tile["aid"] = thin_aids(aids, z, *xy) if xy is not None else aids
     if "light" in rows:
         # Light characters as printed next to the light, e.g. "Iso WRG 4s".
         # Zoomed out, only the characters of the major lights drawn (as overview charts do).
@@ -2813,6 +2821,60 @@ def _format(tile: dict, rows: dict[str, list], z: int, classes: dict[int, int],
         tile["heritage"] = _heritage_rows(rows["heritage"], tile.get("wreck", ()), z)
     if "name" in rows:
         tile["name"] = _names(rows["name"], tile, z, xy)
+
+
+# Zoomed out, the lit marks that crowd each other (buoys along a fairway, beacons round a
+# harbour: piles of flares, ben Nov 2026) are thinned to one in each cell of a grid fixed to
+# the map, so every tile thins them alike: the most important in the cell (the one nearest
+# its middle of those), none where a lighthouse or sector light is. A lone lit buoy out at
+# sea stays (what you look for, ben, Oct 2026), and from zoom 12 every lit mark shows.
+# Cells in tile units, a whole number of them across a tile. A tile has its blocks' points
+# out to BLOCK_POINT_MARGIN past its edges (64 units at zoom 10), so the cells along its edge are
+# whole in it, and the tiles either side of an edge judge the marks by it alike. Where there
+# is room for their neighbours too (zoom 11), a mark also gives way to a better one right
+# beside it in the next cell, or to a major light just over the cell's edge.
+AID_THIN = {10: 64, 11: 32}
+AID_RANK = {"d": 0, "b": 1, "a": 2, "l": 3, "t": 4, "u": 4, "r": 5, "k": 5, "o": 5, "p": 6, "v": 7}
+AID_DRAWN = 56  # tile units a mark's flare reaches from it at zooms 10-11 (46 chart px)
+
+
+def thin_aids(aids: list, z: int, x: int, y: int) -> list:
+    """An overview's aids rows (see _format) with crowding lit marks thinned (see AID_THIN)."""
+    cell = AID_THIN.get(z)
+    if not cell or len(aids) < 2:
+        return aids
+    reach = BLOCK_POINT_MARGIN * EXTENT / UNITS * 2 ** (z - BLOCK_Z)  # points past the tile's edge
+    neighbours = AID_DRAWN + 2 * cell <= reach
+    gx0, gy0 = x * EXTENT, y * EXTENT  # the tile's corner on the map, in tile units
+
+    def key_of(a: list) -> tuple[int, int]:
+        return math.floor((gx0 + a[0]) / cell), math.floor((gy0 + a[1]) / cell)
+
+    def rank(a: list) -> tuple:  # the same order in every tile
+        cx, cy = key_of(a)
+        mx, my = gx0 + a[0], gy0 + a[1]
+        return AID_RANK.get(a[2], 5), math.hypot(mx - (cx + 0.5) * cell, my - (cy + 0.5) * cell), mx, my
+
+    majors = [a for a in aids if a[2] in MAJOR_AIDS]
+    lit = {key_of(a) for a in majors}
+    best: dict[tuple[int, int], list] = {}
+    for a in aids:
+        if a[2] in MAJOR_AIDS:
+            continue
+        key = key_of(a)
+        if key in lit or (neighbours and any(math.hypot(a[0] - m[0], a[1] - m[1]) < cell for m in majors)):
+            continue
+        if key not in best or rank(a) < rank(best[key]):
+            best[key] = a
+    kept = set()
+    for (cx, cy), a in best.items():
+        r = rank(a)
+        if neighbours and any((b := best.get((cx + dx, cy + dy))) is not None and rank(b)[0] <= r[0]
+                              and rank(b) < r and math.hypot(b[0] - a[0], b[1] - a[1]) < 0.8 * cell
+                              for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy):
+            continue
+        kept.add(id(a))
+    return [a for a in aids if a[2] in MAJOR_AIDS or id(a) in kept]
 
 
 def _heritage_rows(rows: list, wrecks, z: int) -> list:
@@ -3285,12 +3347,12 @@ def finish_part(built: dict[str, Layer]) -> dict[str, Layer]:
     return built
 
 
-# --- overviews (zooms 8-9) ------------------------------------------------------------
+# --- overviews (zoom 9) ---------------------------------------------------------------
 # Overview tiles are cut from the overview level at the head of each block file on disk,
 # not from downloads of their own: a WFS query over a large area would bring every vertex
 # of the archipelago's depth areas only to throw nearly all of it away, where the blocks
-# already hold a simplified copy. A tile reads its blocks (16 at zoom 9, 64 at zoom 8) one
-# at a time and keeps nothing in RAM; a whole region's overview kept in memory would take
+# already hold a simplified copy. A tile reads its 16 blocks one at a time and keeps
+# nothing in RAM; a whole region's overview kept in memory would take
 # 100 MB and more in the archipelago. Cut tiles are kept on disk until a block in them
 # changes. So the overview shows the blocks that have been fetched (all of the Gulf of
 # Finland with "Keep chart on NAS"), and tiles say how much of them is there ("cover").
@@ -3317,15 +3379,17 @@ def overview_blocks(files: dict[tuple[int, int], list[Path]]) -> Iterator[tuple[
         yield key, layers
 
 
-# --- zoomed far out (zooms 5-7) --------------------------------------------------------
-# Tiles below OVERVIEW_MIN_Z are made from their four children (zoom 7 from four zoom-8
-# overview tiles, and so on), each halved and cut to its quarter: one child at a time, so a
+# --- zoomed far out (zooms 5-8) --------------------------------------------------------
+# Tiles below OVERVIEW_MIN_Z are made from their four children (zoom 8 from four zoom-9
+# overview tiles, zoom 7 from four zoom-8 ones, and so on), each halved and cut to its quarter: one child at a time, so a
 # zoom-5 tile over half of Finland never holds more than itself and one child, and it reads
 # no blocks. Further out fewer contours, smoother, and only the major lights and the seas'
 # names, as on small-scale charts. Made tiles are kept on disk (see VectorChart._overview_body).
-PYRAMID_Z = OVERVIEW_MIN_Z - 1  # the closest of them: coastal towns named too
-PYRAMID_CONTOURS = {7: (20, 50, 100, 200), 6: (50, 100, 200), 5: (50, 100, 200)}
-PYRAMID_AIDS = {7: ("m",)}  # aid types kept (from MAJOR_AIDS); none further out
+PYRAMID_TOWNS_Z = 7  # from this zoom coastal towns are named too; further out only the seas
+PYRAMID_CONTOURS = {8: (20, 50, 100, 200), 7: (20, 50, 100, 200), 6: (50, 100, 200), 5: (50, 100, 200)}
+# Aid types kept (from MAJOR_AIDS): the lighthouses at zooms 7-8 (ben, Nov 2026: zoom 8 had
+# too many sector lights, "the same level of detail as" zoom 7); none further out.
+PYRAMID_AIDS = {8: ("m",), 7: ("m",)}
 POINT_REACH = 32  # tile units a point (a label) is kept past the tile's edge
 
 
@@ -3399,7 +3463,7 @@ def merge_tiles(z: int, children: Iterable[tuple[int, int, dict]]) -> dict[str, 
                         continue
                     xs, ys = flat[0::2], flat[1::2]
                     # A small one wholly inside the child (not cut at its edge) is left out.
-                    if max(max(xs) - min(xs), max(ys) - min(ys)) / 2 < CONTOUR_MIN \
+                    if max(max(xs) - min(xs), max(ys) - min(ys)) / 2 < CONTOUR_MIN_AT.get(z, CONTOUR_MIN) \
                             and min(xs) > clo and min(ys) > clo and max(xs) < chi and max(ys) < chi:
                         continue
                     target += [[depth, f] for f in lines_of(flat, True)]
@@ -3409,7 +3473,7 @@ def merge_tiles(z: int, children: Iterable[tuple[int, int, dict]]) -> dict[str, 
                 for row in value:
                     if key == "aid" and row[2] not in aids:
                         continue
-                    if key == "name" and (row[2] not in BIG_WATERS if z < PYRAMID_Z else
+                    if key == "name" and (row[2] not in BIG_WATERS if z < PYRAMID_TOWNS_Z else
                                           row[2] not in BIG_WATERS and row[2] not in COASTAL_TOWNS):
                         continue
                     px, py = ox + row[0] / 2, oy + row[1] / 2
@@ -3803,7 +3867,7 @@ class VectorChart:
         """Make the zoomed-out tiles over these blocks again where blocks in them changed,
         closest first (the farther-out ones are made from those), so zooming out finds
         them made. Only tiles whose blocks changed are cut; the rest are a few file checks."""
-        for z in range(OVERVIEW_MIN_Z + 1, MIN_Z - 1, -1):
+        for z in range(BLOCK_MIN_Z - 1, MIN_Z - 1, -1):
             s = BLOCK_Z - z
             for x, y in sorted({(bx >> s, by >> s) for bx, by in blocks}):
                 await self._panel_quiet()
@@ -4524,7 +4588,7 @@ class VectorChart:
             if "api-key=" not in url:
                 url += ("&" if "?" in url else "?") + f"api-key={self.mml_key}"
 
-    # --- overview tiles (zooms 8-9) ---
+    # --- overview tiles (zoom 9; further out made from their children) ---
 
     async def _overview_tile(self, z: int, x: int, y: int,
                              wait: float | None) -> tuple[dict[str, Any], bool] | None:
