@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.1
+
+- Nature reserves whose outline in OpenStreetMap isn't closed (a missing piece or a gap
+  between two pieces, as with the one round Västerlandet off Porkkala) are now highlighted
+  too: the open pieces are joined end to nearest end and closed. Before, they showed only
+  as the chart's dashed border and couldn't be tapped. The reserves are downloaded again
+  once after the update. Any that still can't be filled are named in the log.
+
 ## 0.39.0
 
 - Drawn chart, zoom 8 (the middle overview zoom) is made the way zoom 7 is: from zoom 9's
