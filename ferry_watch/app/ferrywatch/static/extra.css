@@ -1016,3 +1016,5 @@ body.weather-open .sky-note, body.sky-open .sky-note { display: none; }
 .leaflet-tooltip.reserve-label::before { display: none; }
 .reserve-popup .reserve-desc { display: inline-block; margin: 2px 0; }
 .reserve-popup .reserve-links a { white-space: nowrap; }
+.leaflet-tooltip.reserve-label.closed { color: #b71c1c; font-style: normal; font-size: 11px; }
+.reserve-popup .closed-now { color: #c62828; }

@@ -65,6 +65,36 @@
     return m ? m[1] : text || "";
   }
 
+  // --- closed seasons ([{what, from: "MM-DD", to: "MM-DD"}], every year) -------------
+
+  const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const md = (date) => `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const dayText = (m) => `${Number(m.slice(3))} ${MONTH[Number(m.slice(0, 2)) - 1]}`;
+
+  // Whether a yearly range covers a day; a range can run over New Year (1 Nov–31 Jan).
+  function inSeason(season, date) {
+    const d = md(date);
+    return season.from <= season.to ? d >= season.from && d <= season.to : d >= season.from || d <= season.to;
+  }
+
+  // The season the area is closed in on that day, or null.
+  function closedOn(reserve, date) {
+    return (reserve.seasons || []).find((s) => inSeason(s, date)) || null;
+  }
+
+  function rangeText(s) {
+    return `${dayText(s.from)}–${dayText(s.to)}`;
+  }
+
+  function seasonText(s) {
+    return `${s.what} ${rangeText(s)}`;
+  }
+
+  // "No landing till 31 Jul": what the map says over an area closed now.
+  function closedLabel(s) {
+    return `${s.what} till ${dayText(s.to)}`;
+  }
+
   // The links on a reserve's card, as [label, href].
   function links(r) {
     const out = [];
@@ -86,6 +116,8 @@
   const COLOR = "#2f7d3d";
   const ALL_STYLE = { color: COLOR, weight: 1.5, opacity: 0.75, fillColor: "#3f9a4f", fillOpacity: 0.14, dashArray: null };
   const PICKED_STYLE = { color: "#1f6b2e", weight: 3, opacity: 0.95, fillColor: "#3f9a4f", fillOpacity: 0.3, dashArray: null };
+  const CLOSED_STYLE = { color: "#c62828", weight: 2, opacity: 0.9, fillColor: "#e53935", fillOpacity: 0.12, dashArray: "6 4" };
+  const CLOSED_PICKED_STYLE = { ...CLOSED_STYLE, weight: 3, fillOpacity: 0.25, dashArray: null };
   const ALL_MIN_ZOOM = 10;
   const LABEL_MIN_PX = 70; // reserves narrower than this on screen aren't named
   const MAX_LABELS = 40;
@@ -103,7 +135,7 @@
     const labels = L.layerGroup().addTo(map);
     const known = new Map(); // id -> reserve
     let all = store.get("fw-reserves-all") === "1";
-    let box = null, busy = false, timer = 0, note = "", inView = 0;
+    let box = null, busy = false, timer = 0, note = "", inView = 0, closedCount = 0;
     let picked = null, pickedLayer = null, popup = null, pickedBefore = null;
 
     // A tap on a ship's track or an area's outline (a path that let the click go on to
@@ -166,8 +198,27 @@
       labels.clearLayers();
       const view = map.getBounds();
       const showAll = all && map.getZoom() >= ALL_MIN_ZOOM;
-      const before = inView;
+      const before = inView, beforeClosed = closedCount;
       inView = 0;
+      closedCount = 0;
+      const today = new Date();
+      // Areas closed today: shown whenever reserves are (red dashes and what's forbidden till
+      // when), not only with the highlight switch on.
+      if (wanted()) {
+        for (const r of known.values()) {
+          const s = closedOn(r, today);
+          if (!s || !view.intersects(bounds(r))) continue;
+          closedCount++;
+          if (r.id === picked?.id) continue;
+          L.polygon(r.rings, { ...CLOSED_STYLE, renderer, interactive: false }).addTo(group);
+          const b = bounds(r);
+          const px = map.latLngToContainerPoint(b.getNorthEast()).x - map.latLngToContainerPoint(b.getSouthWest()).x;
+          if (px >= 24) {
+            L.tooltip({ permanent: true, direction: "center", className: "reserve-label closed", interactive: false, pane: "reserves" })
+              .setLatLng(labelPoint(r)).setContent(esc(closedLabel(s))).addTo(labels);
+          }
+        }
+      }
       if (showAll) {
         const shown = [...known.values()].filter((r) => view.intersects(bounds(r)));
         inView = shown.length;
@@ -175,7 +226,7 @@
         // The biggest first, so a small reserve's fill lies over a park's.
         shown.sort((a, b) => b.area_m2 - a.area_m2);
         for (const r of shown) {
-          if (r.id === picked?.id) continue;
+          if (r.id === picked?.id || closedOn(r, today)) continue;
           L.polygon(r.rings, { ...ALL_STYLE, renderer, interactive: false }).addTo(group);
           const b = bounds(r);
           const px = map.latLngToContainerPoint(b.getNorthEast()).x - map.latLngToContainerPoint(b.getSouthWest()).x;
@@ -187,8 +238,19 @@
         }
       }
       pickedLayer = null;
-      if (picked) pickedLayer = L.polygon(picked.rings, { ...PICKED_STYLE, renderer, interactive: false }).addTo(group);
-      if (before !== inView) onChange();
+      if (picked) {
+        pickedLayer = L.polygon(picked.rings, { ...(closedOn(picked, today) ? CLOSED_PICKED_STYLE : PICKED_STYLE), renderer, interactive: false }).addTo(group);
+      }
+      if (before !== inView || beforeClosed !== closedCount) onChange();
+    }
+
+    // "Closed now: no landing till 31 Jul (1 Apr–31 Jul every year)", or the seasons it's
+    // closed in when it's open now.
+    function seasonLines(r) {
+      const now = closedOn(r, new Date());
+      return (r.seasons || []).map((s) => (s === now
+        ? `<strong class="closed-now">Closed now: ${esc(closedLabel(s).replace(/^No/, "no"))}</strong> <span class="muted">(${esc(rangeText(s))} every year)</span>`
+        : `<span class="warn-text">${esc(seasonText(s))} every year</span> <span class="muted">· open now</span>`));
     }
 
     function card(r, others) {
@@ -199,9 +261,11 @@
         esc(facts.join(" · ")),
         r.iucn && r.iucn !== r.kind && `<span class="muted">IUCN: ${esc(r.iucn)}</span>`,
         r.operator && `<span class="muted">Managed by ${esc(r.operator)}</span>`,
+        ...seasonLines(r),
         ...(r.access || []).map((a) => `<span class="warn-text">${esc(a)}</span>`),
         r.description && `<span class="reserve-desc">${esc(r.description)}</span>`,
         r.ref && `<span class="muted">Register id ${esc(r.ref)}</span>`,
+        r.source === "syke" && `<span class="muted">From SYKE's register of movement restriction areas (Metsähallitus)</span>`,
         `<span class="reserve-links">${links(r).map(([t, h]) => `<a href="${esc(h)}" target="_blank" rel="noopener">${esc(t)}</a>`).join(" · ")}`
           + ` · <a href="#" data-reserve-fit="${esc(r.id)}">Show all of it</a></span>`,
         others.length && `<span class="muted">Also here:</span> ${others.map((o) =>
@@ -280,9 +344,10 @@
       get all() { return all; },
       get note() { return note; },
       get count() { return inView; },
+      get closed() { return closedCount; },
       minZoom: ALL_MIN_ZOOM,
     };
   }
 
-  return { contains, at, labelPoint, areaText, sinceText, links, create };
+  return { contains, at, labelPoint, areaText, sinceText, links, inSeason, closedOn, seasonText, closedLabel, create };
 });

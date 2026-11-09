@@ -3218,8 +3218,8 @@
       switchRow({
         compact: true,
         title: "Highlight nature reserves", color: "#3f9a4f", checked: Boolean(reserves?.all),
-        count: reserves?.all && reserves.count ? `${reserves.count} in view` : "",
-        note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. From OpenStreetMap.",
+        count: [reserves?.all && reserves.count ? `${reserves.count} in view` : "", reserves?.closed ? `${reserves.closed} closed now` : ""].filter(Boolean).join(" · "),
+        note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. Bird and seal sanctuaries closed today (no landing or no access) are shown in red dashes with the date they open (on the drawn chart from zoom 11 even with this off). From OpenStreetMap and SYKE's register of movement restriction areas.",
         onChange: async (on) => { reserves?.setAll(on); renderLayers(); },
       }),
       groupHead("On the satellite view"),
@@ -3252,6 +3252,7 @@
       [icon(`<g style="color:${HARBOUR_RED}">${boat}</g>`), "Harbour on the chart"],
       [icon(`<rect x="7" y="0.5" width="14" height="17" rx="4" fill="#1d4ed8"/><g style="color:#fff" transform="translate(0.3 0.2) scale(1)">${boat}</g>`), "Harbour on the map and satellite views"],
       [icon('<path d="M3 4h22v10H3z" stroke="#2f7d3d" stroke-width="2" fill="#3f9a4f" fill-opacity="0.25"/>'), "Nature reserve, highlighted (tap one on the drawn chart for its card)"],
+      [icon('<path d="M3 4h22v10H3z" stroke="#c62828" stroke-width="2" stroke-dasharray="5 3" fill="#e53935" fill-opacity="0.15"/>'), "Closed now: a bird or seal sanctuary's no-landing or no-access season"],
       [icon('<circle cx="14" cy="9" r="7" fill="#fff" stroke="#dc2626" stroke-width="2.5"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="800" fill="#dc2626">!</text>'), "Faulty light or buoy"],
     ];
     const list = document.createElement("ul");

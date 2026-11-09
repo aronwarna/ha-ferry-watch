@@ -1,6 +1,7 @@
 """Nature reserves from OpenStreetMap (reserves.py) and the panel's maths (static/reserves.js)."""
 
 import asyncio
+import time
 import json
 import shutil
 import subprocess
@@ -21,11 +22,12 @@ def answer():
 
 def test_parse_kinds_links_and_rings():
     got = {r["id"]: r for r in R.parse_overpass(answer())}
-    assert set(got) == {"w990001", "r990002", "r990003"}
+    assert set(got) == {"w990001", "r990002", "r990003", "w990004"}
     islets = got["w990001"]
     assert islets["kind"] == "Private nature reserve"
     assert islets["other_names"] == ["Rönnbåda skär"]
-    assert islets["access"] == ["No access Apr 01–Aug 15"]
+    assert islets["access"] == []  # the dated rule is a season now
+    assert islets["seasons"] == [{"what": "No access", "from": "04-01", "to": "08-15"}]
     assert islets["ref"] == "YSA201234" and islets["since"] == "1994-05-12"
     park = got["r990002"]
     assert park["kind"] == "National park" and park["operator"] == "Metsähallitus"
@@ -46,7 +48,8 @@ def test_bad_links_dropped_and_access_rules():
                  "access": "no", "boat:conditional": "no @ (May 01-Jul 31)", "landing": "no"}}]}
     (r,) = R.parse_overpass(data)
     assert r["website"] is None and r["wikidata"] is None and r["name"] is None
-    assert r["access"] == ["No access", "Boats: no access May 01–Jul 31", "Landing: no"]
+    assert r["access"] == ["No access", "Landing: no"]
+    assert r["seasons"] == [{"what": "No access by boat", "from": "05-01", "to": "07-31"}]
     assert r["kind"] == "Nature reserve"
 
 
@@ -113,6 +116,9 @@ console.log(JSON.stringify({
   areas: [R.areaText(500), R.areaText(52000), R.areaText(3.4e6), R.areaText(123e6)],
   since: [R.sinceText("1994-05-12"), R.sinceText("1989"), R.sinceText("before 1950")],
   links: R.links({ id: "r9", name: "Tammisaari", kind: "National park", wikidata: "Q1" }).map((l) => l[0]),
+  closed: [R.inSeason({ from: "04-01", to: "07-31" }, new Date(2026, 5, 1)), R.inSeason({ from: "04-01", to: "07-31" }, new Date(2026, 10, 9)),
+           R.inSeason({ from: "11-01", to: "01-31" }, new Date(2027, 0, 15)), R.inSeason({ from: "11-01", to: "01-31" }, new Date(2026, 9, 31))],
+  label: R.closedLabel({ what: "No landing", from: "04-01", to: "07-31" }),
   privateLinks: R.links({ id: "w9", name: "Luoto", kind: "Private nature reserve" }).map((l) => l[0]),
 }));
 """
@@ -129,6 +135,8 @@ def test_panel_geometry():
     assert out["since"] == ["1994", "1989", "before 1950"]
     assert out["links"] == ["Find on luontoon.fi", "Wikidata", "OpenStreetMap"]
     assert out["privateLinks"] == ["OpenStreetMap"]
+    assert out["closed"] == [True, False, True, False]
+    assert out["label"] == "No landing till 31 Jul"
 
 
 def test_broken_outlines_are_closed():
@@ -148,3 +156,57 @@ def test_broken_outlines_are_closed():
     for r in got.values():
         assert len(r["rings"]) == 1 and r["rings"][0][0] == r["rings"][0][-1]
         assert 1.0e6 < r["area_m2"] < 1.4e6  # about 1.1 x 1.1 km
+
+
+@pytest.mark.parametrize("text,want", [
+    ("Maihinnousukielto 1.4.–31.7.", [("04-01", "07-31")]),
+    ("Apr 01-Aug 15", [("04-01", "08-15")]),
+    ("1 April – 15 August", [("04-01", "08-15")]),
+    ("--04-01/--08-15", [("04-01", "08-15")]),
+    ("Landstigningsförbud 15.4-31.7", [("04-15", "07-31")]),
+    ("Founded 1994, 12 ha", []),
+])
+def test_date_ranges(text, want):
+    assert R.date_ranges(text) == want
+
+
+def test_sanctuary_and_register_seasons():
+    got = {r["id"]: r for r in R.parse_overpass(answer())}
+    seal = got["w990004"]
+    assert seal["kind"] == "Seal sanctuary" and seal["name"] == "Kalvbådan hylkeidensuojelualue"
+    assert seal["seasons"] == [{"what": "No access", "from": "10-15", "to": "12-31"}]
+    from ferrywatch.simsea import fake_syke_features
+    a, b = R.parse_restrictions(fake_syke_features(), "x")
+    assert a["name"] == "Långörin lintuluoto" and a["source"] == "syke"
+    assert a["seasons"] == [{"what": "No landing", "from": "04-01", "to": "07-31"}]
+    assert b["seasons"] == [{"what": "No access", "from": "09-01", "to": "11-30"}]
+
+
+def test_register_layer_found_and_merged(tmp_path):
+    from ferrywatch.simsea import fake_syke_wfs
+
+    async def run():
+        res = R.Reserves(tmp_path, None, fake_reserves_fetch, fake_syke_wfs)
+        res.in_view(59.96, 23.96, 60.0, 24.2)
+        await res._task
+        out = res.in_view(59.96, 23.96, 60.0, 24.2)
+        assert out["register"] == "metsahallitus:liikkumisrajoitusalueet"
+        assert any(r["source"] == "syke" for r in out["reserves"]) and "SYKE" in out["credit"]
+
+    asyncio.run(run())
+
+
+def test_register_failure_keeps_osm_and_retries_sooner(tmp_path):
+    async def broken(params):
+        raise ValueError("HTTP 503: down")
+
+    async def run():
+        res = R.Reserves(tmp_path, None, fake_reserves_fetch, broken)
+        res.in_view(59.96, 23.96, 60.0, 24.2)
+        await res._task
+        out = res.in_view(59.96, 23.96, 60.0, 24.2)
+        assert out["reserves"] and out["register"] is None and out["register_error"] == "HTTP 503: down"
+        updated, _ = R.Reserves(tmp_path, None, fake_reserves_fetch, broken)._read(R.cell_of(59.97, 24.0))
+        assert updated < time.time() - R.REFRESH + 7 * 3600  # stale in about six hours
+
+    asyncio.run(run())
