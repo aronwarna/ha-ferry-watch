@@ -1905,3 +1905,36 @@ def test_crowded_lit_marks_thinned_zoomed_out():
         near_edge = lambda rows, dx: {(a[0] + dx, a[1]) for a in rows if 512 - 60 <= a[0] + dx <= 512 + 60}
         assert near_edge(thin, 0) == near_edge(right, 512)
     assert vchart.thin_aids(aids, 12, 4000, 2000) == aids  # closer in, every one
+
+
+def test_water_of_leaves_out_drying_areas_inner_foreign_bands_and_lakes():
+    def sq(a, b):
+        return [a, a, b, a, b, b, a, b]
+    tile = {"e": 512, "depth": [[4, sq(0, 100)], [0, sq(10, 20)], [5, sq(30, 40)]],
+            "xdepth": [[1, sq(200, 400)], [2, sq(250, 350)], [4, sq(300, 320)]],
+            "lake": [[sq(450, 460)]]}
+    w = vchart.water_of(tile, *tile_at(59.5, 21.0, 12))  # open sea: no Natural Earth lakes near
+    assert w["e"] == 512
+    assert w["water"] == [[sq(0, 100)], [sq(30, 40)], [sq(200, 400)]]
+    assert w["lake"] == [[sq(450, 460)]]
+    # Lohjanjärvi, a big lake near the coast, is taken out even where the chart has no lake of its own.
+    lohja = vchart.water_of({}, *tile_at(60.23, 23.9, 9))
+    assert lohja["water"] == [] and lohja["lake"]
+
+
+def test_water_tiles_for_the_sea_layers(tmp_path):
+    chart = VectorChart(tmp_path, None, fake_chart_layer)
+    coords = tile_at(60.005, 24.4, 12)
+
+    async def run():
+        whole, ok = await chart.tile(*coords)
+        body, ok2 = await chart.water_gz(*coords)
+        again, _ = await chart.water_gz(*coords)
+        return whole, ok, body, ok2, again
+
+    whole, ok, body, ok2, again = asyncio.run(run())
+    water = json.loads(gzip.decompress(body))
+    assert ok and ok2 and again == body and len(chart._water) == 1
+    wet = [rings for band, *rings in whole["depth"] if band >= 1]
+    assert wet and water["water"][:len(wet)] == wet
+    assert len(body) < len(gzip.compress(json.dumps(whole).encode()))

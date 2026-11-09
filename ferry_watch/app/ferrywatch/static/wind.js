@@ -225,6 +225,15 @@
         this._canvas.remove();
         this._canvas = this._ctx = null;
       },
+      // Lines only where mask.isWater(x, y) (container px; see fields.js waterMask), for the
+      // swell. Once set, none while the mask is for another view (the map just moved) or not
+      // there yet (undefined); null: everywhere.
+      setMask(mask) {
+        this._masked = true;
+        if (mask === this._mask) return; // the same picture's (a new hour): the lines carry on
+        this._mask = mask;
+        if (this._map && this._w) this._field(); // lines ashore start again on the water (see step)
+      },
       setGrid(g, alpha, mono = null) {
         this._grid = g;
         this._mono = mono;
@@ -263,9 +272,12 @@
         const fx = new Float32Array(cols * rows).fill(NaN), fy = new Float32Array(cols * rows).fill(NaN);
         const fs = new Uint8Array(cols * rows);
         const live = [];
-        if (g && map.getZoom() >= MIN_LINES_ZOOM) {
+        const mask = this._masked ? (this._mask && this._mask.matches(map) ? this._mask : this._mask === null ? null : false) : null;
+        this._water = mask;
+        if (g && mask !== false && map.getZoom() >= MIN_LINES_ZOOM) {
           for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
+              if (mask && !mask.isWater(c * CELL, r * CELL)) continue;
               const ll = map.containerPointToLatLng([c * CELL, r * CELL]);
               const w = sample(g, ll.lat, ll.lng);
               if (!w) continue;
@@ -344,6 +356,7 @@
           xs[h + 1] = xs[h] + w[0] * by;
           ys[h + 1] = ys[h] + w[1] * by;
           this._colour[i] = w[2];
+          if (this._water && !this._water.isWater(xs[h + 1], ys[h + 1])) this._spawn(i, false); // ashore
         }
       },
       // The lines by colour, the older half of each trail fainter: one path per colour and half.
