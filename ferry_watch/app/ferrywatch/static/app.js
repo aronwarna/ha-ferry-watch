@@ -110,12 +110,47 @@
     attribution: "Aerial photos © Maanmittauslaitos (via Kapsi), Maa-amet",
   });
 
+  // Esri's imagery stops at different zooms in different places (often 17 or 18 here);
+  // past that it sends grey "Map data not yet available" tiles. So the deepest zoom it
+  // really has around the view is asked from its tile map, and closer in the last real
+  // picture is enlarged instead.
+  const ESRI_SAFE_Z = 17;
+  const esriImagery = L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 19, maxNativeZoom: ESRI_SAFE_Z, referrerPolicy: REFERRER, zIndex: 1,
+    attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+  });
+  const esriHas = new Map(); // "z/x/y" -> Promise<boolean>
+  function esriTileExists(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    if (!esriHas.has(key)) {
+      esriHas.set(key, fetch(`${ESRI}/World_Imagery/MapServer/tilemap/${z}/${y}/${x}/1/1?f=json`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => Array.isArray(j?.data) && j.data[0] === 1)
+        .catch(() => false));
+      if (esriHas.size > 500) esriHas.delete(esriHas.keys().next().value);
+    }
+    return esriHas.get(key);
+  }
+  async function fitEsriZoom() {
+    if (activeLayer !== layers.satellite || map.getZoom() < 15) return;
+    const c = map.getCenter();
+    let best = ESRI_SAFE_Z;
+    for (const z of [19, 18]) {
+      const p = map.project(c, z).divideBy(256).floor();
+      if (await esriTileExists(z, p.x, p.y)) { best = z; break; }
+    }
+    if (best === esriImagery.options.maxNativeZoom) return;
+    esriImagery.options.maxNativeZoom = best;
+    if (layers.satellite.hasLayer(esriImagery)) {  // re-add so Leaflet picks the new zoom
+      layers.satellite.removeLayer(esriImagery);
+      layers.satellite.addLayer(esriImagery);
+    }
+  }
+
   const layers = {
     map: streets(),
     satellite: L.layerGroup([
-      L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
-        maxZoom: 19, referrerPolicy: REFERRER, zIndex: 1, attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-      }),
+      esriImagery,
       L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
         maxZoom: 19, referrerPolicy: REFERRER, zIndex: 3,
       }),
@@ -247,6 +282,7 @@
       b.setAttribute("aria-pressed", String(b.dataset.layer === name));
     });
     store.set("fw-layer", name);
+    fitEsriZoom();
     renderChartStyle();
     restyleHarbours();
   }
@@ -254,6 +290,7 @@
   document.querySelectorAll("[data-layer]").forEach((b) => {
     b.addEventListener("click", () => setLayer(b.dataset.layer));
   });
+  map.on("moveend", fitEsriZoom);
   document.querySelectorAll("#chart-style [data-style]").forEach((b) => {
     b.addEventListener("click", () => setChartStyle(b.dataset.style));
   });

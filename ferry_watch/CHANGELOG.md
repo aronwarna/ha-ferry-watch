@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.39.2
+
+- Satellite view: zooming all the way in no longer turns the picture into grey "Map data
+  not yet available" squares. Esri's imagery ends at zoom 17 or 18 in many places here;
+  the view now asks Esri how deep its pictures go where you are and enlarges the last
+  real one beyond that.
+
 ## 0.39.1
 
 - Nature reserves whose outline in OpenStreetMap isn't closed (a missing piece or a gap
