@@ -34,6 +34,7 @@ from . import aurora, dayscore, forecast, lightning, lightpollution, marine, rad
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
+from .portcalls import PortTimes
 from .satellite import Satellite
 from .predict import Predictor
 from .stations import Stations
@@ -87,6 +88,7 @@ class FerryWatch:
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
         self.other_photos: PhotoCache | None = None
+        self.ports: PortTimes | None = None
         self.web = Web(self)
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
@@ -181,6 +183,23 @@ class FerryWatch:
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
         self.autoroute = AutoRouter(self.vchart)
+        fake_ports = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simports import fake_port_calls as fake_ports
+            from .simports import seed_visits
+            if os.environ.get("FW_SIM_HISTORY") == "1":
+                seed_visits(self.store.db)
+        self.ports = PortTimes(self.session, self.store.db, DATA_DIR / "portcalls.json.gz", fake_ports)
+        if not self.store.kv_get("port_visits_filled"):
+            # Port visits from the tracks kept from before 0.41.0, once, before any new
+            # position comes in.
+            ships = [s["mmsi"] for s in self.store.ships()] + list(self.fleets.members)
+            since = int(time.time()) - self.options.retention_days * 86400
+            added = await asyncio.to_thread(self.ports.visits.backfill, self.store, ships, since)
+            _LOGGER.info("Found %s earlier port visits in the stored tracks", added)
+            self.store.kv_set("port_visits_filled", True)
+        self.tracker.subscribe(self._port_event)
+        self.fleet_tracker.subscribe(self._port_event)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
         self.tracker.subscribe(self.predictor.on_event)  # before the panel, which shows its result
@@ -231,6 +250,7 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
         self.tasks.append(asyncio.create_task(self._overlay_pruning()))
+        self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
         self.tasks.append(asyncio.create_task(self.outlook.run()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
@@ -471,6 +491,7 @@ class FerryWatch:
                 if removed:
                     _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
+            self.ports.visits.prune()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.satellite.cache.prune)
             await asyncio.to_thread(self.overlays.prune)
@@ -518,6 +539,7 @@ class FerryWatch:
             "now": time.time(),
             "ships": ships,
             "feed": feed,
+            "port_calls": self.ports.status(),
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
@@ -602,6 +624,16 @@ class FerryWatch:
             "color": self.fleets.color(info.get("fleet")),
             "photo": self.photos.public_info(mmsi) if self.photos else None,
         }
+
+    def _port_event(self, kind: str, payload: dict[str, Any]) -> None:
+        p = payload.get("position") if kind == "position" else None
+        if p:
+            self.ports.visits.see(payload["mmsi"], p["ts"], p["lat"], p["lon"], p.get("sog"))
+
+    def port_times(self, mmsi: int) -> dict[str, Any]:
+        tracker = self.tracker_for(mmsi)
+        ship = tracker.ship_summary(mmsi) if tracker else {}
+        return self.ports.summary(mmsi, ship)
 
     def tracker_for(self, mmsi: int) -> Tracker | None:
         for tracker in (self.tracker, self.fleet_tracker):

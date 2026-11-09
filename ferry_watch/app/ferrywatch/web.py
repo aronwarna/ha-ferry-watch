@@ -198,6 +198,7 @@ class Web:
         r.add_get("/api/faults", self.faults)
         r.add_get("/api/outlook", self.outlook)
         r.add_get("/api/traffic", self.traffic)
+        r.add_get("/api/ports/{mmsi}", self.port_times)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/foreign", self.set_vchart_foreign)
         r.add_post("/api/vchart/key", self.set_mml_key)
@@ -634,6 +635,13 @@ class Web:
     async def outlook(self, request: web.Request) -> web.Response:
         ships = {s["mmsi"]: s for s in self.fw.store.ships()}
         return web.json_response(await self.fw.outlook.payload(ships))
+
+    async def port_times(self, request: web.Request) -> web.Response:
+        try:
+            mmsi = int(request.match_info["mmsi"])
+        except ValueError:
+            raise web.HTTPBadRequest(text="mmsi must be a number")
+        return web.json_response(self.fw.port_times(mmsi))
 
     async def traffic(self, request: web.Request) -> web.Response:
         if "s" in request.query:  # a wide view: every ship inside the box

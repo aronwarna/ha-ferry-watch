@@ -860,10 +860,7 @@
     if (!focused) return;
     const entry = ships.get(focused.mmsi);
     const pts = focused.points.map((p) => [p[0], p[1]]);
-    const near = data.points.filter((q) => Math.abs(q[2] - p.ts) <= REPLAY_FOCUS).map((q) => [q[0], q[1]]);
-    if (near.length > 1) {
-      map.fitBounds(L.latLngBounds(near), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
-    } else if (pts.length > 1) {
+    if (pts.length > 1) {
       map.fitBounds(L.latLngBounds(pts), { ...cardPadding(), maxZoom: 13 });
     } else if (entry?.info.position) {
       map.setView([entry.info.position.lat, entry.info.position.lon], 12);
@@ -1021,6 +1018,7 @@
     $("card-play").hidden = (focused.points || []).length < 2;
     $("peek-play").hidden = (focused.points || []).length < 2;
     renderCardStats(info);
+    renderPortTimes(info);
     renderPeek(info);
 
     const photo = info.photo;
@@ -1038,6 +1036,74 @@
       $("card-img").removeAttribute("src");
       box.classList.add("empty");
     }
+  }
+
+  // --- port times: when the ship left, is due and leaves (Portnet, AIS, its own history) ---
+  const portTimes = new Map(); // mmsi -> {data, at, key}
+  const PORT_SRC = { portnet: "port", usual: "usual", ais_eta: "AIS", ais: "" };
+  const PORT_SRC_TITLE = {
+    portnet: "Announced by the ship's agent to the Finnish port (Portnet, via Digitraffic)",
+    usual: "From this ship's usual crossing time and stay, out of its earlier trips",
+    ais_eta: "The crew's own ETA, sent over AIS",
+  };
+
+  function loadPortTimes(mmsi, key) {
+    const have = portTimes.get(mmsi);
+    if (have?.loading || (have && have.key === key && Date.now() - have.at < 60000)) return have?.data;
+    portTimes.set(mmsi, { ...have, loading: true });
+    fetch(`api/ports/${mmsi}`).then((r) => (r.ok ? r.json() : null))
+      .then((data) => { portTimes.set(mmsi, { data, at: Date.now(), key }); if (focused?.mmsi === mmsi) renderCard(); })
+      .catch(() => portTimes.set(mmsi, { ...have, loading: false, at: Date.now(), key }));
+    return have?.data;
+  }
+
+  function portClock(t, verb) {
+    const el = document.createElement("span");
+    el.className = "port-time";
+    const d = new Date(t.ts * 1000);
+    const sameDay = d.toDateString() === new Date(now() * 1000).toDateString();
+    const day = sameDay ? "" : `${DAY_NAMES[(d.getDay() + 6) % 7]} `;
+    el.textContent = `${verb} ${t.actual ? "" : "≈"}${day}${clock(t.ts)}`;
+    if (!t.actual) el.classList.add("expected");
+    el.title = t.actual ? (t.src === "portnet" ? "Reported to the port" : "Seen from its AIS positions") : PORT_SRC_TITLE[t.src] || "";
+    return el;
+  }
+
+  // One port: "Mariehamn | due ≈23:53 · leaves ≈00:08 port" (the tag says where expected times come from).
+  function portRowCells(r, t = now()) {
+    const name = document.createElement("span");
+    name.className = "port-name";
+    name.textContent = r.port;
+    const times = document.createElement("span");
+    times.className = "port-times";
+    const parts = [];
+    // A port it has already left: only when it left (the arrival is old news).
+    if (r.arrive && !(r.arrive.actual && r.leave?.actual)) parts.push(portClock(r.arrive, r.arrive.actual ? "arrived" : "due"));
+    if (r.leave) parts.push(portClock(r.leave, r.leave.actual ? "left" : "leaves"));
+    parts.forEach((el, i) => { if (i) times.append(" · "); times.append(el); });
+    if (!parts.length) times.append("next port, no time yet");
+    const src = [r.arrive, r.leave].find((x) => x && !x.actual && PORT_SRC[x.src])?.src;
+    const extra = [src && PORT_SRC[src], r.berth && r.berth.toLowerCase() !== r.port.toLowerCase() ? titleCase(r.berth) : ""].filter(Boolean);
+    if (extra.length) {
+      const tag = document.createElement("small");
+      tag.textContent = ` ${extra.join(" · ")}`;
+      if (src) tag.title = PORT_SRC_TITLE[src];
+      times.append(tag);
+    }
+    if (r.usual_trip && !r.arrive?.actual) times.title = `Usual crossing ${duration(r.usual_trip)}`;
+    return [name, times];
+  }
+
+  function renderPortTimes(info) {
+    const box = $("card-ports");
+    const data = loadPortTimes(info.mmsi, `${info.in_port}|${info.voyage_start}`);
+    const rows = data?.rows || [];
+    box.hidden = !rows.length;
+    if (!rows.length) { box.replaceChildren(); return; }
+    const head = document.createElement("div");
+    head.className = "port-head small muted";
+    head.textContent = "Port times";
+    box.replaceChildren(head, ...rows.flatMap((r) => portRowCells(r)));
   }
 
   // Inner-route numbers for one of my ships, from the same data as the Stats tab.
@@ -2295,7 +2361,11 @@
     $("strip").hidden = true;
 
     const panel = $("replay").getBoundingClientRect();
-    if (pts.length > 1) {
+    // The whole trip is drawn, but the map fits the hour either side of the passage.
+    const near = data.points.filter((q) => Math.abs(q[2] - p.ts) <= REPLAY_FOCUS).map((q) => [q[0], q[1]]);
+    if (near.length > 1) {
+      map.fitBounds(L.latLngBounds(near), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
+    } else if (pts.length > 1) {
       map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
     } else if (pts.length) {
       map.setView(pts[0], 11);
@@ -3439,6 +3509,9 @@
       rows.push(["Ship positions (Digitraffic)", feed.connected && !quiet ? "ok" : "bad",
         feed.connected ? (quiet ? `Connected, but nothing since ${fmtWhen(feed.last_message_ts)}` : ok(feed.last_message_ts)) : "Not connected; it keeps trying"]);
     }
+    const pc = st.port_calls || {};
+    rows.push(["Port calls (Digitraffic)", pc.error ? "bad" : pc.fetched ? "ok" : "off",
+      pc.error ? `Failing: ${pc.error}` : pc.fetched ? `${ok(pc.fetched)} · ${pc.calls} calls` : "Waiting for the first fetch"]);
     rows.push(["Home Assistant", st.ha_connected ? "ok" : "bad", st.ha_connected ? "Connected" : "Not connected: no alerts or phone position"]);
     const w = st.weather || {};
     rows.push(["Sea conditions (FMI)", w.enabled === false ? "off" : w.error ? "bad" : "ok",
@@ -3838,6 +3911,18 @@
     for (const text of lines.filter(Boolean)) {
       el.append(document.createElement("br"), text);
     }
+    // Its announced calls at Finnish ports (Portnet), when it has any.
+    const ports = document.createElement("div");
+    ports.className = "card-ports popup-ports";
+    ports.hidden = true;
+    el.append(ports);
+    fetch(`api/ports/${mmsi}`).then((r) => (r.ok ? r.json() : null)).then((data) => {
+      const rows = data?.rows || [];
+      if (!rows.length) return;
+      ports.replaceChildren(...rows.flatMap((r) => portRowCells(r)));
+      ports.hidden = false;
+      boat.getPopup()?.update();
+    }).catch(() => {});
     const follow = document.createElement("button");
     follow.type = "button";
     follow.className = "link-button popup-action";

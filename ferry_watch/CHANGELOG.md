@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.45.0
+
+- Port times on the ship card: for each ship, the port it is in or just left, the next port
+  and the one after, with when it arrived or left, and when it is due and leaves. Expected
+  times are blue with a ≈ and a tag saying where they come from:
+  - "port": what the ship's agent has announced to Helsinki, Mariehamn, Långnäs or Turku
+    (Portnet port calls from Digitraffic, fetched every 10 minutes);
+  - "usual": the ship's usual crossing time and stay, learnt from its own earlier trips
+    (this is how Tallinn and Stockholm get times: Portnet only covers Finnish ports);
+  - "AIS": the crew's own ETA, when it is close to the usual time.
+  The berth (Olympia, Katajanokka, Länsisatama...) is shown when announced. The earlier
+  trips are read once from the tracks already kept, so the usual times work from the first
+  start; fleet ships learn theirs as they sail.
+- Other ships' popups show their announced calls at Finnish ports too.
+- Tapping a ship zooms to its track again (broken since 0.36.1), and passage replays fit
+  the hour either side of the passage as meant.
+
 ## 0.44.0
 
 - Stats: new "Inner route outlook" at the top. For each ferry sailing expected in the next

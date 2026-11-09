@@ -991,3 +991,12 @@ body.attribution-open .strip { visibility: hidden; }
   .rw-detail { font-size: 12.5px; line-height: 1.35; }
   .rw-toggle { min-height: 30px; }
 }
+
+/* Port times on the ship card */
+.card-ports { margin: 6px 0 2px; display: grid; grid-template-columns: max-content 1fr; column-gap: 10px; row-gap: 2px; font-size: 13px; }
+.card-ports .port-head { grid-column: 1 / -1; }
+.card-ports .port-name { font-weight: 600; white-space: nowrap; }
+.card-ports .port-times small { color: var(--muted); font-size: 11px; }
+.card-ports .port-time { white-space: nowrap; }
+.card-ports .port-time.expected { color: var(--accent); }
+.popup-ports { font-size: 12px; margin-top: 4px; }
