@@ -21,7 +21,7 @@ def fake_cache(tmp_path, found, max_files=0):
     async def commons(mmsi, imo):
         asked.append(("commons", imo))
         if "commons" in found:
-            cache._save(mmsi, b"jpeg", ".jpg", {"source": "Wikimedia Commons", "page_url": "https://c"})
+            cache._save(mmsi, b"jpeg", ".jpg", {"source": "Wikimedia Commons", "page_url": "https://c", "whole": True})
             return True
         return False
 
@@ -85,3 +85,14 @@ def test_miss_reasons(tmp_path):
     assert not cache.tried(5) or True
     asyncio.run(cache.ensure({"mmsi": 6, "imo": 0, "by_name": False, "name": "X"}))
     assert cache.miss(6)["why"] == "no_imo"
+
+
+def test_cut_short_commons_photo_is_fetched_again(tmp_path):
+    cache = PhotoCache(tmp_path, None)
+    (tmp_path / "7.jpg").write_bytes(b"part")
+    cache._write_info(7, {"file": "7.jpg", "source": "Wikidata", "fetched_ts": 1})
+    assert cache.path(7) is None
+    cache._write_info(7, {"file": "7.jpg", "source": "Wikidata", "fetched_ts": 1, "whole": True})
+    assert cache.path(7)
+    cache._write_info(7, {"file": "7.jpg", "source": "Wikipedia", "fetched_ts": 1})
+    assert cache.path(7)

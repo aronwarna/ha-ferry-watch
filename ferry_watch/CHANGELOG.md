@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.39.3
+
+- Ship photos from Wikimedia Commons and Wikidata showed only a strip of their top: the
+  download kept just its first chunk. They're now read whole, and the cut-short ones are
+  fetched again by themselves.
+
 ## 0.39.2
 
 - Satellite view: zooming all the way in no longer turns the picture into grey "Map data

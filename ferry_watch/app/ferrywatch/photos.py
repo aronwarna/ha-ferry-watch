@@ -63,9 +63,12 @@ class PhotoCache:
         self._info_path(mmsi).write_text(json.dumps(info))
 
     def path(self, mmsi: int) -> Path | None:
-        name = self.info(mmsi).get("file")
+        info = self.info(mmsi)
+        name = info.get("file")
         if not name:
             return None
+        if info.get("source") in ("Wikimedia Commons", "Wikidata") and not info.get("whole"):
+            return None  # cut short by the old download: fetched again
         path = self.dir / name
         return path if path.exists() else None
 
@@ -202,10 +205,15 @@ class PhotoCache:
             if resp.content_type not in EXTENSIONS:
                 return False
             ext = EXTENSIONS[resp.content_type]
-            body = await resp.content.read(MAX_UPLOAD + 1)
+            if (resp.content_length or 0) > MAX_UPLOAD:
+                return False
+            # read(n) gives back only what has arrived so far: read to the end (0.33-0.39 kept
+            # just the first chunk, so the photo showed as a strip of its top).
+            body = await resp.read()
         if len(body) > MAX_UPLOAD:
             return False
-        self._save(mmsi, body, ext, {"remote_url": url, "page_url": page_url, "source": source, "uploaded": False})
+        self._save(mmsi, body, ext, {"remote_url": url, "page_url": page_url, "source": source,
+                                     "uploaded": False, "whole": True})
         _LOGGER.info("Fetched photo for %s from %s", mmsi, source)
         return True
 
