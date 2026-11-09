@@ -29,6 +29,7 @@ from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
+from .outlook import Outlook, fake_get_json
 from . import aurora, dayscore, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
@@ -159,6 +160,9 @@ class FerryWatch:
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_ice_fetch as fake_ice
         self.ice = IceWatch(self.session, self.store, fake_ice)
+        self.outlook = Outlook(self.store, self.session,
+                               fake_get_json(self.store) if os.environ.get("FW_SIMULATE") == "1" else None,
+                               live=self.predictor.get, ice=self.ice)
         # These only answer the panel's requests: nothing runs while no one looks.
         self.faults = Faults(self.session, fake_faults)
         self.traffic = Traffic(self.session, self.store,
@@ -228,6 +232,7 @@ class FerryWatch:
         self.tasks.append(asyncio.create_task(self._housekeeping()))
         self.tasks.append(asyncio.create_task(self._overlay_pruning()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:

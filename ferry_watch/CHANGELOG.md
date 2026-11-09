@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.44.0
+
+- Stats: new "Inner route outlook" at the top. For each ferry sailing expected in the next
+  48 hours it gives the chance of the inner route past Porkkala, with the wind, gusts and
+  waves forecast for that time and what pushes the chance up or down (wind strength, wind
+  direction, waves, ice, the ships' recent choices). The bar's mark is the ship's usual
+  share that way.
+- It's an experiment, and it says how well it does. A small model learns from your own
+  passages and the weather at each one, and is tested as if it had been running all
+  along: each day of the history is forecast only from what was known the midnight
+  before, then scored against what the ships really did, next to the plain guess "the
+  ship's usual share". "How good is it?" shows the result: inner passages caught, false
+  alarms, and how often inner really followed when it said 0-10%, 10-25% and so on. If
+  the model does worse than the usual share, the usual share is shown instead.
+- The weather for past passages and for the forecast comes from the same place
+  (Open-Meteo's hourly wind off Porkkala and its wave model, CC BY 4.0): two small
+  requests every 3 hours, older days filled in once. The next sailings are read from each
+  ship's rhythm; a ship under way uses its next-passage time.
+
 ## 0.43.0
 
 - Boating weather in the route tool: each hour of the next two days scored good, okay or

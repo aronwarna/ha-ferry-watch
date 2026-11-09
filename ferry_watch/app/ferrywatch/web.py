@@ -196,6 +196,7 @@ class Web:
         r.add_get("/api/aircraft/overview", self.air_overview)
         r.add_post("/api/weather", self.set_weather)
         r.add_get("/api/faults", self.faults)
+        r.add_get("/api/outlook", self.outlook)
         r.add_get("/api/traffic", self.traffic)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/foreign", self.set_vchart_foreign)
@@ -629,6 +630,10 @@ class Web:
 
     async def faults(self, request: web.Request) -> web.Response:
         return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
+
+    async def outlook(self, request: web.Request) -> web.Response:
+        ships = {s["mmsi"]: s for s in self.fw.store.ships()}
+        return web.json_response(await self.fw.outlook.payload(ships))
 
     async def traffic(self, request: web.Request) -> web.Response:
         if "s" in request.query:  # a wide view: every ship inside the box

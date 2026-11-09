@@ -142,6 +142,17 @@ ice or change their schedule.
 The card also shows the ETA the crew entered in AIS (**ETA Stockholm 09:45
 (AIS)**) and the draught they report.
 
+## Inner route outlook
+
+At the top of Stats: each ferry sailing expected in the next 48 hours, with its chance of
+taking the inner route, the forecast wind, gusts and waves at that time, and what pushes
+the chance up or down. It's an experiment. A small model learns from your passages and
+the weather at each one (wind strength and direction, gusts, waves, ice, the ships'
+recent choices), and it is tested on your own history day by day, using only what was
+known the midnight before, against the plain guess of each ship's usual share. "How good
+is it?" shows the result. If it does worse than the usual share, the usual share is shown
+instead. Weather for past and future comes from Open-Meteo (CC BY 4.0).
+
 ## Sea conditions and the sun
 
 A pill under the top bar shows the wind (an arrow pointing where it blows), the
