@@ -179,3 +179,21 @@ def test_harbours_by_name(tmp_path):
         assert (await client.get("/api/harbours?q=x&near=bad")).status == 400
 
     run_with_client(tmp_path, body)
+
+
+def test_water_tiles_endpoint(tmp_path):
+    async def body(client, fw):
+        fw.vchart = VectorChart(tmp_path / "vchart2", None, fake_chart_layer)
+        n = 2 ** 12
+        url = f"/api/vchart-water/12/{int((24.4 + 180) / 360 * n)}/1186"
+        r = await client.get(url)
+        while r.status == 202:  # the blocks are still being made
+            await asyncio.sleep(0.2)
+            r = await client.get(url)
+        data = await r.json()
+        assert r.status == 200 and data["e"] == 512 and "water" in data and "lake" in data
+        assert r.headers["X-Chart-Complete"] == "1"
+        assert (await client.get("/api/vchart-water/13/0/0")).status == 404  # finer than the weather needs
+        assert (await client.get("/api/vchart-water/4/0/0")).status == 404
+
+    run_with_client(tmp_path, body)

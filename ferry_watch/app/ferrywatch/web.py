@@ -15,6 +15,7 @@ import math
 import re
 import time
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +27,7 @@ from .charts import in_finnish_waters
 from .config import DEV
 from .fleets import FLEET_IDS
 from .tracker import STOP_SPEED
-from .vchart import MIN_Z
+from .vchart import MIN_Z, WATER_MAX_Z
 
 SAMPLES_KEPT = 10  # chart samples kept in the media folder (newest)
 SAMPLE_NAME = re.compile(r"chart-[0-9.-]+N-[0-9.-]+E-[0-9-]+\.json")
@@ -145,6 +146,7 @@ class Web:
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
+        r.add_get("/api/vchart-water/{z}/{x}/{y}", self.vchart_water)
         r.add_get("/api/overlays", self.overlays)
         r.add_get("/api/overlay-value/{overlay_id}", self.overlay_value)
         r.add_get("/api/sky", self.sky)
@@ -338,14 +340,21 @@ class Web:
         return web.json_response(out, headers={"Cache-Control": "max-age=600"})
 
     async def vchart_tile(self, request: web.Request) -> web.Response:
+        return await self._chart_tile(request, self.fw.vchart.tile_gz, 20)
+
+    async def vchart_water(self, request: web.Request) -> web.Response:
+        """A chart tile's water alone, for cutting the sea layers to it (see fields.js)."""
+        return await self._chart_tile(request, self.fw.vchart.water_gz, WATER_MAX_Z)
+
+    async def _chart_tile(self, request: web.Request, get: Callable, max_z: int) -> web.Response:
         try:
             z, x = int(request.match_info["z"]), int(request.match_info["x"])
             y = int(request.match_info["y"].split(".")[0])
         except ValueError:
             raise web.HTTPBadRequest() from None
-        if not (MIN_Z <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
+        if not (MIN_Z <= z <= max_z and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()
-        result = await self.fw.vchart.tile_gz(z, x, y, wait=TILE_WAIT)
+        result = await get(z, x, y, wait=TILE_WAIT)
         if result is None:
             # Still downloading: answer now and let the panel ask again, so no
             # request sits open long enough to block the browser's other ones.

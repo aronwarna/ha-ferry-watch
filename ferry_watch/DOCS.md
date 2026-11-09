@@ -278,7 +278,8 @@ and **Delete**. There is no navigation guidance.
 **On the map → Weather stations** (on by default, every map view) shows the
 Finnish Meteorological Institute's coastal and sea stations as discs with the
 wind in m/s, coloured by strength, and a pointer showing where the wind blows.
-Wave buoys and sea level stations show waves or sea temperature. Tap a station
+Wave buoys and sea level stations show waves or sea temperature (teal), and
+stations that don't measure the wind their air temperature (grey). Tap a station
 for its name, how long ago it reported, wind, gusts, direction, air temperature,
 sea temperature or wave height where measured, and the wind and gusts over the
 past 24 hours. The add-on asks FMI at most every 10 minutes, and only while the
@@ -320,7 +321,12 @@ below freezing.
 **Waves, sea temperature and sea level** come from Open-Meteo's marine forecast
 (48 hours) at the same sea points as the wind: the wave height with moving swell
 lines in the direction the waves travel (switch them off under the chip), the sea
-surface temperature, and the sea level against its mean in cm.
+surface temperature, and the sea level against its mean in cm. They are drawn only
+over the sea, on every map: cut to the drawn chart's water (Traficom's depth areas,
+the Swedish and Estonian side's, Natural Earth's open sea, less the lakes), which
+the add-on sends for the view at a zoom coarser than the map's (a few kB a tile,
+the last few kept made). The colours reach every bay and harbour; the swell lines
+and the numbers keep to the water too, and a tap on the land gives no value.
 
 **Lightning** shows FMI's strikes from the last hour, white when new and fading to
 red, read every 5 minutes. **Northern lights** shows NOAA's aurora nowcast (the chance

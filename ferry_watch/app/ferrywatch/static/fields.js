@@ -131,6 +131,12 @@
     return at(arr, g.lons.length, a, b, need);
   }
 
+  // How much of a sea layer's value must come from the sea's grid points (see sample): half
+  // when drawn as it is, so it doesn't spill far over the land; next to nothing when cut to
+  // the water (g.seaNeed, see fieldRenderer), so it reaches every bay and harbour.
+  const SEA_NEED = 0.02;
+  const seaNeed = (g) => g.seaNeed ?? 0.5;
+
   // The value of the grid point nearest a place (for what mustn't be blended: times, directions).
   function nearest(g, name, lat, lon) {
     const a = cell(g.lats, lat), b = cell(g.lons, lon), arr = g.f[name];
@@ -219,24 +225,26 @@
         return [`${est}${v < 10 ? r1(v) : Math.round(v)} km visibility`, `${word[0].toUpperCase()}${word.slice(1)}${Number.isNaN(rh) ? "" : ` · humidity ${Math.round(rh)}%`}`];
       },
     },
+    // The sea layers (sea: true) are cut to the water (see waterMask); cut, they reach a
+    // whole grid step past the sea's grid points (seaNeed), so the colours come up to the coast.
     waves: {
-      scale: "waves", value: (g, la, lo) => sample(g, "wave", la, lo, 0.5), label: (v) => v.toFixed(1),
+      sea: true, scale: "waves", value: (g, la, lo) => sample(g, "wave", la, lo, seaNeed(g)), label: (v) => v.toFixed(1),
       tap: (g, la, lo) => {
-        const v = sample(g, "wave", la, lo, 0.5);
+        const n = seaNeed(g), v = sample(g, "wave", la, lo, n);
         if (Number.isNaN(v)) return null;
-        const per = sample(g, "period", la, lo, 0.5), sw = sample(g, "swell", la, lo, 0.5), d = sample(g, "wdir", la, lo, 0.5);
+        const per = sample(g, "period", la, lo, n), sw = sample(g, "swell", la, lo, n), d = sample(g, "wdir", la, lo, n);
         return [`${v.toFixed(1)} m waves`, [Number.isNaN(d) ? "" : `from ${compass(d)}`, Number.isNaN(per) ? "" : `${per.toFixed(1)} s`,
           Number.isNaN(sw) || sw < 0.05 ? "" : `swell ${sw.toFixed(1)} m`].filter(Boolean).join(" · ")];
       },
     },
     "sea-temp": {
-      scale: "sst", value: (g, la, lo) => sample(g, "sst", la, lo, 0.5), label: (v) => `${Math.round(v)}°`,
-      tap: (g, la, lo) => { const v = sample(g, "sst", la, lo, 0.5); return Number.isNaN(v) ? null : [`${r1(v)} °C`, "Sea surface"]; },
+      sea: true, scale: "sst", value: (g, la, lo) => sample(g, "sst", la, lo, seaNeed(g)), label: (v) => `${Math.round(v)}°`,
+      tap: (g, la, lo) => { const v = sample(g, "sst", la, lo, seaNeed(g)); return Number.isNaN(v) ? null : [`${r1(v)} °C`, "Sea surface"]; },
     },
     "sea-level": {
-      scale: "level", value: (g, la, lo) => sample(g, "level", la, lo, 0.5), label: signed,
+      sea: true, scale: "level", value: (g, la, lo) => sample(g, "level", la, lo, seaNeed(g)), label: signed,
       tap: (g, la, lo) => {
-        const v = sample(g, "level", la, lo, 0.5);
+        const v = sample(g, "level", la, lo, seaNeed(g));
         return Number.isNaN(v) ? null : [`${signed(v)} cm`, v > 0 ? "Above mean sea level" : "Below mean sea level"];
       },
     },
@@ -272,8 +280,10 @@
   const LABEL_ZOOM = 6;
 
   // A canvas over the view in the weather pane that follows the map: draw(ctx, w, h) after
-  // each pan and zoom, scaled with the map while it zooms.
-  function canvasLayer(draw) {
+  // each pan and zoom, scaled with the map while it zooms. With prepare(map, w, h), a
+  // promise of what draw needs (its 5th argument): the picture stays where it is, moving with
+  // the map, until that's there.
+  function canvasLayer(draw, prepare) {
     const Layer = L.Layer.extend({
       onAdd(map) {
         this._canvas = L.DomUtil.create("canvas", "wx-canvas leaflet-zoom-animated");
@@ -298,6 +308,13 @@
       redraw() {
         const map = this._map;
         if (!map || !this._canvas) return;
+        if (!prepare) { this._draw(map, null); return; }
+        const token = (this._token || 0) + 1, size = map.getSize();
+        this._token = token;
+        const go = (ready) => { if (token === this._token && this._map === map && this._canvas) this._draw(map, ready); };
+        Promise.resolve(prepare.call(this, map, size.x, size.y)).then(go, () => go(null));
+      },
+      _draw(map, ready) {
         const size = map.getSize(), dpr = Math.min(window.devicePixelRatio || 1, 2);
         const c = this._canvas;
         const pos = map.containerPointToLayerPoint([0, 0]);
@@ -310,7 +327,7 @@
         if (this._alpha != null) c.style.opacity = String(this._alpha);
         const ctx = c.getContext("2d");
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        draw.call(this, ctx, size.x, size.y, map);
+        draw.call(this, ctx, size.x, size.y, map, ready);
       },
     });
     return new Layer();
@@ -353,8 +370,175 @@
     ctx.drawImage(tmp, 0, 0, cols, rows, 0, 0, cols * STEP, rows * STEP);
   }
 
-  // Numbers at grid points, far enough apart on screen.
-  function labels(ctx, w, h, map, g, def) {
+  // --- the sea layers only over the water ------------------------------------------------
+  // Waves, sea temperature and sea level are cut to the Drawn chart's water (Traficom's depth
+  // areas, the Swedish and Estonian side's, Natural Earth's open sea; less the lakes), on
+  // whichever map, so they don't spill over the land: the add-on sends each chart tile's
+  // water alone (api/vchart-water). Tiles a zoom coarser than the map's, at most zoom 12's
+  // (tens of metres): a quarter as many to fetch, and the weather is far coarser anyway.
+  const WATER_MIN_Z = 5, WATER_MAX_Z = 12;
+  const WATER_KEEP = 96; // tiles' water kept, as paths
+  const WATER_WAIT_MS = 2500; // a redraw waits this long for missing water, then draws what it has
+  const WATER_RETRY_MS = 1500, WATER_TRIES = 6; // tiles whose chart data is still downloading
+  const WATER_STALE_MS = { partial: 30000, pending: 10000, error: 60000 };
+  const water = new Map(); // "z/x/y" -> { at, state: "ok" | "partial" | "pending" | "error", fills, lakes } | Promise
+  const waterLate = new Set(); // what to do when water waited for comes in: redraw the layers
+  let waterGen = 0; // goes up when water comes in, so masks made before are made again
+  let waterAgain = 0, waterAgainMs = WATER_STALE_MS.pending; // the next look for water still downloading
+  let lastMask = null;
+
+  const chartRev = () => { try { return (typeof FerryChart !== "undefined" && FerryChart.rev?.()) || ""; } catch { return ""; } };
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function paths(rows) {
+    return (rows || []).map((rings) => {
+      const p = new Path2D();
+      for (const r of rings) {
+        if (r.length < 6) continue;
+        p.moveTo(r[0], r[1]);
+        for (let i = 2; i < r.length; i += 2) p.lineTo(r[i], r[i + 1]);
+        p.closePath();
+      }
+      return p;
+    });
+  }
+
+  async function fetchWater(key) {
+    for (let tries = 0; ; tries++) {
+      let r;
+      try {
+        r = await fetch(`api/vchart-water/${key}?r=${encodeURIComponent(chartRev())}`);
+      } catch {
+        return { state: "error" };
+      }
+      if (r.status === 202) {
+        if (tries + 1 >= WATER_TRIES) return { state: "pending" };
+        await pause(WATER_RETRY_MS);
+        continue;
+      }
+      if (!r.ok) return { state: "error" };
+      try {
+        const data = await r.json();
+        const k = 1 / (data.e || 512); // paths in tile units; drawn scaled to a unit square
+        return { state: r.headers.get("X-Chart-Complete") === "0" ? "partial" : "ok", k,
+          fills: paths(data.water), lakes: paths(data.lake) };
+      } catch {
+        return { state: "error" };
+      }
+    }
+  }
+
+  // A tile's water: kept, or fetched (a promise); stale ones (still downloading, or failed)
+  // are asked for again.
+  function waterTile(key) {
+    const hit = water.get(key);
+    if (hit instanceof Promise) return hit;
+    if (hit && (hit.state === "ok" || Date.now() - hit.at < WATER_STALE_MS[hit.state])) {
+      water.delete(key);
+      water.set(key, hit);
+      return hit;
+    }
+    const p = fetchWater(key).then((t) => {
+      t.at = Date.now();
+      water.set(key, t);
+      for (const k of water.keys()) {
+        if (water.size <= WATER_KEEP) break;
+        if (!(water.get(k) instanceof Promise)) water.delete(k);
+      }
+      waterGen++;
+      return t;
+    });
+    water.set(key, p);
+    return p;
+  }
+
+  const viewKey = (map) => {
+    const size = map.getSize(), o = map.project(map.containerPointToLatLng([0, 0]), map.getZoom());
+    return `${map.getZoom()}|${Math.round(o.x)}|${Math.round(o.y)}|${size.x}|${size.y}`;
+  };
+
+  // The water over the view (where `box` [south, west, north, east], the layer's grid, is):
+  // a canvas the size of the map, opaque over the water, and which CSS pixels are water.
+  // null where it can't be had (zoomed far out, or an add-on without it): drawn as before.
+  async function waterMask(map, w, h, box) {
+    if (typeof Path2D === "undefined" || typeof fetch === "undefined" || typeof document === "undefined") return null;
+    const zoom = map.getZoom();
+    if (zoom < WATER_MIN_Z - 0.5) return null;
+    const z = Math.max(WATER_MIN_Z, Math.min(WATER_MAX_Z, Math.round(zoom) - 1));
+    const n = 2 ** z, size = 256 * 2 ** (zoom - z); // a tile's CSS px at the map's zoom
+    const o = map.project(map.containerPointToLatLng([0, 0]), zoom);
+    const tileOf = (lat, lon) => map.project([lat, lon], z).divideBy(256);
+    const sw = tileOf(box[0], box[1]), ne = tileOf(box[2], box[3]);
+    const x0 = Math.max(0, Math.floor(o.x / size), Math.floor(sw.x)), x1 = Math.min(n - 1, Math.floor((o.x + w) / size), Math.floor(ne.x));
+    const y0 = Math.max(0, Math.floor(o.y / size), Math.floor(ne.y)), y1 = Math.min(n - 1, Math.floor((o.y + h) / size), Math.floor(sw.y));
+    const keys = [];
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) keys.push([x, y, `${z}/${x}/${y}`]);
+    const view = viewKey(map), boxKey = box.join(",");
+    if (lastMask && lastMask.view === view && lastMask.box === boxKey && lastMask.gen === waterGen) return lastMask;
+    const tiles = keys.map(([, , key]) => waterTile(key));
+    const waiting = tiles.filter((t) => t instanceof Promise);
+    if (waiting.length) {
+      const all = Promise.all(waiting);
+      const late = await Promise.race([all.then(() => false), pause(WATER_WAIT_MS).then(() => true)]);
+      if (late) all.then(() => { for (const fn of waterLate) fn(); });
+    }
+    const got = keys.map(([, , key]) => water.get(key));
+    const states = got.map((t) => (!t || t instanceof Promise ? "waiting" : t.state));
+    // None to be had (not even "still downloading"): drawn uncut. Some still on their way:
+    // the sea there stays clear until it comes, asked for again a little later each time.
+    if (keys.length && states.every((st) => st === "error")) return null;
+    if (states.some((st) => st === "pending" || st === "partial")) {
+      if (!waterAgain) {
+        waterAgain = setTimeout(() => { waterAgain = 0; for (const fn of waterLate) fn(); }, waterAgainMs);
+        waterAgainMs = Math.min(300000, waterAgainMs * 2);
+      }
+    } else waterAgainMs = WATER_STALE_MS.pending;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const c = canvas.getContext("2d", { willReadFrequently: true });
+    const each = (fn) => keys.forEach(([x, y], i) => {
+      const t = got[i];
+      if (!t || t instanceof Promise || !t.fills) return;
+      const k = size * t.k;
+      c.setTransform(k, 0, 0, k, x * size - o.x, y * size - o.y);
+      fn(t);
+    });
+    c.fillStyle = "#000";
+    each((t) => { for (const p of t.fills) c.fill(p, "evenodd"); });
+    c.globalCompositeOperation = "destination-out";
+    each((t) => { for (const p of t.lakes) c.fill(p, "evenodd"); });
+    c.globalCompositeOperation = "source-over";
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    // Water or not, without the faint seams where two areas meet (their edges' soft pixels
+    // together still a little see-through), which would show as lines through the colours.
+    const img = c.getImageData(0, 0, w, h), px = img.data, wet = new Uint8Array(w * h);
+    for (let i = 0, j = 3; i < wet.length; i++, j += 4) {
+      const on = px[j] >= 100;
+      wet[i] = on ? 1 : 0;
+      px[j] = on ? 255 : 0;
+    }
+    c.putImageData(img, 0, 0);
+    lastMask = {
+      canvas, view, box: boxKey, gen: waterGen, w, h,
+      matches: (m) => viewKey(m) === view,
+      isWater: (x, y) => {
+        const i = Math.floor(y) * w + Math.floor(x);
+        return x >= 0 && y >= 0 && x < w && y < h && wet[i] === 1;
+      },
+    };
+    return lastMask;
+  }
+
+  // The layer's grid's reach (half a step past its outer points), for which tiles to fetch.
+  function gridBox(g) {
+    const la = g.lats, lo = g.lons, hy = la.length > 1 ? (la[1] - la[0]) / 2 : 0.5, hx = lo.length > 1 ? (lo[1] - lo[0]) / 2 : 0.5;
+    return [la[0] - hy, lo[0] - hx, la[la.length - 1] + hy, lo[lo.length - 1] + hx];
+  }
+
+  // Numbers at grid points, far enough apart on screen (and not on the land, for the sea's).
+  function labels(ctx, w, h, map, g, def, mask) {
     if (!def.label || map.getZoom() < LABEL_ZOOM) return;
     const p0 = map.latLngToContainerPoint([g.lats[0], g.lons[0]]);
     const p1 = map.latLngToContainerPoint([g.lats[Math.min(1, g.lats.length - 1)], g.lons[Math.min(1, g.lons.length - 1)]]);
@@ -370,6 +554,7 @@
       for (let j = 0; j < g.lons.length; j += k) {
         const p = map.latLngToContainerPoint([g.lats[i], g.lons[j]]);
         if (p.x < -20 || p.y < -20 || p.x > w + 20 || p.y > h + 20) continue;
+        if (mask && !mask.isWater(p.x, p.y)) continue;
         const v = def.value(g, g.lats[i], g.lons[j]);
         if (Number.isNaN(v)) continue;
         const text = def.label(v);
@@ -380,21 +565,34 @@
     }
   }
 
-  // One colour layer per overlay id: draw() gets each hour's data.
-  function fieldRenderer(id) {
-    let layer = null, g = null, map = null;
+  // One colour layer per overlay id: draw() gets each hour's data. onMask(mask): told the
+  // water each picture of a sea layer was cut to (null: not cut).
+  function fieldRenderer(id, { onMask } = {}) {
+    let layer = null, g = null, map = null, mask = null;
     const def = LAYERS[id];
+    const late = () => layer?.redraw(); // water that was still on its way came in
+    // The sea's layers wait for the water over the view (see waterMask) before drawing.
+    const prepare = def.sea ? (mp, w, h) => (g ? waterMask(mp, w, h, gridBox(g)) : null) : undefined;
     return {
       draw(group, data, { opacity, map: m }) {
         map = m;
         g = grid(data);
         if (!layer) {
-          layer = canvasLayer(function (ctx, w, h, mp) {
+          layer = canvasLayer(function (ctx, w, h, mp, ready) {
             if (!g) return;
             if (def.fade) this._canvas.style.opacity = String((this._alpha ?? 1) * def.fade(mp.getZoom()));
+            mask = ready || null;
+            if (def.sea) g.seaNeed = mask ? SEA_NEED : undefined;
             paint(ctx, w, h, mp, g, def);
-            labels(ctx, w, h, mp, g, def);
-          });
+            if (mask) {
+              ctx.globalCompositeOperation = "destination-in";
+              ctx.drawImage(mask.canvas, 0, 0, w, h);
+              ctx.globalCompositeOperation = "source-over";
+            }
+            labels(ctx, w, h, mp, g, def, mask);
+            if (def.sea) onMask?.(mask);
+          }, prepare);
+          if (def.sea) waterLate.add(late);
           layer.setOpacity(opacity);
           layer.addTo(map);
         } else {
@@ -402,8 +600,19 @@
           layer.redraw();
         }
       },
-      hide() { layer?.remove(); layer = null; g = null; },
-      valueAt(latlng) { return g ? def.tap(g, latlng.lat, latlng.lng) : null; },
+      hide() {
+        waterLate.delete(late);
+        layer?.remove(); layer = null; g = null; mask = null;
+      },
+      valueAt(latlng) {
+        if (!g) return null;
+        // Not on the land, where the sea's colours were cut off.
+        if (mask && map && mask.matches(map)) {
+          const p = map.latLngToContainerPoint(latlng);
+          if (!mask.isWater(p.x, p.y)) return null;
+        }
+        return def.tap(g, latlng.lat, latlng.lng);
+      },
       legend() { return legendFor(id, g); },
       summary() { return id === "aurora" && g?.info?.kp ? kpSummary(g.info.kp, Date.now() / 1000) : null; },
       get grid() { return g; },
@@ -679,11 +888,15 @@
   }
 
   function wavesRenderer() {
-    const base = fieldRenderer("waves");
-    let lines = null, mapNow = null, on = store.get("fw-ov-waves-lines") !== "0", last = null;
+    // The lines keep to the water the colours were cut to (undefined: not known yet).
+    let lines = null, mapNow = null, on = store.get("fw-ov-waves-lines") !== "0", last = null, water;
+    const base = fieldRenderer("waves", { onMask: (m) => { water = m; lines?.setMask(m); } });
     const show = () => {
       if (!on || !last || !mapNow || typeof FerryWind === "undefined") return;
-      if (!lines) lines = new (FerryWind.Lines())();
+      if (!lines) {
+        lines = new (FerryWind.Lines())();
+        lines.setMask(water);
+      }
       lines.setGrid(swellGrid(base.grid), 0.85, "rgba(255,255,255,0.85)");
       if (!mapNow.hasLayer(lines)) lines.addTo(mapNow);
     };
@@ -694,7 +907,7 @@
         last = data;
         show();
       },
-      hide() { base.hide(); lines?.remove(); lines = null; last = null; },
+      hide() { base.hide(); lines?.remove(); lines = null; last = null; water = undefined; },
       valueAt: (ll) => base.valueAt(ll),
       legend: () => base.legend(),
       extra() {

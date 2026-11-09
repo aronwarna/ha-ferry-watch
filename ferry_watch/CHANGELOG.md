@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.40.0
+
+- Waves, sea temperature and sea level are drawn only over the sea, on every map (Satellite
+  too), instead of as a blocky box over the land. They're cut to the drawn chart's water:
+  Traficom's depth areas, the Swedish and Estonian side's, Natural Earth's open sea, less
+  the lakes. The add-on sends each chart tile's water alone (a few kB, at a zoom coarser
+  than the map's), and the colours now reach every bay and harbour. The swell lines and the
+  numbers keep to the water too, and a tap on the land gives no sea value. Where the chart
+  is still downloading, the sea there stays clear until it comes.
+- Weather stations: a station that doesn't measure the wind (only the air temperature)
+  showed "NaN°". It now shows its air temperature in a grey tag (sea temperature and waves
+  stay teal), and one with nothing to show isn't drawn.
+
 ## 0.39.3
 
 - Ship photos from Wikimedia Commons and Wikidata showed only a strip of their top: the

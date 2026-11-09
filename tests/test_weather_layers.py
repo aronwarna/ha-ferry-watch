@@ -434,7 +434,14 @@ const g = F.grid(data);
 const r = (v) => Math.round(v * 100) / 100;
 // A low in the middle of a 7 x 7 grid of pressure rising outwards.
 const p = new Float32Array(49).map((_, k) => 1000 + Math.hypot((k % 7) - 3, Math.floor(k / 7) - 3));
+// One sea point of four: near the land a sea layer drawn uncut leaves the colour out; cut to
+// the water (seaNeed), it reaches across the grid step.
+const gs = F.grid({ fields: ["sst"], points: [[60, 24, 8], [60, 25, null], [61, 24, null], [61, 25, null]] });
+const seaUncut = F.LAYERS["sea-temp"].value(gs, 60.6, 24.6);
+gs.seaNeed = 0.02;
+const seaCut = F.LAYERS["sea-temp"].value(gs, 60.6, 24.6);
 console.log(JSON.stringify({
+  seaUncut, seaCut, sea: Object.keys(F.LAYERS).filter((k) => F.LAYERS[k].sea).sort(),
   mid: r(F.sample(g, "t", 60.5, 24.5)), edge: r(F.sample(g, "t", 60, 24.4)), out: F.sample(g, "t", 62, 24),
   thin: F.sample(g, "t", 60.95, 24.95), near: F.nearest(g, "t", 60.9, 24.1),
   fogMade: r(F.fogVis(g, 60, 24)), fogModel: F.fogVis(g, 61, 24),
@@ -452,6 +459,8 @@ def test_colour_layer_maths():
     out = json.loads(subprocess.run([NODE, "-e", FIELDS_SCRIPT, str(STATIC / "fields.js")], capture_output=True,
                                     text=True, check=True).stdout)
     assert out["mid"] == 12 and out["edge"] == 10.8  # the missing corner left out
+    assert out["seaUncut"] is None and out["seaCut"] == 8
+    assert out["sea"] == ["sea-level", "sea-temp", "waves"]
     assert out["out"] is None and out["near"] == 14
     assert out["thin"] is None  # mostly the missing corner: no colour rather than a guess
     assert out["fogMade"] < 1 and out["fogModel"] == 8  # near the dew point, calm: fog; else the model's own

@@ -3190,6 +3190,7 @@
     aidAt,
     colors: C,
     onWaiting: (fn) => { waitingChanged = fn; },
+    rev: () => rev, // the server's tile revision, "" until known (also for api/vchart-water, see fields.js)
     // The server's tile revision (and the lowest zoom it cuts tiles for, if it says).
     setRev: (r, minZoom) => {
       if (Number.isInteger(minZoom) && minZoom !== serverMinZoom) {

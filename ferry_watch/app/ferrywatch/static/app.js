@@ -3286,6 +3286,7 @@
       [icon('<circle cx="14" cy="9" r="6" fill="#2563eb" stroke="#fff" stroke-width="2.5"/>'), "Your phone, from Home Assistant"],
       [icon('<circle cx="14" cy="9" r="8" fill="#16a34a"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">6</text>'), "Weather station: wind in m/s, coloured by strength"],
       [icon('<rect x="2" y="3" width="24" height="12" rx="4" fill="#0f766e"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1.4 m</text>'), "Wave buoy (wave height) or sea temperature"],
+      [icon('<rect x="5" y="3" width="18" height="12" rx="4" fill="#64748b"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">4°</text>'), "Station without wind: air temperature"],
       [icon(`<g style="color:${HARBOUR_RED}">${boat}</g>`), "Harbour on the chart"],
       [icon(`<rect x="7" y="0.5" width="14" height="17" rx="4" fill="#1d4ed8"/><g style="color:#fff" transform="translate(0.3 0.2) scale(1)">${boat}</g>`), "Harbour on the map and satellite views"],
       [icon('<path d="M3 4h22v10H3z" stroke="#2f7d3d" stroke-width="2" fill="#3f9a4f" fill-opacity="0.25"/>'), "Nature reserve, highlighted (tap one on the drawn chart for its card)"],
@@ -5069,11 +5070,13 @@
         ctx.textBaseline = "middle";
         ctx.fillText(String(Math.round(s.ws)), 0, 0.5);
       } else { // a buoy or mareograph: waves or sea temperature in a small tag
-        const text = s.wave != null ? `${s.wave.toFixed(1)} m` : `${Math.round(s.sea)}°`;
+        // (a weather station without wind: its air temperature, in grey)
+        const air = s.wave == null && s.sea == null;
+        const text = s.wave != null ? `${s.wave.toFixed(1)} m` : `${Math.round(air ? s.t : s.sea)}°`;
         ctx.font = "700 11px system-ui, -apple-system, sans-serif";
         const w = ctx.measureText(text).width + 10;
         roundRect(ctx, -w / 2, -9, w, 18, 9);
-        ctx.fillStyle = "#0f766e";
+        ctx.fillStyle = air ? "#64748b" : "#0f766e";
         ctx.fill();
         ctx.lineWidth = 2;
         ctx.strokeStyle = "#fff";
@@ -5119,6 +5122,7 @@
     }
     const seen = new Set();
     for (const s of stationsData?.stations || []) {
+      if (s.ws == null && s.wave == null && s.sea == null && s.t == null) continue; // nothing to show
       seen.add(s.id);
       let mark = stationMarks.get(s.id);
       if (!mark) {

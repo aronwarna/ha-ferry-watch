@@ -43,6 +43,7 @@ import re
 import shutil
 import sys
 import time
+import zlib
 from array import array
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -101,6 +102,8 @@ OVERVIEW_MIN_Z = 9
 UNITS = 65536  # block coordinates: 0..UNITS across a block, y down
 EXTENT = 512  # tile coordinates sent to the panel: 0..EXTENT
 TILE_BUFFER = 24  # tile units drawn past each edge, so lines and areas meet seamlessly
+WATER_MAX_Z = 12  # the sea layers' water (water_of) at most from this zoom's tiles: tens of metres
+WATER_KEEP = 32  # water tiles kept made (each some kB gzipped)
 POINT_BUFFER = 64  # wider for points: symbols and their text reach past the tile edge
 POINT_BUFFERS = {"sector": 448, "aid": 128, "light": 128, "name": 256, "sounding": 128, "landmark": 128,
                  "sign": 96, "call": 128, "building": 16, "rock": 96, "rockctr": 96, "trock": 96}
@@ -1243,6 +1246,29 @@ def _uncovered_rects(z: int, x: int, y: int, covered: set) -> list[tuple[float, 
     return rects
 
 
+def ne_clipped(kind: str, z: int, x: int, y: int,
+               rect: tuple[float, float, float, float]) -> Iterator[list[list[int]]]:
+    """Each base-map polygon of a kind cut to a rect of a tile (tile units), as flat rings."""
+    minx, _, maxx, maxy = _tile_mercator(z, x, y)
+    k = EXTENT / (maxx - minx)
+    tol = 0.5 if z < BLOCK_MIN_Z else 0.35
+    r0, r1 = minx + rect[0] / k, minx + rect[2] / k
+    r2, r3 = maxy - rect[3] / k, maxy - rect[1] / k
+    for (px0, py0, px1, py1), poly in ne_base()[kind]:
+        if px1 < r0 or px0 > r1 or py1 < r2 or py0 > r3:
+            continue
+        rings = []
+        for co in poly:
+            pts = [((co[i] - minx) * k, (maxy - co[i + 1]) * k) for i in range(0, len(co), 2)]
+            part = simplify(clip_ring(pts, *rect), tol)
+            if len(part) >= 3:
+                flat = _flat(part)
+                if len(flat) >= 6:
+                    rings.append(flat)
+        if rings:
+            yield rings
+
+
 def add_base(rows: dict[str, list], land: list, z: int, x: int, y: int, covered: set, mode: str,
              own_lakes: set = frozenset()) -> None:
     """The base map (see above) into a tile's rows ("lake" and "sea") and its land rings,
@@ -1253,8 +1279,6 @@ def add_base(rows: dict[str, list], land: list, z: int, x: int, y: int, covered:
         return
     minx, miny, maxx, maxy = _tile_mercator(z, x, y)
     k = EXTENT / (maxx - minx)
-    tol = 0.5 if z < BLOCK_MIN_Z else 0.35
-    base = ne_base()
     finnish: tuple[float, float, float, float] | None = None
     if mode == BASE_FINNISH:
         from .foreign import FOREIGN_AREA
@@ -1262,22 +1286,7 @@ def add_base(rows: dict[str, list], land: list, z: int, x: int, y: int, covered:
         finnish = ((fx0 - minx) * k, (maxy - fy0) * k, (fx1 - minx) * k, (maxy - fy1) * k)
 
     def clipped(kind: str, rect: tuple[float, float, float, float]) -> Iterator[list[list[int]]]:
-        """Each polygon of a kind cut to a rect (tile units), as flat rings."""
-        r0, r1 = minx + rect[0] / k, minx + rect[2] / k
-        r2, r3 = maxy - rect[3] / k, maxy - rect[1] / k
-        for (px0, py0, px1, py1), poly in base[kind]:
-            if px1 < r0 or px0 > r1 or py1 < r2 or py0 > r3:
-                continue
-            rings = []
-            for co in poly:
-                pts = [((co[i] - minx) * k, (maxy - co[i + 1]) * k) for i in range(0, len(co), 2)]
-                part = simplify(clip_ring(pts, *rect), tol)
-                if len(part) >= 3:
-                    flat = _flat(part)
-                    if len(flat) >= 6:
-                        rings.append(flat)
-            if rings:
-                yield rings
+        return ne_clipped(kind, z, x, y, rect)
 
     if own_lakes and z >= BLOCK_Z and blocks_for(z, x, y)[0] in own_lakes:
         lake_rects = []
@@ -3509,6 +3518,7 @@ class VectorChart:
         self._limit = asyncio.Semaphore(1)  # one download at a time: gentle on the services and on RAM
         self._reading = asyncio.Semaphore(2)  # block files read at once
         self._cutting = asyncio.Semaphore(1)
+        self._water: OrderedDict[tuple, bytes] = OrderedDict()  # water_gz's last few, gzipped
         self._failed: dict[tuple, float] = {}
         self._down: dict[str, float] = {}  # service -> until when it's left alone, after timing out
         self._down_streak: dict[str, int] = {}  # service -> times it timed out in a row
@@ -3950,6 +3960,25 @@ class VectorChart:
             except OSError as err:
                 self._log_once("tile cache", "Could not keep a chart tile on disk: %s", err)
         return body, complete
+
+    async def water_gz(self, z: int, x: int, y: int,
+                       wait: float | None = None) -> tuple[bytes, bool] | None:
+        """The tile's water alone (see water_of), gzipped, and whether it's complete; the
+        last few kept, as each is read out of the whole tile."""
+        result = await self.tile_gz(z, x, y, wait)
+        if result is None:
+            return None
+        body, complete = result
+        key = (z, x, y, len(body), zlib.crc32(body))
+        water = self._water.get(key)
+        if water is None:
+            water = await in_thread(water_body, body, z, x, y)
+            self._water[key] = water
+            while len(self._water) > WATER_KEEP:
+                self._water.popitem(last=False)
+        else:
+            self._water.move_to_end(key)
+        return water, complete
 
     def _on_disk(self, keys: Iterable[tuple[int, int]]) -> bool:
         """Whether these blocks' depths are all on disk: a tile from them only needs reading
@@ -4986,6 +5015,28 @@ def _age(path: Path) -> float | None:
         return time.time() - path.stat().st_mtime
     except FileNotFoundError:
         return None
+
+
+def water_of(tile: dict, z: int, x: int, y: int) -> dict[str, Any]:
+    """What the panel's sea layers (waves, sea temperature, sea level) are cut to, so they
+    don't cover the land: the tile's water as lists of rings to fill even-odd (the depth
+    areas but the drying ones; of the foreign side's nested depths only the outermost, which
+    holds the rest), and the lakes to take out of it (the Land Survey's from zoom 10, Natural
+    Earth's big ones everywhere: Traficom's depths cover the lakes with fairways too)."""
+    water = [rings for band, *rings in tile.get("depth", ()) if band >= 1]
+    foreign = [row for row in tile.get("xdepth", ()) if row[0] >= 1]
+    if foreign:
+        top = min(row[0] for row in foreign)
+        water += [rings for band, *rings in foreign if band == top]
+    edge = (-TILE_BUFFER, -TILE_BUFFER, EXTENT + TILE_BUFFER, EXTENT + TILE_BUFFER)
+    lakes = [rings for rings in tile.get("lake", ()) if isinstance(rings, list) and rings]
+    lakes += list(ne_clipped("lakes", z, x, y, edge))
+    return {"e": tile.get("e", EXTENT), "water": water, "lake": lakes}
+
+
+def water_body(body: bytes, z: int, x: int, y: int) -> bytes:
+    """A gzipped tile's water (see water_of), gzipped."""
+    return _gzip_json(water_of(json.loads(gzip.decompress(body)), z, x, y))
 
 
 def _gzip_json(data: Any) -> bytes:
