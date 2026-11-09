@@ -25,6 +25,7 @@ from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, 
 from .geo import sun_info
 from .ha import HAClient, HAPublisher, NextPassageSensor
 from .harbours import Harbours
+from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
@@ -142,7 +143,7 @@ class FerryWatch:
             self.overlays = Overlays(DATA_DIR / "overlays", self.session)
             seaice.register(self.overlays)
             radar.register(self.overlays)
-        fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = fake_forecast = fake_reserves = None
+        fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = fake_forecast = fake_reserves = fake_syke = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_chart_layer as fake_chart
             from .simulate import fake_fmi_fetch as fake_fmi
@@ -150,6 +151,7 @@ class FerryWatch:
             from .simulate import fake_traffic_fetch as fake_traffic
             from .simsea import fake_overpass_fetch as fake_overpass
             from .simsea import fake_reserves_fetch as fake_reserves
+            from .simsea import fake_syke_wfs as fake_syke
             from .simsea import fake_stations_fetch as fake_stations
             from .simsea import fake_forecast_fetch as fake_forecast
         self.weather = SeaWeather(self.session, fake_fmi)
@@ -168,7 +170,9 @@ class FerryWatch:
         wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
         self.dayscore = self._day_score()
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
-        self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves)
+        self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves, fake_syke)
+        # Trips from ben's own Garmin plotter (GPX uploads); backed up with Home Assistant.
+        self.logbook = Logbook(DATA_DIR / "logbook.db", self.harbours)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
@@ -237,6 +241,7 @@ class FerryWatch:
         if self.session:
             await self.session.close()
         self.store.close()
+        self.logbook.close()
 
     async def _load_chart(self) -> None:
         self.enc = await enc_service(self.session, self.store)

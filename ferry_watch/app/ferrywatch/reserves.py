@@ -40,7 +40,7 @@ TIMEOUT = 120
 MAX_BYTES = 48 * 1024 * 1024
 KEEP = 8  # cells kept parsed in memory
 SIMPLIFY_M = 6  # outline points within this of the line between their neighbours are dropped
-FILE_REV = 2  # cell files written with an older revision are fetched again (2: broken outlines closed)
+FILE_REV = 3  # cell files written with an older revision are fetched again (2: broken outlines closed, 3: seasons)
 CREDIT = "© OpenStreetMap contributors (ODbL)"
 
 Fetch = Callable[[str], Awaitable[Any]]
@@ -48,7 +48,37 @@ Fetch = Callable[[str], Awaitable[Any]]
 # The same reserves the drawn chart outlines (vchart.OSM_QUERIES["osm:reserve"]), plus
 # national parks tagged only as such.
 FILTERS = ('"leisure"="nature_reserve"', '"boundary"="protected_area"]["protect_class"~"^[1-5]$"',
-           '"boundary"="national_park"')
+           '"boundary"="national_park"',
+           # OpenSeaMap's restricted areas for wildlife: bird and seal sanctuaries, often with
+           # the season they're closed in.
+           '"seamark:type"="restricted_area"]["seamark:restricted_area:category"~"sanctuary|reserve|bird|seal|game|wildlife|nature"')
+
+# Seasonal no-go areas from the official register: SYKE's map service lists Metsähallitus'
+# movement restriction areas of protected areas. The layer's name isn't fixed here: the first
+# one whose name or title matches is used (found again daily), its features read in the
+# cell's box as GeoJSON, and closing dates picked out of whatever fields they come in.
+SYKE_WFS = "https://paikkatiedot.ymparisto.fi/geoserver/wfs"
+SYKE_LAYER = re.compile(r"liikkumisrajoit|rörelsebegräns|movement.?restrict", re.I)
+SYKE_CREDIT = "Movement restriction areas: SYKE, Metsähallitus (CC BY 4.0)"
+SYKE_FIND_AGAIN = 86400
+
+MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                          "nov", "dec"))}
+MONTHS.update({"maj": 5, "okt": 10, "tam": 1, "hel": 2, "maa": 3, "huh": 4, "tou": 5, "kes": 6, "hei": 7,
+               "elo": 8, "syy": 9, "lok": 10, "mar": 3, "jou": 12})
+_DASH = r"\s*(?:-|–|—|to|till|until|asti|\.\.)\s*"
+_RANGES = [
+    # 1.4.–15.8. (Finnish and Swedish texts), 1.4-15.8
+    (re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\.?" + _DASH + r"(\d{1,2})\.(\d{1,2})\.?(?!\d)"), "dm"),
+    # Apr 01-Aug 15 (OpenStreetMap's conditional restrictions), April 1 – August 15
+    (re.compile(r"\b([A-Za-zäö]{3})[a-zäö]*\.?\s*(\d{1,2})" + _DASH + r"([A-Za-zäö]{3})[a-zäö]*\.?\s*(\d{1,2})\b"), "md"),
+    # 1 Apr – 15 Aug, 1 april–15 augusti
+    (re.compile(r"\b(\d{1,2})\.?\s*([A-Za-zäö]{3})[a-zäö]*" + _DASH + r"(\d{1,2})\.?\s*([A-Za-zäö]{3})[a-zäö]*\b"), "dM"),
+    # --04-01/--08-15 (S-57 periods), 04-01–08-15
+    (re.compile(r"(?:--)?\b(\d{2})-(\d{2})\b" + r"\s*(?:/|-|–|to)\s*" + r"(?:--)?(\d{2})-(\d{2})\b"), "mdmd"),
+]
+LANDING = re.compile(r"maihinnousu|landstigning|landing|nousta maihin", re.I)
+NO_ENTRY = re.compile(r"liikkumi|oleskel|pääsy|rörelse|vistelse|access|entry|tillträde|no_entry|entry_prohibited", re.I)
 
 # protection_title (as SYKE's import wrote it, in Finnish or Swedish) -> what it is.
 TITLES = [
@@ -101,6 +131,10 @@ def _wikipedia(text: str | None) -> str | None:
 
 
 def _kind(tags: dict[str, str]) -> str:
+    cat = tags.get("seamark:restricted_area:category", "")
+    if tags.get("seamark:type") == "restricted_area" and not tags.get("protection_title"):
+        return {"bird_sanctuary": "Bird sanctuary", "seal_sanctuary": "Seal sanctuary",
+                "game_reserve": "Game reserve"}.get(cat.split(";")[0], "Restricted area (wildlife)")
     title = tags.get("protection_title", "").casefold()
     for pattern, kind in TITLES:
         if re.search(pattern, title):
@@ -110,6 +144,75 @@ def _kind(tags: dict[str, str]) -> str:
     if title:
         return tags["protection_title"][:1].upper() + tags["protection_title"][1:80]
     return "Nature reserve"
+
+
+def _md(m: int, d: int) -> str | None:
+    return f"{m:02d}-{d:02d}" if 1 <= m <= 12 and 1 <= d <= 31 else None
+
+
+def date_ranges(text: str) -> list[tuple[str, str]]:
+    """Yearly date ranges ("MM-DD", "MM-DD") written in a text in any of the usual ways."""
+    out: list[tuple[str, str]] = []
+    for pattern, order in _RANGES:
+        for m in pattern.finditer(text or ""):
+            g = m.groups()
+            try:
+                if order == "dm":
+                    a, b = _md(int(g[1]), int(g[0])), _md(int(g[3]), int(g[2]))
+                elif order == "md":
+                    a, b = _md(MONTHS.get(g[0].lower(), 0), int(g[1])), _md(MONTHS.get(g[2].lower(), 0), int(g[3]))
+                elif order == "dM":
+                    a, b = _md(MONTHS.get(g[1].lower(), 0), int(g[0])), _md(MONTHS.get(g[3].lower(), 0), int(g[2]))
+                else:
+                    a, b = _md(int(g[0]), int(g[1])), _md(int(g[2]), int(g[3]))
+            except ValueError:
+                continue
+            if a and b and a != b and (a, b) not in out:
+                out.append((a, b))
+        if out:
+            break  # one way of writing per text
+    return out
+
+
+def _what(text: str, default: str = "No access") -> str:
+    if LANDING.search(text or ""):
+        return "No landing"
+    if NO_ENTRY.search(text or ""):
+        return "No access"
+    return default
+
+
+def seasons_from(texts: list[tuple[str, str]]) -> list[dict[str, str]]:
+    """Closed seasons [{"what", "from", "to"}] from (default what, text) pairs."""
+    out: list[dict[str, str]] = []
+    for default, text in texts:
+        for a, b in date_ranges(text):
+            what = _what(text, default)
+            if not any(x["from"] == a and x["to"] == b for x in out):
+                out.append({"what": what, "from": a, "to": b})
+    return out[:4]
+
+
+def _seasons(tags: dict[str, str]) -> list[dict[str, str]]:
+    """When a reserve or sanctuary is closed each year, from OpenStreetMap's tags."""
+    texts: list[tuple[str, str]] = []
+    for key, what in (("access:conditional", "No access"), ("foot:conditional", "No access"),
+                      ("boat:conditional", "No access by boat"), ("landing:conditional", "No landing")):
+        for rule in re.split(r";\s*(?![^(]*\))", tags.get(key, "")):
+            m = re.match(r"^\s*(no|private)\s*@\s*\(?(.+?)\)?\s*$", rule)
+            if m:
+                texts.append((what, m[2]))
+    st = tags.get("seamark:restricted_area:restriction", "")
+    st_what = "No landing" if "landing" in st else "No access" if "entry" in st else "Restricted"
+    start = next((v for k, v in tags.items() if k.startswith("seamark") and k.endswith("period_start")), "")
+    end = next((v for k, v in tags.items() if k.startswith("seamark") and k.endswith("period_end")), "")
+    if start and end:
+        texts.append((st_what, f"{start}/{end}"))
+    for key in ("seasonal", "description", "description:en", "description:fi", "description:sv", "note",
+                "seamark:information", "seamark:restricted_area:information", "opening_hours"):
+        if tags.get(key):
+            texts.append((st_what if st else "No access", tags[key]))
+    return seasons_from(texts)
 
 
 def _access(tags: dict[str, str]) -> list[str]:
@@ -122,7 +225,7 @@ def _access(tags: dict[str, str]) -> list[str]:
                       ("landing:conditional", "Landing: ")):
         for rule in re.split(r";\s*(?![^(]*\))", tags.get(key, "")):
             m = re.match(r"^\s*(\w+)\s*@\s*\(?(.+?)\)?\s*$", rule)
-            if m:
+            if m and not (m[1] in ("no", "private") and date_ranges(m[2])):
                 label = ACCESS.get(m[1], m[1])
                 out.append(f"{what}{label.lower() if what else label} {m[2].replace('-', '–')}".strip())
     for key, label in (("boat", "Boats"), ("landing", "Landing"), ("seasonal", "Seasonal")):
@@ -237,17 +340,10 @@ def parse_overpass(data: Any) -> list[dict[str, Any]]:
         if not outer:
             _LOGGER.info("Nature reserve %s%s (%s) has no outline to fill", kind[0], el.get("id"), tags.get("name", "unnamed"))
             continue
-        area = sum(_ring_area_m2(r) for r in outer) - sum(_ring_area_m2(r) for r in inner)
-        rings = []
-        for r in outer + inner:
-            s = _simplify(r, SIMPLIFY_M)
-            if len(s) >= 4:
-                rings.append([[round(lat, 5), round(lon, 5)] for lon, lat in s])
-        if not rings:
+        shape = _shape(outer, inner)
+        if shape is None:
             continue
-        lons = [p[1] for r in rings for p in r]
-        lats = [p[0] for r in rings for p in r]
-        name = (tags.get("name") or tags.get("name:fi") or tags.get("name:sv") or "").strip()
+        name = (tags.get("name") or tags.get("name:fi") or tags.get("name:sv") or tags.get("seamark:name") or "").strip()
         names = [n for n in (tags.get("name:fi"), tags.get("name:sv")) if n and n.strip() != name]
         rid = f"{kind[0]}{el.get('id', 0)}"
         out[rid] = {
@@ -265,18 +361,95 @@ def parse_overpass(data: Any) -> list[dict[str, Any]]:
             "website": _link(tags.get("website") or tags.get("contact:website") or tags.get("url")),
             "wikipedia": _wikipedia(tags.get("wikipedia")),
             "wikidata": tags["wikidata"] if re.match(r"^Q\d+$", tags.get("wikidata", "")) else None,
-            "area_m2": round(area),
-            "bbox": [min(lons), min(lats), max(lons), max(lats)],
-            "rings": rings,
+            "seasons": _seasons(tags),
+            "source": "osm",
+            **shape,
         }
     return list(out.values())
 
 
+def _shape(outer: list[list], inner: list[list]) -> dict[str, Any] | None:
+    """area_m2, bbox and simplified [lat, lon] rings from (lon, lat) rings."""
+    area = sum(_ring_area_m2(r) for r in outer) - sum(_ring_area_m2(r) for r in inner)
+    rings = []
+    for r in outer + inner:
+        s = _simplify(r, SIMPLIFY_M)
+        if len(s) >= 4:
+            rings.append([[round(lat, 5), round(lon, 5)] for lon, lat in s])
+    if not rings:
+        return None
+    lons = [p[1] for r in rings for p in r]
+    lats = [p[0] for r in rings for p in r]
+    return {"area_m2": round(area), "bbox": [min(lons), min(lats), max(lons), max(lats)], "rings": rings}
+
+
+def _feature_rings(geom: dict) -> list[tuple[list, list]]:
+    """(outer, inner) lon/lat rings of a GeoJSON Polygon or MultiPolygon, one per polygon."""
+    t, co = (geom or {}).get("type"), (geom or {}).get("coordinates") or []
+    polys = [co] if t == "Polygon" else co if t == "MultiPolygon" else []
+    out = []
+    for poly in polys:
+        rings = [[(float(p[0]), float(p[1])) for p in ring] for ring in poly if len(ring) >= 4]
+        if rings:
+            out.append(([rings[0]], rings[1:]))
+    return out
+
+
+def parse_restrictions(data: Any, layer: str) -> list[dict[str, Any]]:
+    """Movement restriction areas from the register's GeoJSON: name and closed seasons
+    picked out of whatever fields the layer has (dates either as one text, or as start and
+    end fields)."""
+    out = []
+    for n, feat in enumerate((data or {}).get("features") or []):
+        props = {str(k): v for k, v in (feat.get("properties") or {}).items() if v not in (None, "")}
+        pieces = _feature_rings(feat.get("geometry"))
+        if not pieces:
+            continue
+        name = next((str(v) for k, v in props.items() if re.search(r"nimi|name|namn", k, re.I)
+                     and isinstance(v, str)), "")
+        texts = " ".join(str(v) for v in props.values() if isinstance(v, str))
+        what = _what(texts + " " + " ".join(props), "No access")
+        pairs = [(what, str(v)) for v in props.values() if isinstance(v, str)]
+        start = next((v for k, v in props.items() if re.search(r"alk|start|from|begin", k, re.I)), None)
+        end = next((v for k, v in props.items() if re.search(r"lopp|end|until|slut|to$", k, re.I)), None)
+        for v, slot in ((start, 0), (end, 1)):
+            if isinstance(v, str):
+                m = re.match(r"^(?:\d{4})?-?(\d{2})-(\d{2})", v) or re.match(r"^(\d{1,2})\.(\d{1,2})", v)
+                if m and slot == 0:
+                    start = (int(m[1]), int(m[2])) if "-" in v[:5] else (int(m[2]), int(m[1]))
+                elif m:
+                    end = (int(m[1]), int(m[2])) if "-" in v[:5] else (int(m[2]), int(m[1]))
+        if isinstance(start, tuple) and isinstance(end, tuple):
+            a, b = _md(*start), _md(*end)
+            if a and b:
+                pairs.insert(0, (what, f"--{a}/--{b}"))
+        seasons = seasons_from(pairs)
+        fid = str(feat.get("id") or n)
+        for k, (outer, inner) in enumerate(pieces):
+            shape = _shape(outer, inner)
+            if shape is None:
+                continue
+            out.append({
+                "id": f"s{re.sub(r'[^A-Za-z0-9_.-]', '', fid)[:40]}-{k}", "name": name[:120] or None, "other_names": [],
+                "kind": "Movement restriction area", "iucn": None, "title": None, "ref": None, "since": None,
+                "operator": "Metsähallitus", "access": [] if seasons else ["No access"], "description": None,
+                "website": None, "wikipedia": None, "wikidata": None, "seasons": seasons, "source": "syke",
+                "layer": layer, **shape,
+            })
+    return out
+
+
 class Reserves:
-    def __init__(self, folder: Path, session: aiohttp.ClientSession | None, fetch: Fetch | None = None):
+    def __init__(self, folder: Path, session: aiohttp.ClientSession | None, fetch: Fetch | None = None,
+                 wfs: Callable[[dict[str, str]], Awaitable[bytes]] | None = None):
         self.dir = folder
         self.session = session
         self.fetch = fetch or self._get
+        # The register's map service; in the simulator a stand-in. Without either, none.
+        self.wfs = wfs or (self._get_wfs if session is not None else None)
+        self._syke: str | None = None  # the movement restriction layer's name, once found
+        self._syke_at = 0.0  # when it was last looked for (or failed)
+        self.syke_error: str | None = None
         self._cells: OrderedDict[tuple[int, int], tuple[float, list[dict]]] = OrderedDict()
         self._queue: list[tuple[int, int]] = []
         self._failed: dict[tuple[int, int], float] = {}
@@ -297,6 +470,67 @@ class Reserves:
                 chunks.append(chunk)
         return json.loads(b"".join(chunks))
 
+    async def _get_wfs(self, params: dict[str, str]) -> bytes:
+        async with self.session.get(SYKE_WFS, params=params, headers={"User-Agent": USER_AGENT},
+                                    timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
+            if resp.status != 200:
+                text = (await resp.content.read(400)).decode("utf-8", "replace")
+                raise ValueError(f"HTTP {resp.status}: {re.sub(r'<[^>]+>', ' ', text).strip()[:200]}")
+            body = await resp.content.read(MAX_BYTES + 1)
+            if len(body) > MAX_BYTES:
+                raise ValueError("answer too big")
+            return body
+
+    async def _syke_layer(self) -> str | None:
+        """The register's movement restriction layer, looked for in the service's list once
+        a day (after a failure, again after RETRY)."""
+        if self.wfs is None:
+            return None
+        now = time.time()
+        if now - self._syke_at < (SYKE_FIND_AGAIN if self.syke_error is None else RETRY):
+            return self._syke
+        self._syke_at = now
+        try:
+            caps = (await self.wfs({"service": "WFS", "version": "2.0.0", "request": "GetCapabilities"})).decode(
+                "utf-8", "replace")
+            found = None
+            for block in re.findall(r"<(?:\w+:)?FeatureType\b.*?</(?:\w+:)?FeatureType>", caps, re.S):
+                name = re.search(r"<(?:\w+:)?Name>([^<]+)<", block)
+                title = re.search(r"<(?:\w+:)?Title>([^<]+)<", block)
+                if name and SYKE_LAYER.search(f"{name[1]} {title[1] if title else ''}"):
+                    found = name[1].strip()
+                    break
+            if found != self._syke or self.syke_error:
+                _LOGGER.info("Movement restriction areas (SYKE): %s", f"layer {found}" if found
+                             else "no such layer listed; only OpenStreetMap's seasons are shown")
+            self._syke, self.syke_error = found, None
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
+            if self.syke_error is None:
+                _LOGGER.warning("Could not read SYKE's map service list: %s", err)
+            self.syke_error = str(err) or type(err).__name__
+        return self._syke
+
+    async def _restrictions(self, cell: tuple[int, int]) -> tuple[list[dict], bool]:
+        """The register's movement restriction areas in a cell, and whether that worked."""
+        layer = await self._syke_layer()
+        if layer is None:
+            return [], self.syke_error is None
+        s, w, n, e = cell_box(*cell)
+        try:
+            body = await self.wfs({"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": layer,
+                                   "outputFormat": "application/json", "srsName": "EPSG:4326",
+                                   "bbox": f"{w},{s},{e},{n},EPSG:4326", "count": "500"})
+            got = await asyncio.to_thread(lambda: parse_restrictions(json.loads(body), layer))
+            if got and not getattr(self, "_syke_logged", False):
+                self._syke_logged = True
+                _LOGGER.info("Movement restriction areas (SYKE) e.g. %s: %s", got[0]["name"], got[0]["seasons"])
+            return got, True
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
+            if self.syke_error is None:
+                _LOGGER.warning("Could not download movement restriction areas from SYKE: %s", err)
+            self.syke_error = str(err) or type(err).__name__
+            return [], False
+
     def _path(self, cell: tuple[int, int]) -> Path:
         return self.dir / f"{cell[0]}_{cell[1]}.json.gz"
 
@@ -310,7 +544,9 @@ class Reserves:
                 saved = json.load(f)
             if saved.get("rev") != FILE_REV:
                 return None
-            got = (float(saved["updated"]), saved["reserves"])
+            # Without the register's areas (it failed): fetched again sooner.
+            got = (float(saved["updated"]) - (0 if saved.get("complete", True) else REFRESH - 6 * 3600),
+                   saved["reserves"])
         except FileNotFoundError:
             return None
         except (OSError, ValueError, KeyError, TypeError) as err:
@@ -325,12 +561,13 @@ class Reserves:
         while len(self._cells) > KEEP:
             self._cells.popitem(last=False)
 
-    def _save(self, cell: tuple[int, int], reserves: list[dict], updated: float) -> None:
+    def _save(self, cell: tuple[int, int], reserves: list[dict], updated: float, complete: bool = True) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(cell)
         tmp = path.with_suffix(".tmp")
         with gzip.open(tmp, "wt", encoding="utf-8") as f:
-            json.dump({"rev": FILE_REV, "updated": updated, "source": "OpenStreetMap via Overpass API",
+            json.dump({"rev": FILE_REV, "updated": updated, "complete": complete,
+                       "source": "OpenStreetMap via Overpass API; SYKE (movement restriction areas)",
                        "licence": "ODbL", "reserves": reserves}, f, separators=(",", ":"), ensure_ascii=False)
         tmp.replace(path)
 
@@ -342,9 +579,11 @@ class Reserves:
                 data = await self.fetch(overpass_query(*cell_box(*cell)))
                 reserves = await asyncio.to_thread(parse_overpass, data)
                 del data
+                extra, complete = await self._restrictions(cell)
+                reserves += extra
                 now = time.time()
-                await asyncio.to_thread(self._save, cell, reserves, now)
-                self._remember(cell, (now, reserves))
+                await asyncio.to_thread(self._save, cell, reserves, now, complete)
+                self._remember(cell, (now - (0 if complete else REFRESH - 6 * 3600), reserves))
                 self._failed.pop(cell, None)
                 self.error = None
                 _LOGGER.debug("Nature reserves for cell %s: %s", cell, len(reserves))
@@ -362,7 +601,8 @@ class Reserves:
         c0, c1 = cell_of(south, west), cell_of(north, east)
         cells = [(cy, cx) for cy in range(c0[0], c1[0] + 1) for cx in range(c0[1], c1[1] + 1)]
         if len(cells) > MAX_CELLS:
-            return {"reserves": [], "pending": False, "error": "zoom in", "credit": CREDIT}
+            return {"reserves": [], "pending": False, "error": "zoom in", "credit": CREDIT, "register": self._syke,
+                    "register_error": self.syke_error}
         # Nearest the middle first.
         my, mx = cell_of((south + north) / 2, (west + east) / 2)
         cells.sort(key=lambda c: (c[0] - my) ** 2 + (c[1] - mx) ** 2)
@@ -385,5 +625,8 @@ class Reserves:
         if self._queue and (self._task is None or self._task.done()):
             self._task = asyncio.create_task(self._run())
         missing = [c for c in cells if c not in self._cells and self._read(c) is None]
-        return {"reserves": list(seen.values()), "pending": any(c in self._queue for c in missing),
-                "error": self.error if missing else None, "credit": CREDIT}
+        found = list(seen.values())
+        credit = CREDIT + (f"; {SYKE_CREDIT}" if any(r.get("source") == "syke" for r in found) else "")
+        return {"reserves": found, "pending": any(c in self._queue for c in missing),
+                "error": self.error if missing else None, "credit": credit,
+                "register": self._syke, "register_error": self.syke_error}

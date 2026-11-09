@@ -260,6 +260,12 @@ def fake_reserves() -> list[dict[str, Any]]:
                   "protection_title": "Kansallispuisto", "operator": "Metsähallitus", "start_date": "1989",
                   "website": "https://www.luontoon.fi/", "wikipedia": "fi:Tammisaaren saariston kansallispuisto",
                   "wikidata": "Q1468155"}},
+        # A seal sanctuary closed late in the year, so the simulator has one closed now in
+        # autumn (the real ones are mostly closed in spring and summer).
+        {"type": "way", "id": 990004, "geometry": pts([(10.4, 3.0), (11.4, 3.0), (11.4, 3.8), (10.4, 3.8), (10.4, 3.0)]),
+         "tags": {"seamark:type": "restricted_area", "seamark:restricted_area:category": "seal_sanctuary",
+                  "seamark:restricted_area:restriction": "entry_prohibited", "seamark:name": "Kalvbådan hylkeidensuojelualue",
+                  "seamark:restricted_area:period_start": "--10-15", "seamark:restricted_area:period_end": "--12-31"}},
         {"type": "relation", "id": 990003, "members": [
             {"type": "way", "ref": 3, "role": "outer", "geometry": a},
             {"type": "way", "ref": 4, "role": "outer", "geometry": b}],
@@ -276,3 +282,28 @@ async def fake_reserves_fetch(query: str) -> dict[str, Any]:
            if any(s <= p["lat"] <= n and w <= p["lon"] <= e
                   for g in [el.get("geometry") or [q for mm in el.get("members", []) for q in mm["geometry"]]] for p in g)]
     return {"version": 0.6, "generator": "Overpass API (simulated)", "elements": els}
+
+
+def fake_syke_features() -> dict[str, Any]:
+    """SYKE's movement restriction areas as its WFS gives GeoJSON (field names made up)."""
+    from .simscene import _lonlat
+
+    ring = [list(_lonlat(x, y)) for x, y in [(6.2, 5.2), (7.0, 5.2), (7.0, 5.9), (6.2, 5.9), (6.2, 5.2)]]
+    ring2 = [list(_lonlat(x, y)) for x, y in [(3.0, 1.0), (3.8, 1.0), (3.8, 1.6), (3.0, 1.6), (3.0, 1.0)]]
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": "liikkumisrajoitusalueet.11", "geometry": {"type": "Polygon", "coordinates": [ring]},
+         "properties": {"nimi": "Långörin lintuluoto", "rajoitus": "Maihinnousukielto", "alkupvm": "1.4.", "loppupvm": "31.7."}},
+        {"type": "Feature", "id": "liikkumisrajoitusalueet.12", "geometry": {"type": "Polygon", "coordinates": [ring2]},
+         "properties": {"nimi": "Stora Fågelskär", "kuvaus": "Liikkumiskielto 1.9.–30.11. (hylkeet)"}},
+    ]}
+
+
+async def fake_syke_wfs(params: dict[str, str]) -> bytes:
+    import json as _json
+
+    if params.get("request") == "GetCapabilities":
+        return (b'<wfs:WFS_Capabilities><FeatureTypeList><FeatureType><Name>syke:luonnonsuojelualueet</Name>'
+                b'<Title>Luonnonsuojelualueet</Title></FeatureType><FeatureType>'
+                b'<Name>metsahallitus:liikkumisrajoitusalueet</Name><Title>Liikkumisrajoitusalueet</Title>'
+                b'</FeatureType></FeatureTypeList></wfs:WFS_Capabilities>')
+    return _json.dumps(fake_syke_features()).encode()

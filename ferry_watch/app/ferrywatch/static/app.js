@@ -33,6 +33,7 @@
   let harbourLayer = null;
   // Nature reserves (static/reserves.js): made once the map is up, see below.
   let reserves = null;
+  let logbook = null;
   // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
   // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
   // the marks on the first.
@@ -1700,6 +1701,7 @@
     if (name === "stats") loadStats().then(() => { pane.scrollTop = tabScroll.get(name) || 0; }).catch(console.error);
     if (name === "layers") renderLayers();
     if (name === "settings") renderSettings();
+    if (name === "logbook") logbook?.load();
   }
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   // Tap a folded explanation to read it whole (a link in it still opens).
@@ -1719,7 +1721,7 @@
     } else {
       menu.showModal();
     }
-    setTab(tab || (["stats", "layers", "settings"].includes(saved) ? saved : "ships"));
+    setTab(tab || (["stats", "logbook", "layers", "settings"].includes(saved) ? saved : "ships"));
     menu.focus(); // not the first tab, which would show a focus ring
   }
   menu.addEventListener("close", () => {
@@ -3255,8 +3257,8 @@
       switchRow({
         compact: true,
         title: "Highlight nature reserves", color: "#3f9a4f", checked: Boolean(reserves?.all),
-        count: reserves?.all && reserves.count ? `${reserves.count} in view` : "",
-        note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. From OpenStreetMap.",
+        count: [reserves?.all && reserves.count ? `${reserves.count} in view` : "", reserves?.closed ? `${reserves.closed} closed now` : ""].filter(Boolean).join(" · "),
+        note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. Bird and seal sanctuaries closed today (no landing or no access) are shown in red dashes with the date they open (on the drawn chart from zoom 11 even with this off). From OpenStreetMap and SYKE's register of movement restriction areas.",
         onChange: async (on) => { reserves?.setAll(on); renderLayers(); },
       }),
       groupHead("On the satellite view"),
@@ -3290,6 +3292,7 @@
       [icon(`<g style="color:${HARBOUR_RED}">${boat}</g>`), "Harbour on the chart"],
       [icon(`<rect x="7" y="0.5" width="14" height="17" rx="4" fill="#1d4ed8"/><g style="color:#fff" transform="translate(0.3 0.2) scale(1)">${boat}</g>`), "Harbour on the map and satellite views"],
       [icon('<path d="M3 4h22v10H3z" stroke="#2f7d3d" stroke-width="2" fill="#3f9a4f" fill-opacity="0.25"/>'), "Nature reserve, highlighted (tap one on the drawn chart for its card)"],
+      [icon('<path d="M3 4h22v10H3z" stroke="#c62828" stroke-width="2" stroke-dasharray="5 3" fill="#e53935" fill-opacity="0.15"/>'), "Closed now: a bird or seal sanctuary's no-landing or no-access season"],
       [icon('<circle cx="14" cy="9" r="7" fill="#fff" stroke="#dc2626" stroke-width="2.5"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="800" fill="#dc2626">!</text>'), "Faulty light or buoy"],
     ];
     const list = document.createElement("ul");
@@ -5445,6 +5448,14 @@
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     },
+  });
+  // Trips from ben's own Garmin plotter (Logbook tab). On a phone the sheet covers the
+  // map, so it closes when a trip is shown.
+  logbook = FerryLogbook.create({
+    map, api, esc, fmtDay, clock,
+    pane: $("logbook"), pill: $("trip-shown"),
+    onShow: () => { if (menuModal()) menu.close(); },
+    sideWidth: () => (document.body.classList.contains("menu-open") ? menu.offsetWidth : 0),
   });
   map.on("click", (e) => {
     if (route.on) return;
