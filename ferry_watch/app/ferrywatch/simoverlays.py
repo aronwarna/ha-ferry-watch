@@ -9,6 +9,8 @@ FMI answers made up in simsea.py.
 
 from __future__ import annotations
 
+import io
+import json
 import math
 import struct
 import zlib
@@ -128,3 +130,107 @@ def register(overlays: Overlays) -> None:
     # The real radar's settings, with drawn rain cells for its frames.
     radar.register(overlays, url="sim://rain-radar/{ts}/{z}/{x}/{y}", times=every(300, 12, lag=300),
                    attribution=radar.ATTRIBUTION + " (simulated)")
+
+
+# --- the ice chart (icechart.py), as the Copernicus WMTS would answer -------------------
+
+def sim_ice(lat: float, lon: float, day: int) -> tuple[float, float]:
+    """Made-up ice concentration (%) and thickness (cm) for a day: none until late November,
+    growing from the Bothnian Bay and the eastern Gulf of Finland to the end of February,
+    then melting away by May."""
+    from .icechart import season_start
+
+    d = (day - season_start(day)) / 86400  # days since 1 November
+    s = max(0.0, math.sin(math.pi * (d - 20) / 180)) if 20 < d < 200 else 0.0
+    if s <= 0:
+        return 0.0, 0.0
+    conc = 0.0
+    # The Bothnian Bay and Sea: ice reaching south as the winter goes on.
+    edge = 65.6 - 3.2 * s
+    if lat > edge:
+        conc = min(100.0, (lat - edge) * 140 + 8 * math.sin(lon * 3))
+    # The Gulf of Finland from the east, the archipelago's fast ice along the coast.
+    if 59.2 < lat < 60.9:
+        east = 30.3 - 7.5 * s
+        if lon > east:
+            conc = max(conc, min(100.0, (lon - east) * 55 + 10 * math.sin(lat * 9)))
+        if lat > 60.12 - 0.1 * s - 0.04 * math.sin(lon * 7) and 21.5 < lon < 27.5:
+            conc = 100.0 if s > 0.35 else max(conc, 70.0)  # fast ice along the coast
+    conc = max(0.0, conc)
+    thick = 0.0
+    if conc >= 1:
+        thick = min(150.0, 4 + 50 * s * conc / 100 + max(0.0, lat - 63) * 18 * s + 6 * math.sin(lon * 2 + lat * 3))
+    return conc, thick
+
+
+def _grey_of(f: float) -> int:
+    """The grey cmocean's "gray" gives a fraction f of its range (even in lightness)."""
+    from .icechart import _lstar
+
+    lo, hi = 0, 255
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _lstar(mid) < f:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _q(url: str) -> dict[str, str]:
+    from urllib.parse import parse_qsl, urlsplit
+
+    return {k.upper(): v for k, v in parse_qsl(urlsplit(url).query)}
+
+
+async def fake_icechart_get(url: str) -> bytes:
+    from .icechart import CONC_LAYER, TILE
+    from .overlays import parse_instant
+
+    q = _q(url)
+    req = q.get("REQUEST", "")
+    if req == "GetCapabilities":
+        import time as _t
+        end = _t.strftime("%Y-%m-%dT00:00:00Z", _t.gmtime(_t.time() - 86400))
+        return (f'<Capabilities><Contents><Layer><ows:Identifier>{CONC_LAYER}</ows:Identifier>'
+                f'<Dimension><ows:Identifier>time</ows:Identifier><Value>2024-11-01T00:00:00Z/{end}/P1D</Value>'
+                '</Dimension></Layer></Contents></Capabilities>').encode()
+    day = parse_instant(q["TIME"])
+    z, col, row = int(q["TILEMATRIX"]), int(q["TILECOL"]), int(q["TILEROW"])
+    thick = "THICK" in q["LAYER"]
+    top = 200.0 if thick else 100.0
+    n = 2 ** z
+
+    def at(i: float, j: float) -> float:
+        merc = math.pi * (1 - 2 * (row + j / TILE) / n)
+        lat = math.degrees(math.atan(math.sinh(merc)))
+        lon = (col + i / TILE) / n * 360 - 180
+        if not (53 <= lat <= 66 and 9 <= lon <= 31):
+            return math.nan
+        return sim_ice(lat, lon, day)[1 if thick else 0]
+
+    if req == "GetFeatureInfo":
+        v = at(int(q["I"]) + 0.5, int(q["J"]) + 0.5)
+        props = {} if math.isnan(v) else {"value": v}
+        return json.dumps({"type": "FeatureCollection", "features": [{"properties": props}]}).encode()
+    # Worked out on a quarter of the pixels and enlarged (Pillow), which is plenty here.
+    from PIL import Image
+
+    q = 4
+    side = TILE // q
+    px = bytearray()
+    for j in range(side):
+        for i in range(side):
+            v = at((i + 0.5) * q, (j + 0.5) * q)
+            if math.isnan(v):
+                px += b"\0\0\0\0"
+            else:
+                g = _GREYS[round(min(1.0, v / top) * 1000)]
+                px += bytes((g, g, g, 255))
+    img = Image.frombytes("RGBA", (side, side), bytes(px)).resize((TILE, TILE), Image.Resampling.NEAREST)
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
+_GREYS = [_grey_of(k / 1000) for k in range(1001)]

@@ -121,7 +121,7 @@
     radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/>',
   };
   const layerIcon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${LAYER_ICONS[name] || LAYER_ICONS.cloud}</svg>`;
-  const ICON_OF = { "rain-radar": "radar", "sea-ice": "ice", wind: "wind" };
+  const ICON_OF = { "rain-radar": "radar", "sea-ice": "ice", "ice-chart": "ice", wind: "wind" };
 
   const LOAD_WAIT = 4000; // ms playing waits at most for the next frame's tiles
   const LAST_HOLD = 1200; // ms the last frame stays up before playing starts over
@@ -137,7 +137,7 @@
     pane.style.pointerEvents = "none";
 
     const entries = new Map(); // id -> { ov, on, opacity, frames, current, ... }
-    let loading = null, refreshTimer = 0, menuShows = "";
+    let loading = null, refreshTimer = 0, infoTimer = 0, menuShows = "";
     let skew = 0; // the add-on's clock minus this browser's, in seconds
     let t = null; // the time bar's time
     let playing = false, playTimer = 0;
@@ -209,8 +209,13 @@
           }
           render();
           // The menu is drawn again only when what it shows changed (not under a dragged slider).
-          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error, ov.check]));
+          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error, ov.check, ov.info]));
           if (shown !== menuShows) { menuShows = shown; onChange(); }
+          // A day picker whose newest day is still being read on the NAS: asked again soon.
+          if (data.overlays.some((ov) => ov.info && ov.info.latest_ice === null && entries.get(ov.id)?.on)) {
+            clearTimeout(infoTimer);
+            infoTimer = setTimeout(() => load(), 8000);
+          }
           // The first list shows which switches this browser had on; their times come next.
           return [...entries.values()].some((e) => e.on && !e.ov.times);
         })
@@ -249,6 +254,19 @@
           maxNativeZoom: ov.max_zoom, keepBuffer: 1, className: "overlay-frame", attribution: ov.attribution,
           ...(b ? { bounds: L.latLngBounds([b[0], b[1]], [b[2], b[3]]) } : {}),
         }).addTo(map);
+        if (ov.kind === "local") {
+          // A tile drawn here may wait for something (the ice chart for the chart's water):
+          // asked for again a few times, a little later each time.
+          layer.on("tileerror", ({ tile, coords }) => {
+            const n = (tile._tries || 0) + 1;
+            if (n > 6) return;
+            setTimeout(() => {
+              if (!layer._map) return;
+              tile._tries = n;
+              tile.src = `${layer.getTileUrl(coords)}?try=${n}`;
+            }, 3000 * n);
+          });
+        }
         e.frames.set(ft, layer);
       }
       return layer;
@@ -330,6 +348,64 @@
 
     // --- the time bar ---
 
+    // A static layer's day: the newest, or one picked under its switch (the ice chart),
+    // or the one the add-on suggests (last winter's while the newest has no ice).
+    function pickFor(e) {
+      const times = e.ov.times, latest = times[times.length - 1];
+      if (e.pick != null && times.includes(e.pick)) return e.pick;
+      const d = e.ov.info?.default;
+      return d != null && times.includes(d) ? d : latest;
+    }
+
+    const dayText = (ts, opts = { weekday: "short", day: "numeric", month: "short", year: "numeric" }) =>
+      new Date(ts * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", ...opts });
+    const isoDay = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
+
+    // Under a pickable layer's switch: the day shown, a date field, and Newest / Last winter.
+    function dayControl(e) {
+      const box = document.createElement("div");
+      box.className = "ov-days";
+      const times = e.ov.times || [];
+      if (!times.length) return box;
+      const info = e.ov.info || {};
+      const shownDay = pickFor(e), latest = times[times.length - 1];
+      const status = document.createElement("p");
+      status.className = "small ov-days-status";
+      let text = `Showing ${dayText(shownDay)}`;
+      if (shownDay === latest) text += " (the newest chart)";
+      else if (info.latest_ice === false) text += `. The newest chart (${dayText(latest, { day: "numeric", month: "short" })}) has no ice yet.`;
+      status.textContent = text;
+      const row = document.createElement("div");
+      row.className = "ov-days-row";
+      const input = document.createElement("input");
+      input.type = "date";
+      input.min = isoDay(times[0]);
+      input.max = isoDay(latest);
+      input.value = isoDay(shownDay);
+      input.setAttribute("aria-label", `${e.ov.title} day`);
+      const choose = (ts) => { e.pick = ts; render(); onChange(); };
+      input.addEventListener("change", () => {
+        if (!input.value) return;
+        const want = Date.parse(`${input.value}T00:00:00Z`) / 1000;
+        // The nearest day the service has (it may skip some).
+        let best = times[0];
+        for (const d of times) if (Math.abs(d - want) < Math.abs(best - want)) best = d;
+        choose(best);
+      });
+      const button = (label, ts) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip-btn";
+        b.textContent = label;
+        b.disabled = ts == null || ts === shownDay;
+        b.addEventListener("click", () => choose(ts));
+        return b;
+      };
+      row.append(input, button("Newest", latest), button("Last winter", info.peak ?? null));
+      box.append(status, row);
+      return box;
+    }
+
     function nextTime(times) {
       const i = indexAt(times, t);
       return times.length > 1 ? times[(i + 1) % times.length] : null;
@@ -341,8 +417,7 @@
       for (const e of entries.values()) {
         if (!e.on || !e.ov.times?.length) { hide(e); continue; }
         const vf = e.ov.valid_for;
-        const latest = e.ov.times[e.ov.times.length - 1];
-        const ft = e.ov.static ? latest : t == null ? null : frameAt(e.ov.times, t, vf);
+        const ft = e.ov.static ? pickFor(e) : t == null ? null : frameAt(e.ov.times, t, vf);
         const nft = e.ov.static ? null : next == null ? null : frameAt(e.ov.times, next, vf);
         if (e.ov.kind === "points") showPoints(e, ft, nft);
         else showTiles(e, ft, nft);
@@ -523,6 +598,7 @@
     function extras(e) {
       const box = document.createElement("div");
       box.append(opacityControl(e));
+      if (e.ov.pickable) box.append(dayControl(e));
       const own = renderers[e.ov.id]?.extra?.();
       if (own) box.append(own);
       return box;
@@ -615,7 +691,7 @@
         try {
           if (renderers[e.ov.id]?.valueAt) lines = await renderers[e.ov.id].valueAt(latlng, map);
           if (!lines && e.ov.has_value) {
-            const res = await fetch(`api/overlay-value/${e.ov.id}?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&t=${t || ""}`);
+            const res = await fetch(`api/overlay-value/${e.ov.id}?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&t=${e.ov.static ? (e.current ?? "") : (t || "")}`);
             const data = res.ok ? await res.json() : null;
             lines = data && (renderers[e.ov.id]?.format ? renderers[e.ov.id].format(data) : [JSON.stringify(data)]);
           }

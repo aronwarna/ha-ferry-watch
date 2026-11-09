@@ -416,6 +416,20 @@ body.ah-open .leaflet-overlay-pane { opacity: 0.5; }
 .leaflet-weather-pane .overlay-frame { transition: opacity 0.3s ease-out; }
 .ov-opacity { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .ov-opacity .player-range { flex: 1; }
+.ov-days { margin-top: 8px; }
+.ov-days-status { margin: 0 0 6px; }
+.ov-days-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ov-days-row input[type="date"] {
+  font: inherit; font-size: 14px; padding: 5px 8px; border-radius: 8px; min-height: 34px;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent); background: transparent; color: var(--text);
+  color-scheme: light dark;
+}
+.ov-days-row button {
+  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 999px; min-height: 34px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ov-days-row button:disabled { opacity: 0.4; cursor: default; }
 .ov-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
 @media (max-width: 560px) {
   .timebar { left: 8px; right: 8px; width: auto; transform: none; }

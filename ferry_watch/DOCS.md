@@ -294,7 +294,17 @@ lights, Sunset & sunrise and Light pollution. Tap a chip to show it (tap it agai
 hide it); the chosen one gets its note, opacity slider and options below the chips,
 and a colour legend sits at the bottom of the map. Under **On top** are the layers
 that can go over any colour layer: pressure lines (isobars every 2 hPa with the highs
-and lows marked), lightning, the rain radar and the sea ice chart (November to May).
+and lows marked), lightning, the rain radar, the sea ice concentration (November to
+May) and the **Ice chart**.
+
+The **Ice chart** is the Finnish Ice Service's daily chart (the one FMI publishes as a
+PDF), drawn on the map in the chart's own colours: drift ice by how close it is (light
+blue under 1/10, green 1-3/10, yellow 4-6/10, orange 7-8/10, red 9-10/10) and grey for
+fast or consolidated ice, with the thickness in cm written on the ice from zoom 7. It
+is cut to the water of the drawn chart, so it stays off the land. Under its switch
+pick any day of this or last winter (or *Newest* / *Last winter*); while the newest
+chart has no ice yet, last winter's (late February) is shown, and says so. Tap the ice
+for its class, concentration and thickness.
 
 **Tap the map** while a layer is on to read its value there (temperature, gusts,
 cloud at each height, the wave height, period and swell, the sky's brightness...).
@@ -569,7 +579,7 @@ by name.
 - Light pollution: [Light Pollution Atlas 2025](https://djlorenz.github.io/astronomy/lp/), David Lorenz, from VIIRS data by the Earth Observation Group, Payne Institute, Colorado School of Mines.
 - Terrain for the sunset spots: [Mapzen terrain tiles](https://registry.opendata.aws/terrain-tiles/) on AWS Open Data (in Europe mostly from EU-DEM; © the providers listed there).
 - Stars and constellations: [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD 3-Clause), from the HYG star database. Planet orbits: JPL's approximate Keplerian elements.
-- Ice chart: E.U. Copernicus Marine Service Information (FMI's Baltic sea ice concentration).
+- Ice chart: Finnish Ice Service (FMI), via E.U. Copernicus Marine Service Information (Baltic sea ice concentration and thickness charts).
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.
 - Drawn chart outside Finnish waters: depths from the [EMODnet Bathymetry](https://emodnet.ec.europa.eu/en/bathymetry)

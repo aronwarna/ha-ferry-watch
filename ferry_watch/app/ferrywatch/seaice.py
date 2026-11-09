@@ -41,7 +41,7 @@ def in_season(ts: float) -> bool:
     return time.gmtime(ts).tm_mon in SEASON_MONTHS
 
 
-def times_from_capabilities(xml: str, layer: str = CHART_LAYER) -> list[int]:
+def times_from_capabilities(xml: str, layer: str = CHART_LAYER, limit: int = DAYS) -> list[int]:
     """The days in the layer's time dimension. Copernicus lists all its layers in one
     document; the layer's block is found by its identifier."""
     start = xml.find(f">{layer}<")
@@ -52,7 +52,7 @@ def times_from_capabilities(xml: str, layer: str = CHART_LAYER) -> list[int]:
     for dim in _DIMENSION.findall(block):
         if re.search(r"<(?:\w+:)?Identifier>\s*time\s*<", dim, re.I):
             values = re.findall(r"<(?:\w+:)?Value>([^<]+)</", dim)
-            return parse_time_dimension(",".join(values), limit=DAYS)
+            return parse_time_dimension(",".join(values), limit=limit)
     return []
 
 

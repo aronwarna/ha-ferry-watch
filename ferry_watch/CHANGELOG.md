@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.43.0
+
+- New **Ice chart** layer (Weather › On top): FMI's daily ice chart drawn on the map in
+  the ice chart's colours, drift ice from very open (1-3/10, green) to very close
+  (9-10/10, red) and grey for fast or consolidated ice, with the thickness in cm on the
+  ice from zoom 7. It is cut to the sea like the other sea layers.
+- Pick any day of this or last winter under its switch, or Newest / Last winter. Until
+  this winter's ice comes, last winter's chart from late February is shown, and the
+  panel says so.
+- Tap the ice for its class, concentration and thickness.
+- The chart is read from the Copernicus Marine Service's open map service (FMI's ice
+  analysis as concentration and thickness), about 50 small requests for each day that's
+  looked at. Each day is kept as two small pictures (the last 40 days kept).
+
 ## 0.42.0
 
 - No-go seasons: bird and seal sanctuaries and reserves that are closed part of the year

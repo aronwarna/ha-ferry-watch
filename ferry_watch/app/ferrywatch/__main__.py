@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
 import logging
 import os
 import signal
@@ -29,7 +31,7 @@ from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
-from . import aurora, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from . import aurora, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
@@ -556,6 +558,20 @@ class FerryWatch:
         aurora.register(self.overlays, noaa)
         lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
         sunset.register(self.overlays)
+        ice_get = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simoverlays import fake_icechart_get as ice_get
+        icechart.register(self.overlays, DATA_DIR / "overlays" / "icechart", self.session, self._chart_water, ice_get)
+
+    async def _chart_water(self, z: int, x: int, y: int) -> tuple[dict, bool] | None:
+        """A drawn chart tile's water (vchart.water_of), for cutting the ice chart to the sea."""
+        if self.vchart is None:
+            return None
+        got = await self.vchart.water_gz(z, x, y, wait=2.0)
+        if got is None:
+            return None
+        body, complete = got
+        return json.loads(await asyncio.to_thread(gzip.decompress, body)), complete
 
     def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
         """Upstream address of a chart or sea mark tile the panel asks for."""

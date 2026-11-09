@@ -232,7 +232,7 @@ class Web:
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/sky-data.js",
+                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/icechart.js", "static/sky-data.js",
                      "static/sky.js", "static/reserves.js", "static/logbook.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
@@ -332,7 +332,9 @@ class Web:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
         # A frame's picture doesn't change: the browser may keep it as long as the NAS does.
         age = int(min(overlay.max_age, 7 * 86400))
-        return web.FileResponse(path, headers={"Cache-Control": f"max-age={age}", "Content-Type": "image/png"})
+        # A picture drawn before all it needed was there (the chart's water still coming).
+        cache = "no-store" if path.name.endswith(".partial.png") else f"max-age={age}"
+        return web.FileResponse(path, headers={"Cache-Control": cache, "Content-Type": "image/png"})
 
     async def overlay_points(self, request: web.Request) -> web.Response:
         try:

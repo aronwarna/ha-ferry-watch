@@ -48,7 +48,7 @@ PRUNE_EVERY = 1800  # s between removals of expired frames while overlays are in
 RUN_KEPT = 60  # s a points run stays parsed in memory after it was last asked for
 MISSING = -32768  # no value, in a binary run
 
-LocalTileFn = Callable[[int, int, int, int], Awaitable[bytes | None]]
+LocalTileFn = Callable[[int, int, int, int], Awaitable[bytes | tuple[bytes | None, bool] | None]]
 ValueFn = Callable[[float, float, int], Awaitable[dict[str, Any] | None]]
 
 TimesFn = Callable[[aiohttp.ClientSession | None, float], Awaitable[list[float]]]
@@ -96,6 +96,10 @@ class Overlay:
     static: bool = False  # one picture for all times (not on the time bar)
     tile: LocalTileFn | None = None  # "local": the PNG of one tile at a time
     value: ValueFn | None = None  # the value at a place and time, for a tap on the map
+    # Static layers with days to choose from (the ice chart): the panel shows a day picker,
+    # and `info` (given now) adds what the panel needs for it to the listing.
+    pickable: bool = False
+    info: Callable[[float], dict[str, Any]] | None = None
 
     def tile_url(self, ts: int, z: int, x: int, y: int) -> str:
         values = {"z": z, "x": x, "y": y, "ts": ts, "time": iso(ts), "date": iso(ts)[:10]}
@@ -295,6 +299,12 @@ class Overlays:
                     check = o.check(run, now)
                 except Exception:  # noqa: BLE001 - a check never stops the listing
                     _LOGGER.debug("Check of the %s overlay failed", o.title, exc_info=True)
+            info = None
+            if o.info and times is not None:
+                try:
+                    info = o.info(now)
+                except Exception:  # noqa: BLE001 - never stops the listing
+                    _LOGGER.debug("Info of the %s overlay failed", o.title, exc_info=True)
             out.append({
                 "id": o.id, "title": o.title, "kind": o.kind, "note": o.note, "color": o.color,
                 "attribution": o.attribution, "opacity": o.opacity, "min_zoom": o.min_zoom,
@@ -302,6 +312,7 @@ class Overlays:
                 "valid_for": o.valid_for or step_of(times or []) or 86400, "frame_ms": o.frame_ms,
                 "refresh": o.refresh, "times": times, "error": self.error(o), "check": check,
                 "group": o.group, "icon": o.icon, "static": o.static, "has_value": o.value is not None,
+                "pickable": o.pickable, "info": info,
             })
         return out
 
@@ -357,8 +368,13 @@ class Overlays:
                 return None
             self._errors.pop(o.id, None)
             self._note(o)
+            final = True
+            if isinstance(body, tuple):  # (picture, final): not final is drawn again next time
+                body, final = body
             if not body:
                 return None
+            if not final:
+                path = path.with_name(f"{y}.partial.png")
             await asyncio.to_thread(_write_bytes, path, body)
         self._locks.pop(f"{o.id}/{ts}/{z}/{x}/{y}", None)
         return path
