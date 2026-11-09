@@ -28,7 +28,7 @@ from .harbours import Harbours
 from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
-from . import aurora, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from . import aurora, dayscore, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
@@ -166,6 +166,7 @@ class FerryWatch:
         # The wind is checked against the stations' readings (when they are read anyway); it
         # comes with the weather model's run.
         wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
+        self.dayscore = self._day_score()
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
         self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
@@ -551,6 +552,19 @@ class FerryWatch:
         aurora.register(self.overlays, noaa)
         lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
         sunset.register(self.overlays)
+
+    def _day_score(self) -> dayscore.DayScore:
+        """The boating day score's own point forecasts along a route (made-up ones offline)."""
+        fetch = get_json = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import fake_fmi_fetch as fetch
+            from .simweather import fake_marine_json
+
+            async def get_json(url: str, params: dict[str, str]):
+                if url == marine.URL:
+                    return await fake_marine_json(url, params)
+                raise ValueError("offline")
+        return dayscore.DayScore(self.session, self.overlays, fetch, get_json)
 
     def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
         """Upstream address of a chart or sea mark tile the panel asks for."""

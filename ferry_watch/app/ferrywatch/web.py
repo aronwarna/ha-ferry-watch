@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, satellite, stats
+from . import __version__, config, dayscore, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
@@ -169,6 +169,7 @@ class Web:
         r.add_get("/api/routes", self.routes)
         r.add_post("/api/routes", self.save_route)
         r.add_delete("/api/routes/{route_id}", self.delete_route)
+        r.add_post("/api/day-score", self.day_score)
         r.add_get("/api/autoroute", self.autoroute)
         r.add_get("/api/fairways", self.fairways)
         r.add_get("/api/stations", self.stations)
@@ -669,6 +670,28 @@ class Web:
         return web.json_response({"ok": True})
 
     # --- routes, weather stations and harbours -----------------------------
+
+    async def day_score(self, request: web.Request) -> web.Response:
+        """The boating day score for a route: good, okay or bad to set off each hour of the
+        next two days, at the given speed (knots) for a boat size (see dayscore.py)."""
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest(text="Expected a route") from None
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected a route")
+        points = _points(body.get("points"), 2)
+        try:
+            speed = float(body.get("speed") or 25)
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Speed must be a number") from None
+        if not 0.5 <= speed <= 60:
+            raise web.HTTPBadRequest(text="Speed must be 0.5-60 kn")
+        try:
+            out = await self.fw.dayscore.score(points, speed, str(body.get("boat") or dayscore.DEFAULT_BOAT))
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
 
     async def routes(self, request: web.Request) -> web.Response:
         return web.json_response(self.fw.store.kv_get("routes", []))

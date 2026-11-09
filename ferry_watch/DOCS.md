@@ -273,6 +273,35 @@ as dashed lines with their name; tap one for its distance and **Edit route**.
 **On the map → Routes** lists them with a switch to show or hide each, **Edit**
 and **Delete**. There is no navigation guidance.
 
+### Boating weather: when to set off
+
+Once a route has two points, **Boating weather** under it scores each whole hour
+of the next two days as a time to leave: **good** (green), **okay** (amber) or
+**bad** (red). The add-on follows the route at the speed in the panel and reads
+the forecast where the boat would be when it gets there: wind, gusts, waves,
+rain, visibility and daylight (after civil dusk counts as okay at best). The
+worst place along the way decides the hour. The line next to the title says the
+best windows ("good today 10–15, tomorrow 08–12"); tap an hour for the numbers,
+which of them make it okay or bad and how far along the route; the stretches
+that do show as amber or red dots on the route. A darker foot under an hour
+means part of the trip is in the dark. Tap the title to fold it away.
+
+The boat size sets the limits (okay from / bad from):
+
+| | Wind m/s | Gusts m/s | Waves m | Rain mm/h | Sight km |
+|---|---|---|---|---|---|
+| Small open boat | 5 / 8 | 9 / 13 | 0.3 / 0.6 | 0.5 / 2.5 | under 4 / 1 |
+| Small boat | 6 / 10 | 10 / 15 | 0.5 / 1.0 | 0.5 / 3 | under 4 / 1 |
+| Cabin boat | 8 / 13 | 13 / 19 | 0.8 / 1.6 | 1 / 5 | under 3 / 0.8 |
+
+The forecast is asked for at points along the route (every 3 km, at most 30):
+FMI's HARMONIE model for the air (Open-Meteo if FMI doesn't answer), Open-Meteo's
+marine forecast for the waves, once an hour for a route. If neither answers, the
+weather layers' coarser grid stands in. The wave models hardly know the inner
+archipelago: where their nearest sea is more than 2 km from the route, the
+waves are counted lower (half from 8 km), which is a guess. It's for planning,
+not a promise: a forecast for small waters is never exact.
+
 ## Weather stations
 
 **On the map → Weather stations** (on by default, every map view) shows the

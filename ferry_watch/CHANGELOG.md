@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.41.0
+
+- Boating weather in the route tool: each hour of the next two days scored good, okay or
+  bad as a time to set off on the route, from the wind, gusts, waves, rain, visibility and
+  daylight where the boat would be at each moment of the trip (at the speed in the panel).
+  Pick the boat size (small open boat, small boat, cabin boat) for the limits. The line at
+  the top gives the best windows; tap an hour for why, and the okay or bad stretches show
+  as dots on the route. Saved routes get it when opened with Edit. The forecast is asked
+  for along the route itself (FMI HARMONIE, Open-Meteo marine), so it's finer than the
+  weather layers' grid; waves are counted lower among the islands, where the wave model
+  sees only the sea outside.
+
 ## 0.40.0
 
 - Waves, sea temperature and sea level are drawn only over the sea, on every map (Satellite
