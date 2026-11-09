@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.46.0
+
+- New weather layers: blue-green algae, from the Finnish Environment Institute's (SYKE) open
+  data. Switch them on in the weather menu.
+- "Blue-green algae (satellite)": SYKE's daily surface algae map from Sentinel-3 (the one
+  behind TARKKA and vesi.fi), 300 m squares over the whole Baltic: pale yellow where algae
+  are possible, orange probable, red certain, and a faint blue where the satellite saw clear
+  sea (no colour means cloud). It's cut to the drawn chart's sea, on every map. Tap the sea
+  for the class that day. The time bar steps through the days the satellite saw.
+- "Blue-green algae (reports)": what people saw on the shore and out at sea, sent to SYKE
+  through vesi.fi and Järviwiki, and SYKE's national monitoring sites (ringed dots): green
+  none, yellow some, orange plenty, red very much. Each day shows that day's reports and
+  the two before, the older ones fainter. Reports on lakes are left out. Tap a dot for
+  when it was seen, by whom (site or person) and their note.
+- Blooms come in summer: from October to May both layers show the last season (June to
+  September), so last summer can be looked through now. The bar shows months and dates
+  for them instead of clock times.
+
 ## 0.45.0
 
 - Port times on the ship card: for each ship, the port it is in or just left, the next port
