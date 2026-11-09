@@ -13,8 +13,11 @@ import json
 import logging
 import math
 import re
+import tempfile
 import time
 import weakref
+import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -114,6 +117,39 @@ def _image_type(path) -> str:
         return "image/jpeg" if f.read(3) == b"\xff\xd8\xff" else "image/png"
 
 
+LOGBOOK_MAX_BYTES = 200 * 1024 * 1024
+
+
+def _read_logbook_file(logbook, f, name: str) -> list[dict]:
+    """One uploaded file: GPX read in, a .zip opened for the GPX files in it, anything
+    else answered with why it can't be read."""
+    head = f.read(4)
+    f.seek(0)
+    low = name.lower()
+    if head[:2] == b"PK":
+        out = []
+        try:
+            with zipfile.ZipFile(f) as z:
+                for info in z.infolist():
+                    if info.filename.lower().endswith(".gpx") and not info.is_dir():
+                        with z.open(info) as g:
+                            out.extend(_read_logbook_file(logbook, g, f"{name}/{info.filename}"))
+        except zipfile.BadZipFile:
+            return [{"file": name, "error": "This zip file is damaged."}]
+        return out or [{"file": name, "error": "No GPX files in this zip."}]
+    if low.endswith(".adm"):
+        return [{"file": name, "error": "ADM is Garmin's own format, which only Garmin's apps read. "
+                 "On the plotter, choose GPX when saving to the card."}]
+    if low.endswith(".rsd"):
+        return [{"file": name, "error": "Sonar recordings (.RSD) are not read yet. Upload the GPX track for the logbook."}]
+    if low.endswith(".fit"):
+        return [{"file": name, "error": "FIT files are not read yet. Save the track as GPX on the plotter."}]
+    try:
+        return [logbook.add_gpx(f, name)]
+    except ET.ParseError as err:
+        return [{"file": name, "error": f"Not a GPX file the logbook can read ({err})."}]
+
+
 class Web:
     def __init__(self, fw: FerryWatch):
         self.fw = fw
@@ -175,6 +211,11 @@ class Web:
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
         r.add_get("/api/reserves", self.reserves)
+        r.add_get("/api/logbook", self.logbook)
+        r.add_post("/api/logbook/upload", self.logbook_upload)
+        r.add_get("/api/logbook/{trip_id}", self.logbook_trip)
+        r.add_post("/api/logbook/{trip_id}", self.logbook_edit)
+        r.add_delete("/api/logbook/{trip_id}", self.logbook_delete)
         r.add_static("/static/", STATIC, append_version=False)
         if DEV:
             # Every chart symbol drawn by vchart.js, for checking against Traficom's key.
@@ -192,7 +233,7 @@ class Web:
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
                      "static/overlays.js", "static/wind.js", "static/fields.js", "static/sky-data.js",
-                     "static/sky.js", "static/reserves.js"):
+                     "static/sky.js", "static/reserves.js", "static/logbook.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
@@ -794,6 +835,50 @@ class Web:
         if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
             raise web.HTTPBadRequest(text="The box is too big; zoom in")
         return web.json_response(self.fw.harbours.in_view(south, west, north, east))
+
+    # --- trip logbook (the Garmin plotter's tracks) -------------------------------------
+
+    async def logbook(self, request: web.Request) -> web.Response:
+        return web.json_response(await asyncio.to_thread(self.fw.logbook.listing))
+
+    async def logbook_trip(self, request: web.Request) -> web.Response:
+        trip = await asyncio.to_thread(self.fw.logbook.trip, request.match_info["trip_id"])
+        if not trip:
+            raise web.HTTPNotFound()
+        return web.json_response(trip)
+
+    async def logbook_upload(self, request: web.Request) -> web.Response:
+        """GPX files from the plotter's card (several at once, or a .zip of them). Each is
+        spooled to a temporary file first, so a whole season's track needn't fit in memory."""
+        reader = await request.multipart()
+        results = []
+        while (part := await reader.next()) is not None:
+            if part.name != "file":
+                continue
+            name = Path(part.filename or "upload").name
+            with tempfile.TemporaryFile() as tmp:
+                size = 0
+                while chunk := await part.read_chunk(256 * 1024):
+                    size += len(chunk)
+                    if size > LOGBOOK_MAX_BYTES:
+                        raise web.HTTPRequestEntityTooLarge(max_size=LOGBOOK_MAX_BYTES, actual_size=size)
+                    tmp.write(chunk)
+                tmp.seek(0)
+                results.extend(await asyncio.to_thread(_read_logbook_file, self.fw.logbook, tmp, name))
+        return web.json_response({"files": results})
+
+    async def logbook_edit(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        ok = await asyncio.to_thread(self.fw.logbook.set_info, request.match_info["trip_id"],
+                                     body.get("name"), body.get("note"))
+        if not ok:
+            raise web.HTTPNotFound()
+        return web.json_response({"ok": True})
+
+    async def logbook_delete(self, request: web.Request) -> web.Response:
+        if not await asyncio.to_thread(self.fw.logbook.delete, request.match_info["trip_id"]):
+            raise web.HTTPNotFound()
+        return web.json_response({"ok": True})
 
     async def reserves(self, request: web.Request) -> web.Response:
         """Nature reserves touching a box (bbox=west,south,east,north), with their outlines."""
