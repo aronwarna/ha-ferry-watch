@@ -33,6 +33,7 @@
   let harbourLayer = null;
   // Nature reserves (static/reserves.js): made once the map is up, see below.
   let reserves = null;
+  let logbook = null;
   // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
   // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
   // the marks on the first.
@@ -1700,6 +1701,7 @@
     if (name === "stats") loadStats().then(() => { pane.scrollTop = tabScroll.get(name) || 0; }).catch(console.error);
     if (name === "layers") renderLayers();
     if (name === "settings") renderSettings();
+    if (name === "logbook") logbook?.load();
   }
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   // Tap a folded explanation to read it whole (a link in it still opens).
@@ -1719,7 +1721,7 @@
     } else {
       menu.showModal();
     }
-    setTab(tab || (["stats", "layers", "settings"].includes(saved) ? saved : "ships"));
+    setTab(tab || (["stats", "logbook", "layers", "settings"].includes(saved) ? saved : "ships"));
     menu.focus(); // not the first tab, which would show a focus ring
   }
   menu.addEventListener("close", () => {
@@ -5271,6 +5273,14 @@
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     },
+  });
+  // Trips from ben's own Garmin plotter (Logbook tab). On a phone the sheet covers the
+  // map, so it closes when a trip is shown.
+  logbook = FerryLogbook.create({
+    map, api, esc, fmtDay, clock,
+    pane: $("logbook"), pill: $("trip-shown"),
+    onShow: () => { if (menuModal()) menu.close(); },
+    sideWidth: () => (document.body.classList.contains("menu-open") ? menu.offsetWidth : 0),
   });
   map.on("click", (e) => {
     if (route.on) return;

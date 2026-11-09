@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.41.0
+## 0.42.0
 
 - No-go seasons: bird and seal sanctuaries and reserves that are closed part of the year
   (no landing or no access) are drawn in red dashes with "No landing till 31 Jul" while
@@ -13,6 +13,23 @@
   written in a reserve's description ("Maihinnousukielto 1.4.–31.7.").
 - Layers › Highlight nature reserves shows how many are closed now. Reserves are
   downloaded again once after the update.
+
+## 0.41.0
+
+- New Logbook tab: your own trips from the Garmin plotter. Save the track to a microSD card
+  as GPX (Info › User Data › Data Transfer › Save to Card) and upload the file, several
+  files, or a .zip of the card's Garmin folder. The plotter's one long active track is cut
+  into trips where the boat lay still for 20 minutes or the log stopped; each shows the
+  date, from and to (the nearest harbour), distance, time underway, average and top speed,
+  and the depth and water temperature range when the sounder was on. Totals per year on
+  top. Upload the same card as often as you like: only new stretches are added, and a trip
+  that was half on an earlier card becomes whole.
+- Tap a trip for a speed and depth profile, a name and note, or Show on map: the track is
+  drawn coloured by speed (green dot where you left, red where you arrived); tap the line
+  for the time, speed, depth and water temperature there. The pill at the top takes it off.
+- Saved tracks (which Garmin keeps without times) are listed with their distance. ADM, FIT
+  and sonar (.RSD) files are answered with what to do instead. Removing a trip keeps it out
+  even if the same card is uploaded again. The logbook is in Home Assistant's backups.
 
 ## 0.40.0
 
