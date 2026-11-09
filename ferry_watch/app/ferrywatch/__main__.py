@@ -31,10 +31,12 @@ from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
-from . import aurora, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from .outlook import Outlook, fake_get_json
+from . import algae, aurora, dayscore, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
+from .portcalls import PortTimes
 from .satellite import Satellite
 from .predict import Predictor
 from .stations import Stations
@@ -88,6 +90,7 @@ class FerryWatch:
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
         self.other_photos: PhotoCache | None = None
+        self.ports: PortTimes | None = None
         self.web = Web(self)
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
@@ -161,6 +164,9 @@ class FerryWatch:
         if os.environ.get("FW_SIMULATE") == "1":
             from .simulate import fake_ice_fetch as fake_ice
         self.ice = IceWatch(self.session, self.store, fake_ice)
+        self.outlook = Outlook(self.store, self.session,
+                               fake_get_json(self.store) if os.environ.get("FW_SIMULATE") == "1" else None,
+                               live=self.predictor.get, ice=self.ice)
         # These only answer the panel's requests: nothing runs while no one looks.
         self.faults = Faults(self.session, fake_faults)
         self.traffic = Traffic(self.session, self.store,
@@ -170,6 +176,7 @@ class FerryWatch:
         # The wind is checked against the stations' readings (when they are read anyway); it
         # comes with the weather model's run.
         wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
+        self.dayscore = self._day_score()
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
         self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves, fake_syke)
         # Trips from ben's own Garmin plotter (GPX uploads); backed up with Home Assistant.
@@ -178,6 +185,23 @@ class FerryWatch:
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
         self.autoroute = AutoRouter(self.vchart)
+        fake_ports = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simports import fake_port_calls as fake_ports
+            from .simports import seed_visits
+            if os.environ.get("FW_SIM_HISTORY") == "1":
+                seed_visits(self.store.db)
+        self.ports = PortTimes(self.session, self.store.db, DATA_DIR / "portcalls.json.gz", fake_ports)
+        if not self.store.kv_get("port_visits_filled"):
+            # Port visits from the tracks kept from before 0.41.0, once, before any new
+            # position comes in.
+            ships = [s["mmsi"] for s in self.store.ships()] + list(self.fleets.members)
+            since = int(time.time()) - self.options.retention_days * 86400
+            added = await asyncio.to_thread(self.ports.visits.backfill, self.store, ships, since)
+            _LOGGER.info("Found %s earlier port visits in the stored tracks", added)
+            self.store.kv_set("port_visits_filled", True)
+        self.tracker.subscribe(self._port_event)
+        self.fleet_tracker.subscribe(self._port_event)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
         self.feed.add_tracker(self.fleet_tracker)
         self.tracker.subscribe(self.predictor.on_event)  # before the panel, which shows its result
@@ -228,7 +252,9 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
         self.tasks.append(asyncio.create_task(self._overlay_pruning()))
+        self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:
@@ -467,6 +493,7 @@ class FerryWatch:
                 if removed:
                     _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
+            self.ports.visits.prune()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.satellite.cache.prune)
             await asyncio.to_thread(self.overlays.prune)
@@ -514,6 +541,7 @@ class FerryWatch:
             "now": time.time(),
             "ships": ships,
             "feed": feed,
+            "port_calls": self.ports.status(),
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
@@ -562,6 +590,13 @@ class FerryWatch:
         if os.environ.get("FW_SIMULATE") == "1":
             from .simoverlays import fake_icechart_get as ice_get
         icechart.register(self.overlays, DATA_DIR / "overlays" / "icechart", self.session, self._chart_water, ice_get)
+        if os.environ.get("FW_SIMULATE") == "1":
+            from . import simalgae
+            algae.register(self.overlays, simalgae.fake_get, simalgae.fake_reports,
+                           satellite={"url": "sim://algae/{ts}/{z}/{x}/{y}",
+                                      "attribution": algae.ATTRIBUTION + " (simulated)"})
+        else:
+            algae.register(self.overlays)
 
     async def _chart_water(self, z: int, x: int, y: int) -> tuple[dict, bool] | None:
         """A drawn chart tile's water (vchart.water_of), for cutting the ice chart to the sea."""
@@ -572,6 +607,19 @@ class FerryWatch:
             return None
         body, complete = got
         return json.loads(await asyncio.to_thread(gzip.decompress, body)), complete
+
+    def _day_score(self) -> dayscore.DayScore:
+        """The boating day score's own point forecasts along a route (made-up ones offline)."""
+        fetch = get_json = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import fake_fmi_fetch as fetch
+            from .simweather import fake_marine_json
+
+            async def get_json(url: str, params: dict[str, str]):
+                if url == marine.URL:
+                    return await fake_marine_json(url, params)
+                raise ValueError("offline")
+        return dayscore.DayScore(self.session, self.overlays, fetch, get_json)
 
     def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
         """Upstream address of a chart or sea mark tile the panel asks for."""
@@ -599,6 +647,16 @@ class FerryWatch:
             "color": self.fleets.color(info.get("fleet")),
             "photo": self.photos.public_info(mmsi) if self.photos else None,
         }
+
+    def _port_event(self, kind: str, payload: dict[str, Any]) -> None:
+        p = payload.get("position") if kind == "position" else None
+        if p:
+            self.ports.visits.see(payload["mmsi"], p["ts"], p["lat"], p["lon"], p.get("sog"))
+
+    def port_times(self, mmsi: int) -> dict[str, Any]:
+        tracker = self.tracker_for(mmsi)
+        ship = tracker.ship_summary(mmsi) if tracker else {}
+        return self.ports.summary(mmsi, ship)
 
     def tracker_for(self, mmsi: int) -> Tracker | None:
         for tracker in (self.tracker, self.fleet_tracker):

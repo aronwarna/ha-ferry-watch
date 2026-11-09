@@ -531,6 +531,40 @@
     return lastMask;
   }
 
+  // One map tile's water, for tile overlays cut to the sea (the algae map): `ctx` holds the
+  // tile's picture, `size` px a side, at tile z/x/y; what isn't water is cleared. The water
+  // comes from the chart tile at the same zoom (zoom 12's past it, zoom 5's before it is
+  // too coarse to be worth it: left uncut). Says "ok", "pending" (chart still downloading:
+  // the tile is cleared, ask again later), or "none" (no water to be had: left as it is).
+  async function cutTileToWater(ctx, size, z, x, y) {
+    if (typeof Path2D === "undefined" || typeof fetch === "undefined") return "none";
+    if (z < WATER_MIN_Z) return "none";
+    const zw = Math.min(WATER_MAX_Z, z), d = 2 ** (z - zw);
+    const wx = Math.floor(x / d), wy = Math.floor(y / d);
+    let t = waterTile(`${zw}/${wx}/${wy}`);
+    if (t instanceof Promise) t = await Promise.race([t, pause(WATER_WAIT_MS).then(() => null)]);
+    if (!t) { ctx.clearRect(0, 0, size, size); return "pending"; } // still coming: clear for now
+    if (!t || t.state === "error" || !t.fills) {
+      if (t && t.state === "pending") { ctx.clearRect(0, 0, size, size); return "pending"; }
+      return "none";
+    }
+    const mask = document.createElement("canvas");
+    mask.width = mask.height = size;
+    const m = mask.getContext("2d");
+    const k = size * d * t.k;
+    m.setTransform(k, 0, 0, k, (wx * d - x) * size, (wy * d - y) * size);
+    m.fillStyle = "#000";
+    for (const p of t.fills) m.fill(p, "evenodd");
+    m.globalCompositeOperation = "destination-out";
+    for (const p of t.lakes) m.fill(p, "evenodd");
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(mask, 0, 0);
+    ctx.restore();
+    return t.state === "ok" ? "ok" : "pending";
+  }
+
   // The layer's grid's reach (half a step past its outer points), for which tiles to fetch.
   function gridBox(g) {
     const la = g.lats, lo = g.lons, hy = la.length > 1 ? (la[1] - la[0]) / 2 : 0.5, hx = lo.length > 1 ? (lo[1] - lo[0]) / 2 : 0.5;
@@ -1238,5 +1272,5 @@
   for (const id of Object.keys(LAYERS)) if (!renderers[id] && id !== "wind") renderers[id] = fieldRenderer(id);
 
   return { SCALES, LAYERS, colourAt, lut, grid, cell, sample, nearest, fogVis, contours, extremes, legendFor, fieldRenderer,
-    canvasLayer, renderers, compass, strikeColour, kpSummary, sunsetWhy, sunWord };
+    canvasLayer, renderers, cutTileToWater, compass, strikeColour, kpSummary, sunsetWhy, sunWord };
 });

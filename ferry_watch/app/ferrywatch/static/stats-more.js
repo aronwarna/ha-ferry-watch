@@ -1,4 +1,5 @@
-/* More in Stats: highlights (the wait since the last inner passage, the longest wait, the
+/* More in Stats: the inner route outlook for the next sailings (an experiment, with its
+   test score), highlights (the wait since the last inner passage, the longest wait, the
    busiest day, the fastest passage), how often ships took the inner route in wind like
    now, each ship's times past Porkkala lately, and the year at a glance. */
 window.FerryStatsMore = (() => {
@@ -119,6 +120,108 @@ window.FerryStatsMore = (() => {
       grid.append(card(String(alerts), "Alerts sent", alerts ? `the last ${dayName(rows.filter((p) => p.notified).pop().ts)}` : "None yet"));
     }
     s.append(grid);
+    return s;
+  }
+
+  // --- inner route outlook (api/outlook) ---
+
+  const FACTOR_WORDS = { wind: "wind strength", direction: "wind direction", waves: "waves", ice: "ice", habit: "recent choices" };
+  const OUTLOOK_TTL = 5 * 60 * 1000;
+  let outlookCache = null; // { at, data }
+
+  async function loadOutlook() {
+    if (outlookCache && Date.now() - outlookCache.at < OUTLOOK_TTL) return outlookCache.data;
+    const data = await (await fetch("api/outlook")).json();
+    outlookCache = { at: Date.now(), data };
+    return data;
+  }
+
+  function testText(t, using) {
+    const n = t.tested || 0, k = t.inner || 0;
+    const tested = `Tested on ${n} past passage${n === 1 ? "" : "s"} (${k} inner), each forecast made only from what was known the midnight before`;
+    switch (t.verdict) {
+      case "better":
+        return `${tested}: it scored ${Math.round(t.skill * 100)}% better than just going by each ship's usual share. The weather does tell something.`;
+      case "slightly_better":
+        return `${tested}: only ${Math.round(t.skill * 100)}% better than going by each ship's usual share. A small edge, nothing to bet on.`;
+      case "same":
+        return `${tested}: about as good as going by each ship's usual share. The weather adds little so far.`;
+      case "worse":
+        return `${tested}: it did ${Math.round(-t.skill * 100)}% worse than each ship's usual share, so the usual share is shown instead until it learns better.`;
+      case "too_little":
+        return n
+          ? `${tested}. That's too little to judge yet, so treat the chances as a rough guess.`
+          : "Not tested yet. Treat the chances as a rough guess.";
+      default:
+        return using === "model" ? "Not tested yet." : "Not enough passages yet: it needs at least 30, with 4 or more on each route. Until then each ship's usual share is shown.";
+    }
+  }
+
+  function testDetails(t) {
+    const d = el("details", "sm-test");
+    d.append(el("summary", null, "How good is it?"));
+    const p = [];
+    if (t.tested) {
+      p.push(`When it said 50% or more, ${t.caught} of the ${t.inner} inner passages were caught, with ${t.false_alarms} false alarm${t.false_alarms === 1 ? "" : "s"}`
+        + ` (the usual share alone would have caught ${t.caught_usual}).`);
+      if (t.mean_before_inner != null && t.mean_before_outer != null) {
+        p.push(`Before inner passages it said ${Math.round(t.mean_before_inner * 100)}% on average, before outer ones ${Math.round(t.mean_before_outer * 100)}%. The further apart, the more it knows.`);
+      }
+      p.push(`Score (Brier, lower is better): ${t.brier} against ${t.brier_usual} for the usual share.`);
+    }
+    d.append(...p.map((x) => el("p", "small", esc(x))));
+    if (t.bands?.length) {
+      const table = el("table", "sm-bands");
+      table.innerHTML = "<thead><tr><th>It said</th><th>Sailings</th><th>Went inner</th></tr></thead><tbody>"
+        + t.bands.map(([lo, hi, n, inner]) => `<tr><td>${Math.round(lo * 100)}–${Math.round(hi * 100)}%</td><td>${n}</td><td>${inner} (${pct(inner, n)}%)</td></tr>`).join("")
+        + "</tbody>";
+      d.append(table);
+    }
+    d.append(el("p", "small muted", "The test uses the weather that actually came. Real forecasts a day or two ahead are less sure, so expect it to do a little worse than this."));
+    return d;
+  }
+
+  function sailingRow(s, ships, using) {
+    const ship = ships.get(s.mmsi);
+    const chance = using === "model" && s.chance != null ? s.chance : s.usual;
+    const row = el("div", "sm-outlook-row");
+    const when = new Date(s.ts * 1000);
+    const time = `${dayName(s.ts)}, ${hhmm(when.getHours() * 60 + when.getMinutes())}`;
+    const wind = s.wind == null ? "" : `${s.dir == null ? "" : `${SECTORS[Math.round(s.dir / 45) % 8]} `}${Math.round(s.wind)} m/s`
+      + `${s.gust == null ? "" : `, gusts ${Math.round(s.gust)}`}${s.wave == null ? "" : `, waves ${s.wave.toFixed(1)} m`}`;
+    const up = (s.reasons || []).filter(([, v]) => v > 0).map(([k]) => FACTOR_WORDS[k] || k);
+    const down = (s.reasons || []).filter(([, v]) => v < 0).map(([k]) => FACTOR_WORDS[k] || k);
+    const why = [up.length ? `more likely: ${up.join(", ")}` : "", down.length ? `less likely: ${down.join(", ")}` : ""].filter(Boolean).join(" · ");
+    const share = Math.round(chance * 100), usual = Math.round(s.usual * 100);
+    row.innerHTML = `<div class="sm-outlook-head"><span class="dot" style="background:${esc(ship?.color || "#64748b")}"></span>`
+      + `<span class="grow"><strong>${esc(shortName(ship?.name || `MMSI ${s.mmsi}`))}</strong> ${arrowTo(s.direction)}`
+      + `<span class="small muted"> · ${s.live ? "under way, " : "about "}${time}</span></span>`
+      + `<strong class="sm-outlook-pct">${share}%</strong></div>`
+      + `<div class="sm-scale" role="img" aria-label="${share}% chance of the inner route, usually ${usual}%"><i class="fill" style="width:${share}%"></i>`
+      + `<i class="mark" style="left:${usual}%" title="Usual share: ${usual}%"></i></div>`
+      + `<div class="small muted">${esc(wind)}${wind && why ? " · " : ""}${esc(why)}</div>`;
+    return row;
+  }
+
+  function outlookSection(ships) {
+    const s = section("Inner route outlook", "The next 48 hours: how likely each sailing is to take the inner route. An experiment, see how it did below.");
+    const box = el("div", "sm-outlook");
+    box.append(el("p", "small muted", "Loading…"));
+    s.append(box);
+    loadOutlook().then((o) => {
+      const rows = (o.sailings || []).filter((x) => ships.has(x.mmsi));
+      const parts = [];
+      if (!rows.length) {
+        parts.push(el("p", "small muted", o.weather?.updated ? "No sailings expected in the next 48 hours (or not enough history to know when they sail)."
+          : `Waiting for the weather forecast${o.weather?.error ? ` (${esc(o.weather.error)})` : ""}.`));
+      } else {
+        parts.push(...rows.map((x) => sailingRow(x, ships, o.using)));
+      }
+      parts.push(el("p", "small sm-verdict", esc(testText(o.test || {}, o.using))));
+      if (o.test?.tested) parts.push(testDetails(o.test));
+      parts.push(el("p", "small muted", `The mark on each bar is the ship's usual share that way. ${esc(o.weather?.credit || "")}`));
+      box.replaceChildren(...parts);
+    }).catch(() => box.replaceChildren(el("p", "small muted", "The outlook could not be loaded.")));
     return s;
   }
 
@@ -282,6 +385,7 @@ window.FerryStatsMore = (() => {
     const now = Date.now() / 1000;
     const ships = new Map(ctx.ships.map((s) => [s.mmsi, s]));
     box.replaceChildren(...[
+      outlookSection(ships),
       highlights(rows, ships, now),
       windNow(rows, ctx.wind),
       timing(rows, ships, now, ctx.onShowLine),

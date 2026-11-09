@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, satellite, stats
+from . import __version__, config, dayscore, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
@@ -196,7 +196,9 @@ class Web:
         r.add_get("/api/aircraft/overview", self.air_overview)
         r.add_post("/api/weather", self.set_weather)
         r.add_get("/api/faults", self.faults)
+        r.add_get("/api/outlook", self.outlook)
         r.add_get("/api/traffic", self.traffic)
+        r.add_get("/api/ports/{mmsi}", self.port_times)
         r.add_post("/api/vchart/keep", self.set_vchart_keep)
         r.add_post("/api/vchart/foreign", self.set_vchart_foreign)
         r.add_post("/api/vchart/key", self.set_mml_key)
@@ -205,6 +207,7 @@ class Web:
         r.add_get("/api/routes", self.routes)
         r.add_post("/api/routes", self.save_route)
         r.add_delete("/api/routes/{route_id}", self.delete_route)
+        r.add_post("/api/day-score", self.day_score)
         r.add_get("/api/autoroute", self.autoroute)
         r.add_get("/api/fairways", self.fairways)
         r.add_get("/api/stations", self.stations)
@@ -232,7 +235,7 @@ class Web:
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/icechart.js", "static/sky-data.js",
+                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/algae.js", "static/icechart.js", "static/sky-data.js",
                      "static/sky.js", "static/reserves.js", "static/logbook.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
@@ -631,6 +634,17 @@ class Web:
     async def faults(self, request: web.Request) -> web.Response:
         return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
 
+    async def outlook(self, request: web.Request) -> web.Response:
+        ships = {s["mmsi"]: s for s in self.fw.store.ships()}
+        return web.json_response(await self.fw.outlook.payload(ships))
+
+    async def port_times(self, request: web.Request) -> web.Response:
+        try:
+            mmsi = int(request.match_info["mmsi"])
+        except ValueError:
+            raise web.HTTPBadRequest(text="mmsi must be a number")
+        return web.json_response(self.fw.port_times(mmsi))
+
     async def traffic(self, request: web.Request) -> web.Response:
         if "s" in request.query:  # a wide view: every ship inside the box
             try:
@@ -712,6 +726,28 @@ class Web:
         return web.json_response({"ok": True})
 
     # --- routes, weather stations and harbours -----------------------------
+
+    async def day_score(self, request: web.Request) -> web.Response:
+        """The boating day score for a route: good, okay or bad to set off each hour of the
+        next two days, at the given speed (knots) for a boat size (see dayscore.py)."""
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest(text="Expected a route") from None
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected a route")
+        points = _points(body.get("points"), 2)
+        try:
+            speed = float(body.get("speed") or 25)
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Speed must be a number") from None
+        if not 0.5 <= speed <= 60:
+            raise web.HTTPBadRequest(text="Speed must be 0.5-60 kn")
+        try:
+            out = await self.fw.dayscore.score(points, speed, str(body.get("boat") or dayscore.DEFAULT_BOAT))
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
 
     async def routes(self, request: web.Request) -> web.Response:
         return web.json_response(self.fw.store.kv_get("routes", []))

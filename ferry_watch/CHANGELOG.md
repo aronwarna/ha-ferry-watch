@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.43.0
+## 0.47.0
 
 - New **Ice chart** layer (Weather › On top): FMI's daily ice chart drawn on the map in
   the ice chart's colours, drift ice from very open (1-3/10, green) to very close
@@ -13,6 +13,72 @@
 - The chart is read from the Copernicus Marine Service's open map service (FMI's ice
   analysis as concentration and thickness), about 50 small requests for each day that's
   looked at. Each day is kept as two small pictures (the last 40 days kept).
+
+## 0.46.0
+
+- New weather layers: blue-green algae, from the Finnish Environment Institute's (SYKE) open
+  data. Switch them on in the weather menu.
+- "Blue-green algae (satellite)": SYKE's daily surface algae map from Sentinel-3 (the one
+  behind TARKKA and vesi.fi), 300 m squares over the whole Baltic: pale yellow where algae
+  are possible, orange probable, red certain, and a faint blue where the satellite saw clear
+  sea (no colour means cloud). It's cut to the drawn chart's sea, on every map. Tap the sea
+  for the class that day. The time bar steps through the days the satellite saw.
+- "Blue-green algae (reports)": what people saw on the shore and out at sea, sent to SYKE
+  through vesi.fi and Järviwiki, and SYKE's national monitoring sites (ringed dots): green
+  none, yellow some, orange plenty, red very much. Each day shows that day's reports and
+  the two before, the older ones fainter. Reports on lakes are left out. Tap a dot for
+  when it was seen, by whom (site or person) and their note.
+- Blooms come in summer: from October to May both layers show the last season (June to
+  September), so last summer can be looked through now. The bar shows months and dates
+  for them instead of clock times.
+
+## 0.45.0
+
+- Port times on the ship card: for each ship, the port it is in or just left, the next port
+  and the one after, with when it arrived or left, and when it is due and leaves. Expected
+  times are blue with a ≈ and a tag saying where they come from:
+  - "port": what the ship's agent has announced to Helsinki, Mariehamn, Långnäs or Turku
+    (Portnet port calls from Digitraffic, fetched every 10 minutes);
+  - "usual": the ship's usual crossing time and stay, learnt from its own earlier trips
+    (this is how Tallinn and Stockholm get times: Portnet only covers Finnish ports);
+  - "AIS": the crew's own ETA, when it is close to the usual time.
+  The berth (Olympia, Katajanokka, Länsisatama...) is shown when announced. The earlier
+  trips are read once from the tracks already kept, so the usual times work from the first
+  start; fleet ships learn theirs as they sail.
+- Other ships' popups show their announced calls at Finnish ports too.
+- Tapping a ship zooms to its track again (broken since 0.36.1), and passage replays fit
+  the hour either side of the passage as meant.
+
+## 0.44.0
+
+- Stats: new "Inner route outlook" at the top. For each ferry sailing expected in the next
+  48 hours it gives the chance of the inner route past Porkkala, with the wind, gusts and
+  waves forecast for that time and what pushes the chance up or down (wind strength, wind
+  direction, waves, ice, the ships' recent choices). The bar's mark is the ship's usual
+  share that way.
+- It's an experiment, and it says how well it does. A small model learns from your own
+  passages and the weather at each one, and is tested as if it had been running all
+  along: each day of the history is forecast only from what was known the midnight
+  before, then scored against what the ships really did, next to the plain guess "the
+  ship's usual share". "How good is it?" shows the result: inner passages caught, false
+  alarms, and how often inner really followed when it said 0-10%, 10-25% and so on. If
+  the model does worse than the usual share, the usual share is shown instead.
+- The weather for past passages and for the forecast comes from the same place
+  (Open-Meteo's hourly wind off Porkkala and its wave model, CC BY 4.0): two small
+  requests every 3 hours, older days filled in once. The next sailings are read from each
+  ship's rhythm; a ship under way uses its next-passage time.
+
+## 0.43.0
+
+- Boating weather in the route tool: each hour of the next two days scored good, okay or
+  bad as a time to set off on the route, from the wind, gusts, waves, rain, visibility and
+  daylight where the boat would be at each moment of the trip (at the speed in the panel).
+  Pick the boat size (small open boat, small boat, cabin boat) for the limits. The line at
+  the top gives the best windows; tap an hour for why, and the okay or bad stretches show
+  as dots on the route. Saved routes get it when opened with Edit. The forecast is asked
+  for along the route itself (FMI HARMONIE, Open-Meteo marine), so it's finer than the
+  weather layers' grid; waves are counted lower among the islands, where the wave model
+  sees only the sea outside.
 
 ## 0.42.0
 

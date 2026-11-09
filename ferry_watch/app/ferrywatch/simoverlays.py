@@ -119,7 +119,10 @@ class FakeTileSession:
 
     def get(self, url: str, **kw) -> _Response:
         _, _, kind, ts, z, x, y = url.split("/")
-        draw = ice_tile if kind == "sea-ice" else rain_tile
+        if kind == "algae":
+            from .simalgae import algae_tile as draw
+        else:
+            draw = ice_tile if kind == "sea-ice" else rain_tile
         return _Response(draw(int(ts), int(z), int(x), int(y)))
 
 

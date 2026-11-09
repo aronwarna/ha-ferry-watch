@@ -142,6 +142,17 @@ ice or change their schedule.
 The card also shows the ETA the crew entered in AIS (**ETA Stockholm 09:45
 (AIS)**) and the draught they report.
 
+## Inner route outlook
+
+At the top of Stats: each ferry sailing expected in the next 48 hours, with its chance of
+taking the inner route, the forecast wind, gusts and waves at that time, and what pushes
+the chance up or down. It's an experiment. A small model learns from your passages and
+the weather at each one (wind strength and direction, gusts, waves, ice, the ships'
+recent choices), and it is tested on your own history day by day, using only what was
+known the midnight before, against the plain guess of each ship's usual share. "How good
+is it?" shows the result. If it does worse than the usual share, the usual share is shown
+instead. Weather for past and future comes from Open-Meteo (CC BY 4.0).
+
 ## Sea conditions and the sun
 
 A pill under the top bar shows the wind (an arrow pointing where it blows), the
@@ -272,6 +283,35 @@ straight legs are kept, so **Edit** opens it as you drew it. Saved routes show
 as dashed lines with their name; tap one for its distance and **Edit route**.
 **On the map → Routes** lists them with a switch to show or hide each, **Edit**
 and **Delete**. There is no navigation guidance.
+
+### Boating weather: when to set off
+
+Once a route has two points, **Boating weather** under it scores each whole hour
+of the next two days as a time to leave: **good** (green), **okay** (amber) or
+**bad** (red). The add-on follows the route at the speed in the panel and reads
+the forecast where the boat would be when it gets there: wind, gusts, waves,
+rain, visibility and daylight (after civil dusk counts as okay at best). The
+worst place along the way decides the hour. The line next to the title says the
+best windows ("good today 10–15, tomorrow 08–12"); tap an hour for the numbers,
+which of them make it okay or bad and how far along the route; the stretches
+that do show as amber or red dots on the route. A darker foot under an hour
+means part of the trip is in the dark. Tap the title to fold it away.
+
+The boat size sets the limits (okay from / bad from):
+
+| | Wind m/s | Gusts m/s | Waves m | Rain mm/h | Sight km |
+|---|---|---|---|---|---|
+| Small open boat | 5 / 8 | 9 / 13 | 0.3 / 0.6 | 0.5 / 2.5 | under 4 / 1 |
+| Small boat | 6 / 10 | 10 / 15 | 0.5 / 1.0 | 0.5 / 3 | under 4 / 1 |
+| Cabin boat | 8 / 13 | 13 / 19 | 0.8 / 1.6 | 1 / 5 | under 3 / 0.8 |
+
+The forecast is asked for at points along the route (every 3 km, at most 30):
+FMI's HARMONIE model for the air (Open-Meteo if FMI doesn't answer), Open-Meteo's
+marine forecast for the waves, once an hour for a route. If neither answers, the
+weather layers' coarser grid stands in. The wave models hardly know the inner
+archipelago: where their nearest sea is more than 2 km from the route, the
+waves are counted lower (half from 8 km), which is a guess. It's for planning,
+not a promise: a forecast for small waters is never exact.
 
 ## Weather stations
 

@@ -860,10 +860,7 @@
     if (!focused) return;
     const entry = ships.get(focused.mmsi);
     const pts = focused.points.map((p) => [p[0], p[1]]);
-    const near = data.points.filter((q) => Math.abs(q[2] - p.ts) <= REPLAY_FOCUS).map((q) => [q[0], q[1]]);
-    if (near.length > 1) {
-      map.fitBounds(L.latLngBounds(near), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
-    } else if (pts.length > 1) {
+    if (pts.length > 1) {
       map.fitBounds(L.latLngBounds(pts), { ...cardPadding(), maxZoom: 13 });
     } else if (entry?.info.position) {
       map.setView([entry.info.position.lat, entry.info.position.lon], 12);
@@ -1021,6 +1018,7 @@
     $("card-play").hidden = (focused.points || []).length < 2;
     $("peek-play").hidden = (focused.points || []).length < 2;
     renderCardStats(info);
+    renderPortTimes(info);
     renderPeek(info);
 
     const photo = info.photo;
@@ -1038,6 +1036,74 @@
       $("card-img").removeAttribute("src");
       box.classList.add("empty");
     }
+  }
+
+  // --- port times: when the ship left, is due and leaves (Portnet, AIS, its own history) ---
+  const portTimes = new Map(); // mmsi -> {data, at, key}
+  const PORT_SRC = { portnet: "port", usual: "usual", ais_eta: "AIS", ais: "" };
+  const PORT_SRC_TITLE = {
+    portnet: "Announced by the ship's agent to the Finnish port (Portnet, via Digitraffic)",
+    usual: "From this ship's usual crossing time and stay, out of its earlier trips",
+    ais_eta: "The crew's own ETA, sent over AIS",
+  };
+
+  function loadPortTimes(mmsi, key) {
+    const have = portTimes.get(mmsi);
+    if (have?.loading || (have && have.key === key && Date.now() - have.at < 60000)) return have?.data;
+    portTimes.set(mmsi, { ...have, loading: true });
+    fetch(`api/ports/${mmsi}`).then((r) => (r.ok ? r.json() : null))
+      .then((data) => { portTimes.set(mmsi, { data, at: Date.now(), key }); if (focused?.mmsi === mmsi) renderCard(); })
+      .catch(() => portTimes.set(mmsi, { ...have, loading: false, at: Date.now(), key }));
+    return have?.data;
+  }
+
+  function portClock(t, verb) {
+    const el = document.createElement("span");
+    el.className = "port-time";
+    const d = new Date(t.ts * 1000);
+    const sameDay = d.toDateString() === new Date(now() * 1000).toDateString();
+    const day = sameDay ? "" : `${DAY_NAMES[(d.getDay() + 6) % 7]} `;
+    el.textContent = `${verb} ${t.actual ? "" : "≈"}${day}${clock(t.ts)}`;
+    if (!t.actual) el.classList.add("expected");
+    el.title = t.actual ? (t.src === "portnet" ? "Reported to the port" : "Seen from its AIS positions") : PORT_SRC_TITLE[t.src] || "";
+    return el;
+  }
+
+  // One port: "Mariehamn | due ≈23:53 · leaves ≈00:08 port" (the tag says where expected times come from).
+  function portRowCells(r, t = now()) {
+    const name = document.createElement("span");
+    name.className = "port-name";
+    name.textContent = r.port;
+    const times = document.createElement("span");
+    times.className = "port-times";
+    const parts = [];
+    // A port it has already left: only when it left (the arrival is old news).
+    if (r.arrive && !(r.arrive.actual && r.leave?.actual)) parts.push(portClock(r.arrive, r.arrive.actual ? "arrived" : "due"));
+    if (r.leave) parts.push(portClock(r.leave, r.leave.actual ? "left" : "leaves"));
+    parts.forEach((el, i) => { if (i) times.append(" · "); times.append(el); });
+    if (!parts.length) times.append("next port, no time yet");
+    const src = [r.arrive, r.leave].find((x) => x && !x.actual && PORT_SRC[x.src])?.src;
+    const extra = [src && PORT_SRC[src], r.berth && r.berth.toLowerCase() !== r.port.toLowerCase() ? titleCase(r.berth) : ""].filter(Boolean);
+    if (extra.length) {
+      const tag = document.createElement("small");
+      tag.textContent = ` ${extra.join(" · ")}`;
+      if (src) tag.title = PORT_SRC_TITLE[src];
+      times.append(tag);
+    }
+    if (r.usual_trip && !r.arrive?.actual) times.title = `Usual crossing ${duration(r.usual_trip)}`;
+    return [name, times];
+  }
+
+  function renderPortTimes(info) {
+    const box = $("card-ports");
+    const data = loadPortTimes(info.mmsi, `${info.in_port}|${info.voyage_start}`);
+    const rows = data?.rows || [];
+    box.hidden = !rows.length;
+    if (!rows.length) { box.replaceChildren(); return; }
+    const head = document.createElement("div");
+    head.className = "port-head small muted";
+    head.textContent = "Port times";
+    box.replaceChildren(head, ...rows.flatMap((r) => portRowCells(r)));
   }
 
   // Inner-route numbers for one of my ships, from the same data as the Stats tab.
@@ -2295,7 +2361,11 @@
     $("strip").hidden = true;
 
     const panel = $("replay").getBoundingClientRect();
-    if (pts.length > 1) {
+    // The whole trip is drawn, but the map fits the hour either side of the passage.
+    const near = data.points.filter((q) => Math.abs(q[2] - p.ts) <= REPLAY_FOCUS).map((q) => [q[0], q[1]]);
+    if (near.length > 1) {
+      map.fitBounds(L.latLngBounds(near), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
+    } else if (pts.length > 1) {
       map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 70], paddingBottomRight: [40, window.innerHeight - panel.top + 20], maxZoom: 13 });
     } else if (pts.length) {
       map.setView(pts[0], 11);
@@ -3439,6 +3509,9 @@
       rows.push(["Ship positions (Digitraffic)", feed.connected && !quiet ? "ok" : "bad",
         feed.connected ? (quiet ? `Connected, but nothing since ${fmtWhen(feed.last_message_ts)}` : ok(feed.last_message_ts)) : "Not connected; it keeps trying"]);
     }
+    const pc = st.port_calls || {};
+    rows.push(["Port calls (Digitraffic)", pc.error ? "bad" : pc.fetched ? "ok" : "off",
+      pc.error ? `Failing: ${pc.error}` : pc.fetched ? `${ok(pc.fetched)} · ${pc.calls} calls` : "Waiting for the first fetch"]);
     rows.push(["Home Assistant", st.ha_connected ? "ok" : "bad", st.ha_connected ? "Connected" : "Not connected: no alerts or phone position"]);
     const w = st.weather || {};
     rows.push(["Sea conditions (FMI)", w.enabled === false ? "off" : w.error ? "bad" : "ok",
@@ -3838,6 +3911,18 @@
     for (const text of lines.filter(Boolean)) {
       el.append(document.createElement("br"), text);
     }
+    // Its announced calls at Finnish ports (Portnet), when it has any.
+    const ports = document.createElement("div");
+    ports.className = "card-ports popup-ports";
+    ports.hidden = true;
+    el.append(ports);
+    fetch(`api/ports/${mmsi}`).then((r) => (r.ok ? r.json() : null)).then((data) => {
+      const rows = data?.rows || [];
+      if (!rows.length) return;
+      ports.replaceChildren(...rows.flatMap((r) => portRowCells(r)));
+      ports.hidden = false;
+      boat.getPopup()?.update();
+    }).catch(() => {});
     const follow = document.createElement("button");
     follow.type = "button";
     follow.className = "link-button popup-action";
@@ -3997,6 +4082,7 @@
       showFind(false);
       routePopup?.remove();
       if (route.pick) cancelPick();
+      rw.layer.remove();
     }
     $("route").hidden = !on;
     $("route-button").setAttribute("aria-pressed", String(on));
@@ -4703,7 +4789,181 @@
     $("route-save").disabled = pts.length < 2 || route.legs.some((l) => l.fw && l.busy);
     $("route-save").textContent = route.id ? "Update" : "Save";
     $("route-draught-box").hidden = routeMode !== "fw" && !route.legs.some((l) => l.fw);
+    scheduleDayScore();
   }
+
+  // --- boating day score: good, okay or bad to set off on the route, hour by hour ---------
+  // The add-on follows the route at the speed above and reads the forecast where the boat
+  // would be when it's there (wind, gusts, waves, rain, visibility, daylight), against the
+  // limits for the boat size picked here (see dayscore.py). The strip is each whole hour of
+  // the next two days to leave at; tap one for why, and the stretches that make it okay or
+  // bad show on the route.
+  const RW_COLORS = ["#16a34a", "#f59e0b", "#dc2626"];
+  const RW_WORDS = ["Good", "Okay", "Bad"];
+  const RW_NAMES = { wind: "wind", gust: "gusts", wave: "waves", rain: "rain", vis: "visibility", dark: "dark" };
+  const rw = { key: "", data: null, error: null, busy: false, sel: null, timer: 0, seq: 0, layer: L.layerGroup() };
+  let routeBoat = ["small", "medium", "large"].includes(store.get("fw-route-boat")) ? store.get("fw-route-boat") : "medium";
+  let rwOpen = store.get("fw-route-wx") !== "0";
+
+  function scheduleDayScore() {
+    const pts = route.points;
+    const ready = route.on && pts.length > 1 && !route.legs.some(legPending) && !route.dragging;
+    $("route-wx").hidden = !(route.on && pts.length > 1);
+    if (!ready) { if (!route.on || pts.length < 2) { rw.key = ""; rw.data = null; drawDayScoreMarks(); } return; }
+    const key = JSON.stringify([pts.map((p) => [Math.round(p[0] * 1e4), Math.round(p[1] * 1e4)]), routeSpeed, routeBoat]);
+    if (key === rw.key) return;
+    clearTimeout(rw.timer);
+    rw.timer = setTimeout(() => loadDayScore(key, pts), rw.data ? 900 : 300);
+  }
+
+  async function loadDayScore(key, pts) {
+    const seq = ++rw.seq;
+    rw.key = key;
+    rw.busy = true;
+    renderDayScore();
+    let data = null, error = null;
+    try {
+      data = await api("api/day-score", { method: "POST", body: { points: pts, speed: routeSpeed, boat: routeBoat } });
+    } catch (err) {
+      error = String(err.message || err).slice(0, 160) || "no answer";
+    }
+    if (seq !== rw.seq) return;
+    rw.busy = false;
+    rw.error = error;
+    if (data) {
+      const keep = rw.data && rw.sel != null ? rw.data.hours[rw.sel]?.t : null;
+      rw.data = data;
+      const i = keep != null ? data.hours.findIndex((h) => h.t === keep) : -1;
+      rw.sel = i >= 0 ? i : data.hours.length ? 0 : null;
+    } else if (error) {
+      rw.data = null;
+      rw.key = ""; // ask again on the next change
+    }
+    renderDayScore();
+  }
+
+  // "today 09–14" for runs of hours of one score, by local day.
+  function scoreWindows(hours, score, limit = 2) {
+    const out = [];
+    let run = null;
+    for (const h of hours) {
+      const day = fmtDay(h.t);
+      if (h.score === score && run && run.day === day && h.t === run.end + 3600) run.end = h.t;
+      else if (h.score === score) { run = { day, start: h.t, end: h.t }; out.push(run); }
+      else run = null;
+    }
+    const today = fmtDay(now());
+    return out.slice(0, limit).map((r) => {
+      const d = r.day === today ? "today" : r.day === fmtDay(now() + 86400) ? "tomorrow" : r.day.split(" ")[0];
+      const hh = (t) => String(new Date(t * 1000).getHours()).padStart(2, "0");
+      return `${d} ${hh(r.start)}–${hh(r.end + 3600)}`;
+    });
+  }
+
+  function dayScoreSummary(d) {
+    if (!d.hours.length) return "too long a trip for the forecast";
+    if (d.hours[0].score === 0 && d.hours[0].t <= now()) return "good to go now";
+    const good = scoreWindows(d.hours, 0);
+    if (good.length) return `good ${good.join(", ")}`;
+    const okay = scoreWindows(d.hours, 1);
+    return okay.length ? `no good hours; okay ${okay.join(", ")}` : "bad for the next two days";
+  }
+
+  function renderDayScore() {
+    const d = rw.data;
+    $("rw-toggle").setAttribute("aria-expanded", String(rwOpen));
+    $("rw-body").hidden = !rwOpen;
+    $("route-boat").value = routeBoat;
+    setText($("rw-sum"), rw.busy && !d ? "reading the forecast…" : rw.error ? "no forecast" : d ? dayScoreSummary(d) : "");
+    const strip = $("rw-strip");
+    if (!d) {
+      strip.replaceChildren();
+      setText($("rw-detail"), rw.error ? `No forecast for the route: ${rw.error}` : rw.busy ? "Reading the forecast along the route…" : "");
+      drawDayScoreMarks();
+      return;
+    }
+    strip.classList.toggle("busy", rw.busy);
+    let lastDay = null;
+    strip.replaceChildren(...d.hours.map((h, i) => {
+      const col = document.createElement("button");
+      col.type = "button";
+      const hr = new Date(h.t * 1000).getHours();
+      const day = fmtDay(h.t);
+      col.className = `rw-h s${h.score}${h.dark ? " dark" : ""}${i === rw.sel ? " sel" : ""}${day !== lastDay && i ? " newday" : ""}`;
+      col.dataset.day = day !== lastDay ? (day === fmtDay(now()) ? "Today" : day.split(" ")[0]) : "";
+      lastDay = day;
+      if (hr % 3 === 0) col.innerHTML = `<span class="rw-hr">${String(hr).padStart(2, "0")}</span>`;
+      col.title = `${clock(h.t)}: ${RW_WORDS[h.score]}`;
+      col.setAttribute("aria-label", `Leave ${fmtWhen(h.t)}: ${RW_WORDS[h.score]}`);
+      col.setAttribute("aria-pressed", String(i === rw.sel));
+      col.addEventListener("click", () => { rw.sel = i; renderDayScore(); });
+      return col;
+    }));
+    renderDayScoreDetail();
+    drawDayScoreMarks();
+  }
+
+  function renderDayScoreDetail() {
+    const d = rw.data, h = d?.hours[rw.sel];
+    const box = $("rw-detail");
+    if (!h) { setText(box, d && !d.hours.length ? "The trip is longer than the two days of forecast." : ""); return; }
+    const lim = (k) => h.why.find((w) => w.k === k);
+    const val = (k, text) => {
+      const w = lim(k);
+      return w ? `<b class="s${w.lvl}">${text}</b>` : text;
+    };
+    const parts = [];
+    if (h.wind != null) parts.push(`${val("wind", `wind ${Math.round(h.wind)}`)}${h.gust != null ? ` (${val("gust", `gusts ${Math.round(h.gust)}`)})` : ""} m/s${h.dir != null ? ` ${compassName(h.dir)}` : ""}`);
+    if (h.wave != null) parts.push(val("wave", `waves ${h.wave.toFixed(1)} m`));
+    if (h.rain != null) parts.push(h.rain < 0.1 ? "dry" : val("rain", `rain ${h.rain.toFixed(1)} mm/h`));
+    if (h.vis != null && h.vis < 10) parts.push(val("vis", `sight ${h.vis < 1 ? h.vis.toFixed(1) : Math.round(h.vis)} km`));
+    if (h.dark) parts.push(val("dark", "dark"));
+    if (h.temp != null) parts.push(`${Math.round(h.temp)}°`);
+    // Where it's at its worst: "waves worst 11.4 nm out", things worst at one place together.
+    const at = new Map();
+    for (const w of h.why) {
+      if (w.lvl !== h.score || w.nm == null || d.nm <= 1) continue;
+      const k = w.nm.toFixed(1);
+      at.set(k, [...(at.get(k) || []), RW_NAMES[w.k]]);
+    }
+    const where = h.score && at.size ? ` Worst ${[...at].map(([nm, ks]) => `${ks.join(" and ").replace(/ and (?=.* and )/g, ", ")} ${nm} nm out`).join("; ")}.` : "";
+    const src = { fmi: "FMI HARMONIE", "open-meteo": "Open-Meteo", layers: "weather layers" };
+    const notes = [];
+    if (h.sheltered) notes.push("Waves counted lower among the islands, where the wave model's sea is a few km off.");
+    notes.push(`Forecast: ${src[d.sources.air] || "?"}${d.sources.sea ? `, waves ${src[d.sources.sea]}` : ", no waves"}. Planning only.`);
+    box.innerHTML = `<span class="rw-when">Leave ${clock(h.t)}${fmtDay(h.t) !== fmtDay(now()) ? ` ${fmtDay(h.t).split(" ")[0]}` : ""}, arrive ${clock(h.t + d.trip_s)}</span> `
+      + `<b class="rw-word s${h.score}">${RW_WORDS[h.score]}</b>: ${parts.join(" · ")}.${where}`
+      + `<span class="rw-note muted">${notes.join(" ")}</span>`;
+  }
+
+  // The route's stretches that are okay or bad at the hour picked, as dots along it.
+  function drawDayScoreMarks() {
+    rw.layer.clearLayers();
+    const d = rw.data, h = d?.hours[rw.sel];
+    if (!route.on || !rwOpen || !h || !h.score) { rw.layer.remove(); return; }
+    if (!map.hasLayer(rw.layer)) rw.layer.addTo(map);
+    [...h.levels].forEach((c, i) => {
+      const lv = Number(c);
+      if (!lv) return;
+      const [lat, lon] = d.samples[i];
+      L.circleMarker([lat, lon], { radius: i === h.at ? 7 : 4.5, color: "#fff", weight: 1.5, fillColor: RW_COLORS[lv], fillOpacity: 0.95, interactive: false }).addTo(rw.layer);
+    });
+  }
+
+  function compassName(deg) {
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(deg / 45) % 8];
+  }
+
+  $("rw-toggle").addEventListener("click", () => {
+    rwOpen = !rwOpen;
+    store.set("fw-route-wx", rwOpen ? "1" : "0");
+    renderDayScore();
+  });
+  $("route-boat").addEventListener("change", (e) => {
+    routeBoat = e.target.value;
+    store.set("fw-route-boat", routeBoat);
+    scheduleDayScore();
+  });
 
   function renderRouteModes() {
     for (const b of $("route-modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === routeMode));
