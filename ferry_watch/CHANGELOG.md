@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.41.0
+
+- No-go seasons: bird and seal sanctuaries and reserves that are closed part of the year
+  (no landing or no access) are drawn in red dashes with "No landing till 31 Jul" while
+  they're closed, on the drawn chart from zoom 11 (and with "Highlight nature reserves" on,
+  on any map from zoom 10). Tap one for its card: "Closed now: … till …" in red, or the
+  dates it's closed every year and "open now".
+- Seasons come from SYKE's register of Metsähallitus' movement restriction areas (the layer
+  is looked up in SYKE's map service once a day and named in the log), and from
+  OpenStreetMap: dated access rules, OpenSeaMap restricted areas for wildlife and dates
+  written in a reserve's description ("Maihinnousukielto 1.4.–31.7.").
+- Layers › Highlight nature reserves shows how many are closed now. Reserves are
+  downloaded again once after the update.
+
 ## 0.40.0
 
 - Waves, sea temperature and sea level are drawn only over the sea, on every map (Satellite
