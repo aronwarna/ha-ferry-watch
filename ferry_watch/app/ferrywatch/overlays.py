@@ -96,6 +96,8 @@ class Overlay:
     static: bool = False  # one picture for all times (not on the time bar)
     tile: LocalTileFn | None = None  # "local": the PNG of one tile at a time
     value: ValueFn | None = None  # the value at a place and time, for a tap on the map
+    sea: bool = False  # tiles cut to the drawn chart's water by the panel (as the sea layers)
+    sparse: bool = False  # points: a time sends only the points with a value then
 
     def tile_url(self, ts: int, z: int, x: int, y: int) -> str:
         values = {"z": z, "x": x, "y": y, "ts": ts, "time": iso(ts), "date": iso(ts)[:10]}
@@ -302,6 +304,7 @@ class Overlays:
                 "valid_for": o.valid_for or step_of(times or []) or 86400, "frame_ms": o.frame_ms,
                 "refresh": o.refresh, "times": times, "error": self.error(o), "check": check,
                 "group": o.group, "icon": o.icon, "static": o.static, "has_value": o.value is not None,
+                "sea": o.sea,
             })
         return out
 
@@ -452,7 +455,10 @@ class Overlays:
             pick = [fields.index(f) for f in o.fields if f in fields]
             fields = [fields[i] for i in pick]
             values = [[v[i] for i in pick] for v in values]
-        return {"time": ts, "fields": fields, "points": [[*p, *v] for p, v in zip(run["points"], values)],
+        pairs = zip(run["points"], values)
+        if o.sparse:
+            pairs = ((p, v) for p, v in pairs if any(x is not None for x in v))
+        return {"time": ts, "fields": fields, "points": [[*p, *v] for p, v in pairs],
                 **({"info": run["info"]} if run.get("info") else {})}
 
     def run_now(self, overlay_id: str) -> dict[str, Any] | None:

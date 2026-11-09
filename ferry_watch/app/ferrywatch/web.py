@@ -235,7 +235,7 @@ class Web:
         # instead of what they cached.
         for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
                      "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/sky-data.js",
+                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/algae.js", "static/sky-data.js",
                      "static/sky.js", "static/reserves.js", "static/logbook.js"):
             html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative

@@ -30,7 +30,7 @@ from .reserves import Reserves
 from .ice import IceWatch
 from .notify import Notifier, sun_place
 from .outlook import Outlook, fake_get_json
-from . import aurora, dayscore, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from . import algae, aurora, dayscore, forecast, lightning, lightpollution, marine, radar, seaice, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
@@ -584,6 +584,13 @@ class FerryWatch:
         aurora.register(self.overlays, noaa)
         lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
         sunset.register(self.overlays)
+        if os.environ.get("FW_SIMULATE") == "1":
+            from . import simalgae
+            algae.register(self.overlays, simalgae.fake_get, simalgae.fake_reports,
+                           satellite={"url": "sim://algae/{ts}/{z}/{x}/{y}",
+                                      "attribution": algae.ATTRIBUTION + " (simulated)"})
+        else:
+            algae.register(self.overlays)
 
     def _day_score(self) -> dayscore.DayScore:
         """The boating day score's own point forecasts along a route (made-up ones offline)."""

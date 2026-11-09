@@ -54,9 +54,15 @@
     return seconds < 0 ? `${text} ago` : `in ${text}`;
   }
 
-  // "14:35" today, "Sun 14:35" on another day; and how far that is from now.
-  function timeLabel(ts, now) {
+  // "14:35" today, "Sun 14:35" on another day; and how far that is from now. Daily
+  // layers only (the algae map): the date, "Fri 1 Aug".
+  function timeLabel(ts, now, daily = false) {
     const d = new Date(ts * 1000);
+    if (daily) {
+      const sameYear = new Date(now * 1000).getFullYear() === d.getFullYear();
+      return { clock: d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" }),
+        rel: Math.abs(ts - now) < 86400 ? "today" : relative(ts - now) };
+    }
     const clock = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
     const today = new Date(now * 1000).toDateString() === d.toDateString();
     return {
@@ -244,14 +250,87 @@
       if (!layer) {
         const ov = e.ov;
         const b = ov.bounds;
-        layer = L.tileLayer(`api/overlay/${ov.id}/${ft}/{z}/{x}/{y}.png`, {
+        const opts = {
           pane: "weather", opacity: 0, tileSize: ov.tile_size, minZoom: ov.min_zoom, maxZoom: 19,
           maxNativeZoom: ov.max_zoom, keepBuffer: 1, className: "overlay-frame", attribution: ov.attribution,
           ...(b ? { bounds: L.latLngBounds([b[0], b[1]], [b[2], b[3]]) } : {}),
-        }).addTo(map);
+        };
+        const url = `api/overlay/${ov.id}/${ft}/{z}/{x}/{y}.png`;
+        layer = (ov.sea ? seaTiles(url, opts, ov) : L.tileLayer(url, opts)).addTo(map);
         e.frames.set(ft, layer);
       }
       return layer;
+    }
+
+    // A tiles overlay cut to the sea (sea: true, the algae map): each tile drawn on a canvas,
+    // recoloured by its renderer's recolour(ImageData) if it has one, and cleared where the
+    // drawn chart has no water (FerryFields.cutTileToWater). Past the source's deepest zoom
+    // the tile is cut from its ancestor's picture, so the coast stays sharp however close.
+    const SEA_RETRY_MS = 15000;
+    const pictures = new Map(); // url -> Promise<canvas|null>, the recoloured source tiles
+    function picture(src, id) {
+      let p = pictures.get(src);
+      if (!p) {
+        p = new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const c = document.createElement("canvas");
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            const cx = c.getContext("2d", { willReadFrequently: true });
+            cx.drawImage(img, 0, 0);
+            const recolour = renderers[id]?.recolour;
+            if (recolour) {
+              const data = cx.getImageData(0, 0, c.width, c.height);
+              recolour(data);
+              cx.putImageData(data, 0, 0);
+            }
+            resolve(c);
+          };
+          img.onerror = () => resolve(null);
+          img.src = src;
+        });
+        pictures.set(src, p);
+        for (const k of pictures.keys()) {
+          if (pictures.size <= 64) break;
+          pictures.delete(k);
+        }
+      }
+      return p;
+    }
+    function seaTiles(url, opts, ov) {
+      const native = ov.max_zoom;
+      const Layer = L.GridLayer.extend({
+        createTile(coords, done) {
+          const tile = document.createElement("canvas");
+          const px = Math.min(3, Math.ceil(window.devicePixelRatio || 1)) * opts.tileSize;
+          tile.width = tile.height = px;
+          const draw = async () => {
+            const d = 2 ** Math.max(0, coords.z - native), z = coords.z - Math.log2(d);
+            const sx = Math.floor(coords.x / d), sy = Math.floor(coords.y / d);
+            const src = await picture(url.replace("{z}", z).replace("{x}", sx).replace("{y}", sy), ov.id);
+            const ctx = tile.getContext("2d");
+            ctx.clearRect(0, 0, px, px);
+            if (!src) return "none";
+            const part = src.width / d;
+            ctx.imageSmoothingEnabled = d > 1;
+            ctx.drawImage(src, (coords.x - sx * d) * part, (coords.y - sy * d) * part, part, part, 0, 0, px, px);
+            const cut = typeof FerryFields !== "undefined" && FerryFields.cutTileToWater;
+            return cut ? cut(ctx, px, coords.z, coords.x, coords.y) : "none";
+          };
+          draw().then((state) => {
+            done(null, tile);
+            // Chart data still downloading there: drawn again when it may have come.
+            const again = (n) => setTimeout(() => {
+              if (tile.isConnected) draw().then((st) => { if (st === "pending" && n < 8) again(n + 1); });
+            }, SEA_RETRY_MS * Math.min(4, n));
+            if (state === "pending") again(1);
+          }, (err) => done(err, tile));
+          return tile;
+        },
+      });
+      const { maxNativeZoom, ...rest } = opts;
+      return new Layer(rest);
     }
 
     // Frames other than the one showing, the one coming in and the next are let go.
@@ -360,7 +439,7 @@
       range.max = String(times.length - 1);
       range.value = String(i);
       range.style.setProperty("--p", `${(i / (times.length - 1)) * 100}%`);
-      const label = timeLabel(t, now());
+      const label = timeLabel(t, now(), active().every((e) => (e.ov.valid_for || 0) >= 86400));
       clockEl.textContent = label.clock;
       relEl.textContent = label.rel;
       renderDays(times);
@@ -378,9 +457,12 @@
       let last = "";
       times.forEach((ts, i) => {
         const d = new Date(ts * 1000);
-        const day = d.toDateString();
+        // Over weeks (the algae season), the months; over a few days, the days.
+        const span = times[times.length - 1] - times[0] > 20 * 86400;
+        const day = span ? `${d.getFullYear()}-${d.getMonth()}` : d.toDateString();
         if (day !== last) {
-          marks.push([i, d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })]);
+          marks.push([i, span ? d.toLocaleDateString("en-GB", { month: "short" })
+            : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })]);
           last = day;
         }
       });
@@ -613,7 +695,7 @@
       for (const e of on) {
         let lines = null;
         try {
-          if (renderers[e.ov.id]?.valueAt) lines = await renderers[e.ov.id].valueAt(latlng, map);
+          if (renderers[e.ov.id]?.valueAt) lines = await renderers[e.ov.id].valueAt(latlng, map, t);
           if (!lines && e.ov.has_value) {
             const res = await fetch(`api/overlay-value/${e.ov.id}?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&t=${t || ""}`);
             const data = res.ok ? await res.json() : null;
@@ -623,7 +705,8 @@
         if (lines && lines[0]) parts.push(lines);
       }
       if (!parts.length) return;
-      const when = t != null && active().length ? `<div class="wx-pick-time">${esc(timeLabel(t, now()).clock)}</div>` : "";
+      const daily = active().every((e) => (e.ov.valid_for || 0) >= 86400);
+      const when = t != null && active().length && !daily ? `<div class="wx-pick-time">${esc(timeLabel(t, now()).clock)}</div>` : "";
       const html = parts.map(([main, ...rest], i) => `<div class="wx-pick${i ? " more" : ""}"><strong>${esc(main)}</strong>${rest.filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join("")}</div>`).join("") + when;
       picker = L.popup({ className: "wx-popup", offset: [0, -4], autoPan: false, closeButton: false })
         .setLatLng(latlng).setContent(html).openOn(map);
