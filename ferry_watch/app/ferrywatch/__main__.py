@@ -60,6 +60,26 @@ FLEET_REFRESH = 24 * 3600
 SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
 # Heights for the sunset spots' view (Mapzen terrain tiles on AWS Open Data: EU-DEM in
 # Finland, sea floor below 0), as terrarium PNGs: height = R*256 + G + B/256 - 32768 m.
+# The Land Survey's terrain map (maastokartta, CC BY 4.0) for the Terrain view: from its own
+# open map service with the user's key, otherwise from Kapsi's free copy of the same maps.
+TOPO_MML = ("https://avoin-karttakuva.maanmittauslaitos.fi/avoin/wmts/1.0.0/maastokartta/default/"
+            "WGS84_Pseudo-Mercator/{z}/{y}/{x}.png?api-key={key}")
+TOPO_KAPSI = "https://tiles.kartat.kapsi.fi/peruskartta/{z}/{x}/{y}.jpg"
+TOPO_MIN_Z, TOPO_MAX_Z = 5, 16
+TOPO_BOX = (59.3, 19.0, 70.2, 31.7)  # Finland: south, west, north, east
+
+
+def topo_covers(z: int, x: int, y: int) -> bool:
+    """Whether a map tile touches Finland's box (the terrain map has nothing elsewhere)."""
+    import math
+    n = 2**z
+    west, east = x / n * 360 - 180, (x + 1) / n * 360 - 180
+    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))  # noqa: E731
+    north, south = lat(y), lat(y + 1)
+    return TOPO_MIN_Z <= z <= TOPO_MAX_Z and south < TOPO_BOX[2] and north > TOPO_BOX[0] \
+        and west < TOPO_BOX[3] and east > TOPO_BOX[1]
+
+
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 FLEET_STORE_MOVING, FLEET_STORE_STOPPED = 60, 600  # sparser tracks than the main ships
 
@@ -648,6 +668,11 @@ class FerryWatch:
         """Upstream address of a chart or sea mark tile the panel asks for."""
         if source == "seamark":
             return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "topo":
+            if not topo_covers(z, x, y):
+                return None
+            key = self.store.kv_get("mml_api_key", "")
+            return TOPO_MML.format(z=z, x=x, y=y, key=key) if key else TOPO_KAPSI.format(z=z, x=x, y=y)
         if source == "terrain":
             return TERRAIN_URL.format(z=z, x=x, y=y) if 8 <= z <= 13 else None
         if source == "enc":  # the panel asks for these as 512-pixel tiles one zoom out

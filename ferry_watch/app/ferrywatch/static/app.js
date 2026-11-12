@@ -157,6 +157,16 @@
       }),
     ]),
     chart: null, // built by buildChartLayer below
+    // The Land Survey's terrain map (maastokartta: contours, paths, cliffs, marshes, every
+    // building), fetched and kept by the add-on, over the plain map, which shows outside
+    // Finland. It stops at zoom 16; closer in the last picture is enlarged.
+    terrain: L.layerGroup([
+      streets(),
+      L.tileLayer("api/tiles/topo/{z}/{x}/{y}.png", {
+        minZoom: 5, maxZoom: 19, maxNativeZoom: 16, zIndex: 2,
+        attribution: "Terrain map © Maanmittauslaitos (CC BY 4.0)",
+      }),
+    ]),
   };
   if (aerialOn) layers.satellite.addLayer(aerialPhotos);
   function setAerial(on) {
@@ -5255,13 +5265,47 @@
     return el;
   }
 
+  // "Import GPX": routes (or tracks) from a file become saved routes.
+  function routeImportRow() {
+    const row = document.createElement("p");
+    row.className = "small route-import";
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".gpx,application/gpx+xml,text/xml,application/xml";
+    input.hidden = true;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Import GPX";
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.setAttribute("role", "status");
+    button.addEventListener("click", () => input.click());
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      note.textContent = " Reading…";
+      try {
+        const res = await fetch("api/routes/import", { method: "POST", body: file });
+        if (!res.ok) throw new Error(await res.text());
+        const n = (await res.json()).routes.length;
+        await loadRoutes();
+        const row2 = $("routes-list").querySelector(".route-import [role=status]");
+        if (row2) row2.textContent = ` Added ${n} route${n === 1 ? "" : "s"}.`;
+      } catch (err) {
+        note.textContent = ` ${err.message || err}`;
+      }
+    });
+    row.append(button, input, note);
+    return row;
+  }
+
   function renderRoutesList() {
     const box = $("routes-list");
     if (!savedRoutes.length) {
       const p = document.createElement("p");
       p.className = "small muted";
       p.textContent = "Measure and plan with the ruler button at the top of the map, then Save. Saved routes are listed here.";
-      box.replaceChildren(p);
+      box.replaceChildren(p, routeImportRow());
       return;
     }
     const list = document.createElement("ul");
@@ -5309,10 +5353,17 @@
         if (route.id === r.id) route.id = null;
         await loadRoutes();
       });
-      li.append(toggle, grow, edit, del);
+      // For the chart plotter: the route as a GPX file.
+      const gpx = document.createElement("a");
+      gpx.className = "button-link";
+      gpx.href = `api/routes/${r.id}.gpx`;
+      gpx.download = "";
+      gpx.textContent = "GPX";
+      gpx.title = "Download as a GPX route for a chart plotter";
+      li.append(toggle, grow, gpx, edit, del);
       return li;
     }));
-    box.replaceChildren(list);
+    box.replaceChildren(list, routeImportRow());
   }
 
   // --- weather stations (FMI), live on every map --------------------------------------------
