@@ -31,6 +31,7 @@ from .harbours import Harbours
 from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
+from .notices import Notices
 from .notify import Notifier, sun_place
 from .outlook import Outlook, fake_get_json
 from . import algae, aurora, dayscore, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
@@ -201,6 +202,10 @@ class FerryWatch:
                                live=self.predictor.get, ice=self.ice)
         # These only answer the panel's requests: nothing runs while no one looks.
         self.faults = Faults(self.session, fake_faults)
+        fake_notices = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simnotices import FAKE as fake_notices
+        self.notices = Notices(DATA_DIR / "notices", self.session, fake_notices)
         self.traffic = Traffic(self.session, self.store,
                                lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
         self.stations = Stations(self.session, fake_stations)

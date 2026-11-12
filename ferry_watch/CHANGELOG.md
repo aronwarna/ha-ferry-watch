@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.50.0
+
+- **Terrain**: a fourth map type next to Map, Satellite and Chart, the Land Survey's
+  topographic map (maastokartta) with contours, paths, cliffs and place names. Finland only.
+- **Nautical warnings** (On the map › Warnings and waterways): Fintraffic's warnings to
+  mariners, such as firing exercises, fairway works and marks missing or moved, as amber
+  diamonds with their line or area dashed. Tap one for the text and how long it holds.
+- **Sea weather warnings**: FMI's wind, wave and icing warnings for the sea areas, tinted
+  yellow, orange or red. A warning for your own waters always shows as a warning sign with
+  the wind speed in the conditions pill, and in full when you tap the pill.
+- **Bridges, locks and canals**: Väylävirasto's opening bridges, locks and lock canals with
+  clearance, width, length and depth where the data has them.
+- **Speed limits on a planned route**: the route tool lists the speed limits the route runs
+  through (km/h and knots, for how far), marks them on the route, and says about how many
+  minutes they add at your speed.
+- Saved routes can be downloaded as **GPX** for a plotter, and GPX routes or tracks can be
+  imported (On the map › Routes).
+
 ## 0.49.0
 
 - The panel opens faster: its own files are sent compressed (about 0.4 MB instead of 1.3)

@@ -25,12 +25,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, dayscore, diagnostics, satellite, stats
+from . import __version__, config, dayscore, diagnostics, notices, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
+from .notify import sun_place
 from .fleets import FLEET_IDS
 from .tracker import STOP_SPEED
 from .vchart import MIN_Z, WATER_MAX_Z
@@ -299,6 +301,10 @@ class Web:
         r.add_get("/api/aircraft/overview", self.air_overview)
         r.add_post("/api/weather", self.set_weather)
         r.add_get("/api/faults", self.faults)
+        r.add_get("/api/notices/nautical", self.nautical_warnings)
+        r.add_get("/api/notices/weather", self.weather_warnings)
+        r.add_get("/api/notices/structures", self.structures)
+        r.add_post("/api/route-limits", self.route_limits)
         r.add_get("/api/outlook", self.outlook)
         r.add_get("/api/traffic", self.traffic)
         r.add_get("/api/ports/{mmsi}", self.port_times)
@@ -818,6 +824,46 @@ class Web:
         body = await request.json()
         await self.fw.set_weather(bool(body.get("enabled")))
         return web.json_response({"ok": True})
+
+    async def nautical_warnings(self, request: web.Request) -> web.Response:
+        n = self.fw.notices
+        return web.json_response({"warnings": await n.nautical.get(), **n.nautical.status()},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def weather_warnings(self, request: web.Request) -> web.Response:
+        """Sea weather warnings with their areas, and which of them hold the place asked
+        about (?at=lat,lon; else the middle of my area, or Porkkala)."""
+        n = self.fw.notices
+        warnings = await n.weather.get()
+        try:
+            lat, lon = (float(v) for v in request.query["at"].split(","))
+        except (KeyError, ValueError):
+            lat, lon = sun_place(self.fw.store)
+        return web.json_response({"warnings": warnings, "here": notices.warnings_at(warnings, lat, lon),
+                                  "at": [lat, lon], **n.weather.status()}, headers={"Cache-Control": "no-store"})
+
+    async def structures(self, request: web.Request) -> web.Response:
+        n = self.fw.notices
+        resp = web.json_response({"items": await n.structures(), "error": n.structures_error},
+                                 headers={"Cache-Control": "max-age=3600"})
+        resp.enable_compression()
+        return resp
+
+    async def route_limits(self, request: web.Request) -> web.Response:
+        """The speed limits a route runs through: {points, speed (kn)}."""
+        body = await request.json()
+        points = _points(body.get("points") if isinstance(body, dict) else None, 2)
+        try:
+            speed = float(body.get("speed")) if body.get("speed") is not None else None
+        except (TypeError, ValueError):
+            speed = None
+        try:
+            out = await self.fw.notices.route_limits(points, speed if speed and 0 < speed <= 80 else None)
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise web.HTTPBadGateway(text=f"Couldn't read the speed limits: {err}") from None
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
 
     async def faults(self, request: web.Request) -> web.Response:
         return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})

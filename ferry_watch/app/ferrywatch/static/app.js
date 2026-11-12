@@ -33,6 +33,7 @@
   let harbourLayer = null;
   // Nature reserves (static/reserves.js): made once the map is up, see below.
   let reserves = null;
+  let notices = null;
   let logbook = null;
   // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
   // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
@@ -3385,6 +3386,8 @@
         note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. Bird and seal sanctuaries closed today (no landing or no access) are shown in red dashes with the date they open (on the drawn chart from zoom 11 even with this off). From OpenStreetMap and SYKE's register of movement restriction areas.",
         onChange: async (on) => { reserves?.setAll(on); renderLayers(); },
       }),
+      groupHead("Warnings and waterways"),
+      ...(notices?.rows() || []).map((r) => switchRow({ compact: true, ...r, onChange: async (on) => { await r.onChange(on); renderLayers(); } })),
       groupHead("On the satellite view"),
       switchRow({
         compact: true,
@@ -4844,6 +4847,8 @@
     $("route-save").textContent = route.id ? "Update" : "Save";
     $("route-draught-box").hidden = routeMode !== "fw" && !route.legs.some((l) => l.fw);
     scheduleDayScore();
+    notices?.route(route.on && pts.length > 1 ? pts : null, routeSpeed,
+      !route.legs.some(legPending) && !route.dragging);
   }
 
   // --- boating day score: good, okay or bad to set off on the route, hour by hour ---------
@@ -5625,6 +5630,13 @@
   reserves = FerryReserves.create({
     map, api, esc, store,
     canTap: () => !route.on && activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11,
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  // Nautical and sea weather warnings, bridges and locks, speed limits on a route (notices.js).
+  notices = FerryNotices.create({
+    map, api, esc, store, fmtWhen,
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     },

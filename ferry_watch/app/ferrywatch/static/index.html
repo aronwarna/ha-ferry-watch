@@ -46,6 +46,7 @@
         <span id="pill-status" class="status" data-state="connecting"><i></i></span>
         <span id="pill-wind" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg><span></span></span>
         <span id="pill-water" class="pill-part" hidden></span>
+        <span id="pill-warn" class="pill-part pill-warn" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6.5 L7 6 H-7 Z"/><path class="mark" d="M0 -2 V2 M0 4 V4.4"/></svg><span></span></span>
         <span id="pill-sun" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="horizon" d="M-7 4 H7"/><path class="sun" d="M-4 4 A4 4 0 0 1 4 4"/><path class="ray" d="M0 -5 V-2.5 M-4.6 -2.8 L-3 -1.2 M4.6 -2.8 L3 -1.2"/></svg><span></span></span>
       </button>
       <button type="button" id="areas-shown" class="areas-shown panel" hidden title="Hide the alert areas from the map">
@@ -88,6 +89,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
+    <div id="sea-warnings" class="sea-warnings" hidden></div>
     <dl id="conditions-list" class="facts"></dl>
     <p class="small muted" id="conditions-note"></p>
   </section>
@@ -244,6 +246,7 @@
         <p id="rw-detail" class="rw-detail small" role="status"></p>
       </div>
     </div>
+    <div id="route-limits" class="route-limits" role="status" hidden></div>
     <div class="route-actions">
       <button type="button" id="route-undo" class="icon-button" aria-label="Undo" title="Undo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
@@ -460,6 +463,7 @@
   <script src="static/algae.js"></script>
   <script src="static/sky.js"></script>
   <script src="static/reserves.js"></script>
+  <script src="static/notices.js"></script>
   <script src="static/logbook.js"></script>
   <script src="static/app.js"></script>
   <script src="static/panel-extras.js"></script>

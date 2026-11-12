@@ -1139,3 +1139,32 @@ body.menu-sheet .sky-note { display: none; }
 
 .button-link { padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; color: inherit; text-decoration: none; font-size: 12px; }
 .route-import { margin-top: 8px; }
+
+/* --- warnings, bridges and locks, speed limits on a route (notices.js) --- */
+.notice-icon { background: none; border: 0; }
+.notice-icon svg { width: 100%; height: 100%; display: block; overflow: visible; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)); }
+.notice-nautical path { fill: #fbbf24; stroke: #7c2d12; stroke-width: 1.6; stroke-linejoin: round; }
+.notice-nautical text { font: 700 13px system-ui, sans-serif; fill: #431407; }
+.notice-structure circle { fill: #fff; stroke: #0e7490; stroke-width: 1.8; }
+.notice-structure path { fill: none; stroke: #0e7490; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.notice-label { background: rgba(255, 255, 255, 0.9); border: 1px solid #0e7490; color: #0e4a5c; border-radius: 4px; padding: 0 4px; font-size: 11px; font-weight: 600; box-shadow: none; }
+.notice-label::before { display: none; }
+.notice-pop { min-width: 190px; max-width: 280px; }
+.notice-pop p { margin: 6px 0; white-space: pre-line; max-height: 40vh; overflow-y: auto; }
+.notice-pop .facts { margin: 6px 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.notice-pop .facts dt { color: var(--muted, #64748b); }
+.notice-pop .facts dd { margin: 0; overflow-wrap: anywhere; }
+.notice-pop details { margin: 4px 0; }
+.notice-pop summary { cursor: pointer; }
+.warn-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; border: 1px solid rgba(0, 0, 0, 0.35); }
+.pill-warn svg path:first-child { fill: var(--warn, #eab308); stroke: rgba(0, 0, 0, 0.55); stroke-width: 1; stroke-linejoin: round; }
+.pill-warn svg .mark { stroke: #111; stroke-width: 1.6; stroke-linecap: round; fill: none; }
+.pill-warn span:empty { display: none; }
+.sea-warnings { display: grid; gap: 6px; margin: 0 0 10px; }
+.sea-warning { border-left: 4px solid var(--warn, #eab308); background: color-mix(in srgb, var(--warn, #eab308) 12%, transparent); border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+.route-limits { margin: 6px 0 2px; line-height: 1.7; }
+.limit-chip { display: inline-block; border: 1px solid #f59e0b; background: rgba(245, 158, 11, 0.12); border-radius: 10px; padding: 0 7px; margin-right: 2px; white-space: nowrap; }
+.limit-sign { background: none; border: 0; }
+.limit-sign span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 3px solid #dc2626; color: #111; font: 700 10px system-ui, sans-serif; box-sizing: border-box; }
+.notice-warn path:first-child { stroke: rgba(0, 0, 0, 0.6); stroke-width: 1.3; stroke-linejoin: round; }
+.notice-warn .mark { stroke: #111; stroke-width: 2.2; stroke-linecap: round; fill: none; }

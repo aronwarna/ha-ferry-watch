@@ -215,6 +215,15 @@ switch is on and the panel is visible, for a circle of at most 60 km. Nothing is
 stored: the add-on keeps each answer for 20 seconds and names the ships from
 its daily vessel list.
 
+## Terrain map
+
+**Terrain** next to Map, Satellite and Chart shows the Finnish Land Survey's
+topographic map (maastokartta): contours, paths, buildings, cliffs, marshes and
+place names, good for looking at islands and landing places. With your Land
+Survey key stored (the same one as for the aerial photos) it comes straight
+from the Land Survey; without one it comes from the Kapsi mirror of the same
+map. It covers Finland only.
+
 ## Faulty lights and buoys
 
 On the chart view, navigation aids reported faulty (unlit, damaged, missing or
@@ -222,6 +231,32 @@ off position) show as a red ring with "!". Tap one for "Unlit since 3 Oct", the
 light or buoy and its fairway. The list comes from Digitraffic and is read at
 most every 30 minutes, only while the chart view is shown. Switch it off under
 **On the map → Faulty lights and buoys**.
+
+## Warnings and waterways
+
+**On the map → Warnings and waterways** has three switches. They work on every
+map type.
+
+- **Nautical warnings**: Fintraffic's warnings to mariners for Finnish waters,
+  such as firing exercises, works in a fairway, marks missing or moved and
+  things adrift. Each shows as an amber diamond with "!", with its line or area
+  dashed in the same colour. Tap the diamond for the text, the place and how
+  long it holds. Read every 10 minutes. A single faulty light or buoy is not a
+  nautical warning; those are under **Faulty lights and buoys**.
+- **Sea weather warnings**: the Finnish Meteorological Institute's warnings for
+  the sea areas (wind, waves, icing). The warned areas are tinted yellow,
+  orange or red, with a warning sign in the part of each that is in view; tap
+  the sign for the text and the hours. Off to start with, because the tint
+  covers large areas. A warning that covers your own waters (your phone's
+  place, otherwise Porkkala) always shows as a small warning sign with the wind
+  speed in the conditions pill at the top, and in full when you tap the pill.
+- **Bridges, locks and canals**: Väylävirasto's opening bridges, locks and lock
+  canals, from zoom 9. Tap one for its clearance, width, length and depth where
+  the data has them, and **All details** for the rest. Opening bridges show
+  their clearance next to them from zoom 12. Fetched once every two weeks. The
+  open data has no list of fixed bridges; those are on the chart itself.
+
+These are for planning. Check the official sources before you go.
 
 ## Wrecks and coastal heritage
 
@@ -283,6 +318,22 @@ straight legs are kept, so **Edit** opens it as you drew it. Saved routes show
 as dashed lines with their name; tap one for its distance and **Edit route**.
 **On the map → Routes** lists them with a switch to show or hide each, **Edit**
 and **Delete**. There is no navigation guidance.
+
+### Speed limits on the route
+
+Once a route has two points, the add-on checks it against Väylävirasto's speed
+limit areas. Under the route you get each limit it runs through, in km/h and
+knots, for how many nautical miles, and about how many minutes the limits add at
+the speed you set. The stretches are marked in amber on the route with the limit
+in a red ring. "No speed limits on this route" means none of the published areas
+touch it; signs on the water still decide.
+
+### Routes as GPX files
+
+**On the map → Routes** has **GPX** next to each saved route, which downloads it
+as a GPX route for a plotter or another app, and **Import GPX** to read routes
+or tracks from a file into your saved routes (long tracks are thinned to 500
+points).
 
 ### Boating weather: when to set off
 
@@ -675,6 +726,9 @@ by name.
 - Terrain for the sunset spots: [Mapzen terrain tiles](https://registry.opendata.aws/terrain-tiles/) on AWS Open Data (in Europe mostly from EU-DEM; © the providers listed there).
 - Stars and constellations: [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD 3-Clause), from the HYG star database. Planet orbits: JPL's approximate Keplerian elements.
 - Ice chart: Finnish Ice Service (FMI), via E.U. Copernicus Marine Service Information (Baltic sea ice concentration and thickness charts).
+- Nautical warnings: Digitraffic (Fintraffic), CC BY 4.0. Sea weather warnings: Finnish Meteorological Institute, CC BY 4.0.
+- Bridges, locks, canals and speed limit areas: Väylävirasto, CC BY 4.0.
+- Terrain map: National Land Survey of Finland (maastokartta), CC BY 4.0.
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.
 - Wrecks and coastal heritage: Museovirasto (Finnish Heritage Agency) registers.
 - Drawn chart outside Finnish waters: depths from the [EMODnet Bathymetry](https://emodnet.ec.europa.eu/en/bathymetry)
