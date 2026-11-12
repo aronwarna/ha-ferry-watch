@@ -3494,6 +3494,8 @@
       [line(ZONE_STYLE.outer.color), "Outer route line"],
       [icon(`<path d="M5 4h18v10H5z" stroke="${ZONE_STYLE.phone.color}" stroke-width="2.5" stroke-dasharray="5 4" fill="${ZONE_STYLE.phone.color}" fill-opacity="0.12"/>`), "My area: alerts only while your phone is in it"],
       [icon('<circle cx="14" cy="9" r="6" fill="#2563eb" stroke="#fff" stroke-width="2.5"/>'), "Your phone, from Home Assistant"],
+      [icon('<circle cx="14" cy="9" r="6" fill="#0ea5e9" stroke="#fff" stroke-width="2.5"/>'), "You, from this device's GPS (locate button)"],
+      [icon('<path d="M14 17 C14 17 8 11 8 7.5 A6 6 0 0 1 20 7.5 C20 11 14 17 14 17Z" fill="#2563eb" stroke="#fff" stroke-width="1.5"/>'), "Your pin (long-press the map to add one)"],
       [icon('<circle cx="14" cy="9" r="8" fill="#16a34a"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">6</text>'), "Weather station: wind in m/s, coloured by strength"],
       [icon('<rect x="2" y="3" width="24" height="12" rx="4" fill="#0f766e"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1.4 m</text>'), "Wave buoy (wave height) or sea temperature"],
       [icon('<rect x="5" y="3" width="18" height="12" rx="4" fill="#64748b"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">4°</text>'), "Station without wind: air temperature"],
