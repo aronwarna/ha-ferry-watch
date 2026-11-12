@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.51.0
+
+- The inner route outlook now checks itself. Every chance it gives for a coming sailing is
+  written down beforehand and marked right or wrong once the ship has passed. Stats shows
+  the scorecard under the outlook: forecasts checked, inner passages called, false alarms,
+  how it compares with each ship's usual share, month by month and by ship.
+- It adapts with time: recent months count more when it learns, its percentages are
+  corrected from the scorecard once 40 forecasts are checked, and the scorecard decides
+  whether its chances are shown at all. Expect a few weeks before there is enough to see.
+
 ## 0.50.0
 
 - **Terrain**: a fourth map type next to Map, Satellite and Chart, the Land Survey's

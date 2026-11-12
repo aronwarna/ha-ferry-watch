@@ -299,6 +299,7 @@ class FerryWatch:
         self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
         self.tasks.append(asyncio.create_task(self.outlook.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run_log()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:

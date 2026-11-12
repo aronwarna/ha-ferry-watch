@@ -153,6 +153,26 @@ known the midnight before, against the plain guess of each ship's usual share. "
 is it?" shows the result. If it does worse than the usual share, the usual share is shown
 instead. Weather for past and future comes from Open-Meteo (CC BY 4.0).
 
+### The outlook checks itself
+
+Every chance the outlook works out for a coming sailing is written to a log
+before the ship sails, and marked inner or outer once the ship has passed.
+**Self-check: its real forecasts so far** under the outlook shows the result:
+how many forecasts have been checked, how many inner passages it called (said
+50 % or more), the false alarms, how it compares with simply going by each
+ship's usual share, how often "50 to 75 %" really went inner, and the same
+month by month and by ship. It also scores the forecasts it made half a day or
+more ahead on their own.
+
+It adapts in three ways. Passages from the last months count the most when it
+learns (one from 120 days ago counts half), so it follows the ships' habits as
+they change. Once 40 forecasts have been checked, its percentages are corrected
+by how they have matched what happened (pulled towards the middle if it was too
+sure, raised or lowered if it ran low or high). And from then on this scorecard,
+not the replay of past passages, decides whether the outlook's own chances are
+shown or each ship's usual share instead. It keeps logging either way, so it can
+earn its place back. The log needs a few weeks before it says anything.
+
 ## Sea conditions and the sun
 
 A pill under the top bar shows the wind (an arrow pointing where it blows), the
