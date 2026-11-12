@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.60.0
+
+- **Then & now**: a new map type with old aerial photos and old maps. Pick Aerial photos or
+  Old maps and slide through the years there is something for where you're looking:
+  - Espoo's aerial photos from 1969 to 2026 (16 years) and its old guide maps,
+  - Helsinki's aerial photos from 1932 on and its old maps back to the 1700s (Senate map 1870 …),
+  - Vantaa's, and the Land Survey's old printed maps of all of Finland (1860s to 2020) where
+    CSC's Paituli service draws them.
+  "Compare with today" puts a divider on the map: the old picture on the left, today's on the
+  right; drag it across. "Fade" lays the old picture over today's.
+- **Building ages** (Layers › On every map): every building in Helsinki, Espoo, Vantaa and
+  Kauniainen as a dot coloured by the year it was finished. Tap one for the year, its use,
+  floors, facade and address (HSY's building register).
+- **Property boundaries** and **property ids** from the Land Survey (from zoom 14 and 16), and
+  the **seabed type** from GTK (mud, clay, sand, rock: where the anchor holds).
+- On a phone the map type is now one button with a drop-down, so there's room for more types.
+- A scale bar in nautical miles and metres.
+- The map opens where you left it (if that was in the last 6 hours), else on the ships.
+- All these layers come from one list on the NAS (mapsources.py), which reads each service's
+  layer list once a day, so new years appear by themselves. Settings › Copy diagnostics lists
+  what each service gave.
+
 ## 0.54.1
 
 - Automatic routes for the small boats now **prefer marked fairways much more**, and the

@@ -1,5 +1,5 @@
 name: Ferry Watch
-version: "0.54.1"
+version: "0.60.0"
 slug: ferry_watch
 description: Live map of the Porkkala inner-route ferries, with alerts when one takes the inner route.
 url: https://github.com/aronwarna/ha-ferry-watch
@@ -30,6 +30,7 @@ backup_exclude:
   - "*/harbours.json.gz"
   - "*/reserves"
   - "*/photos/others"
+  - "*/maps"
 map:
   - type: media
     read_only: false

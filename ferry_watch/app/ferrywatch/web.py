@@ -286,6 +286,9 @@ class Web:
         r.add_get("/api/notify/picture/{name}", self.notify_picture)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
+        r.add_get("/api/mapsources", self.mapsources)
+        r.add_get("/api/maptile/{layer}/{z}/{x}/{y}", self.map_tile)
+        r.add_get("/api/buildings/{x}/{y}", self.buildings_tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_get("/api/vchart-water/{z}/{x}/{y}", self.vchart_water)
         r.add_get("/api/overlays", self.overlays)
@@ -505,6 +508,36 @@ class Web:
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
         return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": _image_type(path)})
+
+    async def mapsources(self, request: web.Request) -> web.Response:
+        """The extra layers (old photos and maps, overlays) the panel can show."""
+        return web.json_response(self.fw.maps.listing(), headers={"Cache-Control": "no-store"})
+
+    async def map_tile(self, request: web.Request) -> web.StreamResponse:
+        try:
+            z, x = int(request.match_info["z"]), int(request.match_info["x"])
+            y = int(request.match_info["y"].split(".")[0])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        layer = request.match_info["layer"]
+        cover = self.fw.maps.covers(layer, z, x, y)
+        if not cover:  # outside the layer's area or zooms: for good
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800" if cover is False else "no-store"})
+        path = await self.fw.maps.tile(layer, z, x, y)
+        if not path:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=2592000", "Content-Type": _image_type(path)})
+
+    async def buildings_tile(self, request: web.Request) -> web.Response:
+        try:
+            x, y = int(request.match_info["x"]), int(request.match_info["y"])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        body = await self.fw.buildings.tile(x, y)
+        if body is None:
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=86400"})
+        return web.Response(body=body, content_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Cache-Control": "max-age=86400"})
 
     async def overlays(self, request: web.Request) -> web.Response:
         on = {i for i in request.query.get("times", "").split(",") if i}

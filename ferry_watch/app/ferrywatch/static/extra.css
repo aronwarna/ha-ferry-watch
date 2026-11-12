@@ -1207,3 +1207,94 @@ table.numbers thead th { color: var(--muted); font-weight: 600; }
 /* The route panel scrolls as a whole when it holds more than fits (weather, sailing, numbers). */
 .route-panel { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .route-panel > * { flex-shrink: 0; }
+
+/* --- Then & now (histmaps.js) ------------------------------------------------------- */
+.histbar {
+  position: fixed;
+  z-index: 1000;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px);
+  width: min(520px, calc(100vw - 20px));
+  padding: 8px 10px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.histbar .hb-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.histbar .hb-kind button { padding: 4px 10px; font-size: 13px; }
+.histbar .hb-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.histbar .hb-year-row { display: flex; align-items: center; gap: 8px; }
+.histbar .hb-year { font-size: 22px; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: center; letter-spacing: -0.01em; }
+.histbar .hb-range { flex: 1; }
+.histbar .tb-step { width: 34px; height: 34px; flex: none; }
+.histbar .tb-step:disabled { opacity: 0.3; }
+.histbar .hb-ticks { display: flex; justify-content: space-between; margin: -4px 50px 0; }
+.histbar .hb-ticks:empty { display: none; }
+.histbar .hb-opts { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.histbar .hb-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.histbar .hb-op { display: flex; align-items: center; gap: 8px; flex: 0 1 180px; }
+.histbar .hb-op .player-range { flex: 1; }
+.histbar .hb-credit { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.histbar .hb-credit:empty { display: none; }
+.histbar.is-empty .hb-year-row, .histbar.is-empty .hb-opts, .histbar.is-empty .hb-ticks { display: none; }
+.histbar .hb-empty p { margin: 2px 0 6px; }
+.hb-jump { display: flex; gap: 8px; flex-wrap: wrap; }
+.hb-jump button {
+  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 999px; min-height: 34px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px + 150px); }
+@media (max-width: 560px) {
+  .histbar { left: 8px; right: 8px; width: auto; transform: none; }
+  .histbar .hb-where { font-size: 12px; }
+}
+@media (min-width: 900px) {
+  body.menu-open .histbar { left: calc((100vw - var(--panel-w)) / 2); }
+}
+
+.hist-divider {
+  position: absolute; top: 0; bottom: 0; z-index: 650; width: 0;
+  border-left: 3px solid #fff; box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
+  touch-action: none;
+}
+.hist-divider::before { content: ""; position: absolute; top: 0; bottom: 0; left: -22px; width: 44px; cursor: ew-resize; }
+.hist-divider .hd-handle {
+  position: absolute; top: 50%; left: 0; transform: translate(-50%, -50%);
+  width: 40px; height: 40px; border-radius: 50%; background: #fff; color: #111827;
+  display: grid; place-items: center; font-weight: 700; font-size: 15px; letter-spacing: 1px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); cursor: ew-resize; pointer-events: none;
+}
+.hist-divider .hd-label {
+  position: absolute; top: calc(var(--top) + 110px); padding: 3px 8px; border-radius: 6px;
+  background: rgba(17, 24, 39, 0.75); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none;
+}
+.hist-divider .hd-then { right: 10px; }
+.hist-divider .hd-now { left: 10px; }
+
+.age-legend { margin: 6px 0 2px; }
+.age-legend i { display: block; height: 8px; border-radius: 4px; }
+.age-legend > span { display: flex; justify-content: space-between; margin-top: 3px; }
+
+/* Map type: on a phone only the chosen type shows, with a ▾; tapped, the full list drops down. */
+@media (max-width: 700px) {
+  .type-wrap { position: relative; display: inline-flex; flex: none; }
+  .type-picker.open { top: 0; left: 0; }
+  .type-picker:not(.open) button:not([aria-pressed="true"]) { display: none; }
+  .type-picker:not(.open) button[aria-pressed="true"]::after { content: " ▾"; font-size: 0.8em; opacity: 0.8; }
+  .type-picker.open {
+    position: absolute; z-index: 1200; flex-direction: column; align-items: stretch; padding: 4px; gap: 2px;
+    background: var(--panel); box-shadow: var(--shadow); border-radius: var(--radius);
+  }
+  .type-picker.open button { text-align: left; padding: 9px 14px; }
+}
+@media (max-width: 560px) { .histbar .hb-ticks { display: none; } .histbar { gap: 4px; padding: 6px 8px 4px; } .histbar .hb-year { font-size: 19px; } }
+.topbar:has(.type-picker.open) { z-index: 1300; }
+.type-picker button { white-space: nowrap; }
+.nm-scale { background: var(--panel); border-radius: 8px; padding: 3px 7px; box-shadow: var(--shadow); font-size: 11px; color: var(--text); pointer-events: none; margin-bottom: 6px !important; }
+.nm-scale .nm-row { display: flex; align-items: center; gap: 6px; line-height: 15px; }
+.nm-scale i { display: block; height: 5px; border: 1.5px solid currentColor; border-top: 0; }
+.nm-scale .km i { border-top: 1.5px solid currentColor; border-bottom: 0; }
+@media (pointer: coarse) { .leaflet-bottom.leaflet-right .nm-scale { margin-bottom: 84px !important; margin-right: 8px !important; } }
+body:has(.histbar:not([hidden])) .nm-scale { display: none; }

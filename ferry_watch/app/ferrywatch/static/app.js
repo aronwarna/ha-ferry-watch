@@ -49,6 +49,43 @@
     .setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   window.ferryMap = map; // handy from the browser console
+  // Open where the map was last left if that was in the last 6 hours (else on the ships).
+  let viewRestored = false;
+  try {
+    const v = (store.get("fw-view") || "").split(",").map(Number);
+    if (v.length >= 3 && v.slice(0, 3).every(Number.isFinite) && !(v[3] && Date.now() - v[3] > 6 * 3600e3)) {
+      map.setView([v[0], v[1]], v[2], { animate: false });
+      viewRestored = true;
+    }
+  } catch (err) { /* the default view */ }
+  map.on("moveend", () => {
+    const c = map.getCenter();
+    store.set("fw-view", `${c.lat.toFixed(5)},${c.lng.toFixed(5)},${map.getZoom()},${Date.now()}`);
+  });
+  // A scale bar in nautical miles and metres.
+  const ScaleBar = L.Control.extend({
+    options: { position: "bottomright" },
+    onAdd() {
+      this.el = L.DomUtil.create("div", "nm-scale");
+      this.el.innerHTML = '<div class="nm-row"><i></i><span></span></div><div class="nm-row km"><i></i><span></span></div>';
+      map.on("zoomend moveend", this.update, this);
+      setTimeout(() => this.update(), 0);
+      return this.el;
+    },
+    update() {
+      const y = map.getSize().y / 2;
+      const m = map.distance(map.containerPointToLatLng([0, y]), map.containerPointToLatLng([100, y])); // per 100 px
+      const nice = (v) => { const e = 10 ** Math.floor(Math.log10(v)); const f = v / e; return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * e; };
+      const nm = nice(m / 1852);
+      const metres = nice(m);
+      const [rowNm, rowKm] = this.el.querySelectorAll(".nm-row");
+      rowNm.querySelector("i").style.width = `${Math.round((nm * 1852 / m) * 100)}px`;
+      rowNm.querySelector("span").textContent = `${nm < 1 ? nm.toFixed(nm < 0.1 ? 2 : 1) : nm} NM`;
+      rowKm.querySelector("i").style.width = `${Math.round((metres / m) * 100)}px`;
+      rowKm.querySelector("span").textContent = metres >= 1000 ? `${metres / 1000} km` : `${metres} m`;
+    },
+  });
+  new ScaleBar().addTo(map);
   map.attributionControl.setPrefix(false);
 
   // Weather layers (overlays.js): ice, radar and wind over the map, with a shared time bar.
@@ -170,6 +207,29 @@
     ]),
   };
   if (aerialOn) layers.satellite.addLayer(aerialPhotos);
+  // Then & now: old aerial photos and old maps over today's picture, plus the catalogue's
+  // overlays and building ages (histmaps.js, mapsources.py).
+  const hist = FerryHist.create({
+    map, api, store,
+    today: {
+      photo: () => L.layerGroup([
+        L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+          maxZoom: 19, maxNativeZoom: ESRI_SAFE_Z, referrerPolicy: REFERRER, zIndex: 1,
+          attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+        }),
+        L.tileLayer("api/tiles/photo/{z}/{x}/{y}.jpg", {
+          minZoom: 11, maxZoom: 19, maxNativeZoom: 18, zIndex: 2,
+          attribution: "Aerial photos © Maanmittauslaitos (via Kapsi)",
+        }),
+      ]),
+      map: streets,
+    },
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  layers.historic = hist.layer;
+  FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
   function setAerial(on) {
     aerialOn = on;
     store.set("fw-aerial", on ? "1" : "0");
@@ -3403,6 +3463,8 @@
         note: "From zoom 11 in, the Land Survey's and Maa-amet's own aerial photos (0.5 m, summer) over Esri's satellite images. Sharper close up, but a different look; off shows Esri's as before.",
         onChange: async (on) => { setAerial(on); },
       }),
+      groupHead("On every map"),
+      ...hist.rows().map((r) => switchRow({ compact: true, ...r, onChange: async (on) => { await r.onChange(on); renderLayers(); } })),
       groupHead("Traffic"),
       trafficRow(),
       renderAircraftSection(),
@@ -5926,6 +5988,7 @@
   map.on("click", (e) => {
     if (route.on) return;
     if (activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11 && FerryChart.aidAt(map, e.latlng)) return;
+    if (hist.tap(e.latlng)) return;
     reserves.tap(e.latlng);
   });
   const SERVICE_INFO = {
@@ -6217,7 +6280,7 @@
     }
     const target = shipFromUrl();
     if (target && ships.has(target)) focusShip(target);
-    else if (!focusFromNotification()) fitAllShips();
+    else if (!focusFromNotification() && !viewRestored) fitAllShips();
     connectSocket();
     if (trafficOn) pollTraffic();
     if (stationsOn) pollStations();

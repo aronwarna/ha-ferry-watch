@@ -41,6 +41,8 @@ from .passages import Detector, backfill_timing
 from .photos import PhotoCache
 from .portcalls import PortTimes
 from .satellite import Satellite
+from .mapsources import MapSources
+from .buildings import Buildings
 from .predict import Predictor
 from .stations import Stations
 from .store import Store
@@ -123,6 +125,8 @@ class FerryWatch:
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
         self.satellite: Satellite | None = None
+        self.maps: MapSources | None = None
+        self.buildings: Buildings | None = None
         self.overlays: Overlays | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
@@ -174,6 +178,10 @@ class FerryWatch:
         # never push chart tiles out.
         self.satellite = Satellite(TileCache(DATA_DIR / "satellite", self.session, 400 * 1024 * 1024),
                                    self.store.kv_get("mml_api_key", ""))
+        # Old aerial photos, old maps and overlays (mapsources.py), and building ages.
+        sim = os.environ.get("FW_SIMULATE") == "1"
+        self.maps = MapSources(DATA_DIR / "maps", self.session, self.store, fake=sim)
+        self.buildings = Buildings(DATA_DIR / "maps" / "buildings", self.session, fake=sim)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
             self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
@@ -297,6 +305,7 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self.maps.run()))
         self.tasks.append(asyncio.create_task(self._overlay_pruning()))
         self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
@@ -545,6 +554,8 @@ class FerryWatch:
             self.ports.visits.prune()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.satellite.cache.prune)
+            await asyncio.to_thread(self.maps.prune)
+            await asyncio.to_thread(self.buildings.prune)
             await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
@@ -596,6 +607,7 @@ class FerryWatch:
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
             "satellite": self.satellite.sources() if self.satellite else None,
+            "maps": self.maps.sources() + [{"id": "buildings", "name": "Building ages (HSY)", "layers": 1, "failing": self.buildings.failing}] if self.maps else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
             "weather": self.weather_state(),

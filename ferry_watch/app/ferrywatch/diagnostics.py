@@ -60,7 +60,7 @@ def report(state: dict[str, Any], overlays: list[dict[str, Any]], secrets: list[
         "",
         "Sources",
     ]
-    for key in ("feed", "port_calls", "chart", "vchart", "satellite", "weather"):
+    for key in ("feed", "port_calls", "chart", "vchart", "satellite", "maps", "weather"):
         if state.get(key) is not None:
             out.append(f"- {key}: {_flat(state[key])}")
     air = state.get("aircraft") or {}
