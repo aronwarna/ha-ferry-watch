@@ -1033,6 +1033,25 @@ class SmartRouter:
                     idx = await in_thread(self._shape_power, grid, found, speed_kn)
                     out = describe(grid, found["cells"], idx, found, False, start, end)
                     out["shelter"] = shelter
+                    out["style"] = "shelter"
+                    # The other way to see beside it: the direct one, as any boat would be sent
+                    # (no shelter, fairways only a little shorter).
+                    plain = await in_thread(search_power, grid, a, b, speed_kn)
+                    direct = None
+                    if plain:
+                        plain["expo"], plain["weight"] = expo, 1e-9 if expo else 0.0  # for its open-water miles
+                        pidx = await in_thread(self._shape_power, grid, plain, speed_kn)
+                        direct = describe(grid, plain["cells"], pidx, plain, False, start, end)
+                        direct["shelter"] = {**shelter, "weight": 0.0} if expo else shelter
+                        direct["style"] = "direct"
+                    if direct and (abs(direct["metres"] - out["metres"]) > 0.02 * out["metres"]
+                                   or abs((direct.get("exposed_nm") or 0) - (out.get("exposed_nm") or 0)) >= 0.3):
+                        mine, other = (direct, out) if style == "direct" else (out, direct)
+                        mine["alt"] = {k: other.get(k) for k in ("points", "hows", "metres", "seconds", "nm", "style",
+                                                                 "exposed_nm", "fairway_nm")}
+                        out = mine
+                    else:
+                        out["alt"] = None
         if not out:
             why = (f"Chart data for {grid.missing} of the {count} areas along the way is still downloading. "
                    "Try again in a minute." if grid.missing else

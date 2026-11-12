@@ -243,6 +243,13 @@
       <p id="route-hint" class="small muted route-hint" role="status"></p>
       <button type="button" id="route-pick-cancel" class="route-pick-cancel" hidden>Cancel</button>
     </div>
+    <div id="route-power" class="route-sail" hidden>
+      <div id="power-styles" class="segmented route-modes" role="group" aria-label="Kind of route">
+        <button type="button" data-style="shelter" aria-pressed="true">Sheltered</button>
+        <button type="button" data-style="direct" aria-pressed="false">Direct</button>
+      </div>
+      <p id="power-sum" class="small muted" role="status"></p>
+    </div>
     <div id="route-sail" class="route-sail" hidden>
       <div id="sail-styles" class="segmented route-modes" role="group" aria-label="Sailing route">
         <button type="button" data-style="fast" aria-pressed="true">Fastest</button>

@@ -4103,6 +4103,7 @@
   let routeMode = ["fw", "auto"].includes(store.get("fw-route-mode")) ? store.get("fw-route-mode") : "line"; // for new legs
   const newLegMode = () => (routeMode === "auto" ? "auto" : routeMode === "fw");
   let sailStyle = store.get("fw-sail-style") === "comfort" ? "comfort" : "fast";
+  let powerStyle = store.get("fw-power-style") === "direct" ? "direct" : "shelter";
   let routeRoom = ["close", "normal", "wide"].includes(store.get("fw-route-room")) ? store.get("fw-route-room") : "normal";
   let routeSpeed = Number(store.get("fw-route-speed")) || 25;
   let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
@@ -4242,7 +4243,7 @@
       res = leg.auto
         ? await api("api/smartroute", { method: "POST", body: {
           from: [a[0], a[1]], to: [b[0], b[1]], boat: routeBoat, draught: routeDraught, speed: routeSpeed,
-          depart: departFor(i), style: sailStyle, room: routeRoom } })
+          depart: departFor(i), style: isSail() ? sailStyle : powerStyle, room: routeRoom } })
         : await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}${on ? `&on=${on}` : ""}`);
     } catch (err) {
       res = { error: String(err.message || err) };
@@ -4263,7 +4264,7 @@
       if (leg.auto) {
         leg.info = { hows: res.hows || "", nm: res.nm || {}, seconds: res.seconds, shallow: res.shallow_nm || 0, style: res.style || null,
           alt: res.alt || null, depart: res.depart || null, sail: isSail() && res.style !== "motor", cell: res.cell_m,
-          shelter: res.shelter || null, exposed: res.exposed_nm, trunk: res.trunk_nm || 0, fairway: res.fairway_nm || 0, checks: res.checks || [], near: res.near_m || 100 };
+          shelter: res.shelter || null, exposed: res.exposed_nm, trunk: res.trunk_nm || 0, fairway: res.fairway_nm || 0, checks: res.checks || [], near: res.near_m || 100, metres: res.metres };
       }
       leg.note = [...(res.warnings || []), res.downloading && !leg.auto ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
         .filter(Boolean).join(" ");
@@ -4626,7 +4627,7 @@
     const pick = (e) => { L.DomEvent.stop(e); setSailStyle(alt.style); };
     L.polyline(pts, { color: "#000", opacity: 0, weight: 20, interactive: true, bubblingMouseEvents: false }).addTo(group).on("click", pick);
     const diff = Math.round((alt.seconds - leg.info.seconds) / 60);
-    const text = `${alt.style === "comfort" ? "Comfortable" : "Fastest"} ${diff >= 0 ? "+" : "−"}${NavM.duration(Math.abs(diff) * 60)}`;
+    const text = `${{ comfort: "Comfortable", fast: "Fastest", shelter: "Sheltered", direct: "Direct" }[alt.style] || "Other"} ${diff >= 0 ? "+" : "−"}${NavM.duration(Math.abs(diff) * 60)}`;
     if (screenLength(pts) > 140) {
       L.marker(halfwayAt(pts, 0.5), { keyboard: false, bubblingMouseEvents: false,
         icon: L.divIcon({ className: "leg-label alt", html: `<span>${esc(text)}</span>`, iconSize: null }) }).addTo(group).on("click", pick);
@@ -4634,9 +4635,13 @@
   }
 
   function setSailStyle(style) {
-    if (style !== "fast" && style !== "comfort") return;
-    sailStyle = style;
-    store.set("fw-sail-style", style);
+    if (style === "shelter" || style === "direct") {
+      powerStyle = style;
+      store.set("fw-power-style", style);
+    } else if (style === "fast" || style === "comfort") {
+      sailStyle = style;
+      store.set("fw-sail-style", style);
+    } else return;
     planLegs(route.legs.map((l, i) => (l.auto ? i : -1)).filter((i) => i >= 0));
   }
 
@@ -4906,6 +4911,10 @@
         "", sh.wind_ms != null ? "The forecast the shelter was planned for. Pick another hour under Boating weather to plan for that hour's wind."
           : "Planned for shelter from all sides"]);
     }
+    const total = sum((x) => x.metres) / 1852;
+    if (b?.fuel_lnm && !isSail() && total >= 0.5) {
+      out.push([`Fuel about ${Math.max(1, Math.round(total * b.fuel_lnm))} l`, "", `A rough guess at cruising speed: ${b.fuel_lnm} litres a nautical mile for ${b.title}. Your engine and load decide.`]);
+    }
     if (shallow >= 0.1) out.push([`Uncertain depth ${shallow.toFixed(1)} NM`, "warn", "Water the chart only gives as a depth range that may be too shallow: the amber dashed stretches"]);
     return out;
   }
@@ -5114,7 +5123,25 @@
   }
 
   // The sailing choice: fastest or comfortable, and what the planned legs are made of.
+  // A motor boat's two routes: the sheltered one along fairways, and the direct one.
+  function renderPower() {
+    const legs = route.legs.filter((l) => l.auto && l.info && !l.info.sail);
+    const show = route.on && !isSail() && boatInfo()?.shelter > 0 && route.legs.some((l) => l.auto);
+    $("route-power").hidden = !show;
+    if (!show) return;
+    for (const b of $("power-styles").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.style === powerStyle));
+    const alts = legs.filter((l) => l.info.alt);
+    if (!legs.length) { setText($("power-sum"), ""); return; }
+    if (!alts.length) { setText($("power-sum"), "Sheltered and direct are the same route here."); return; }
+    const nm = (m) => m / 1852;
+    const dNm = alts.reduce((n, l) => n + nm(l.info.alt.metres - l.info.metres), 0);
+    const open = alts.reduce((n, l) => n + (l.info.alt.exposed_nm || 0), 0);
+    const other = powerStyle === "shelter" ? "direct" : "sheltered";
+    setText($("power-sum"), `The ${other} route (dashed purple) is ${Math.abs(dNm).toFixed(1)} NM ${dNm < 0 ? "shorter" : "longer"}, with ${open.toFixed(1)} NM of open water. Tap it to take it.`);
+  }
+
   function renderSail() {
+    renderPower();
     const legs = route.legs.filter((l) => l.auto && l.info?.sail);
     const show = route.on && isSail() && route.legs.some((l) => l.auto);
     $("route-sail").hidden = !show;
@@ -5355,6 +5382,7 @@
     renderRoutePanel();
   });
   for (const b of $("sail-styles").querySelectorAll("button")) b.addEventListener("click", () => setSailStyle(b.dataset.style));
+  for (const b of $("power-styles").querySelectorAll("button")) b.addEventListener("click", () => setSailStyle(b.dataset.style));
   renderBoats();
   api("api/boats").then((got) => {
     if (!got?.boats) return;

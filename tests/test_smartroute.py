@@ -317,3 +317,21 @@ def test_places_to_check_and_room_from_shore():
         counts[name] = (sum(1 for f in g.flags if f), sum(1 for f in g.flags if f & S.NEAR))
     assert counts["close"][0] >= counts["normal"][0] > counts["wide"][0]
     assert counts["close"][1] < counts["normal"][1] < counts["wide"][1]
+
+
+def test_motor_boat_gets_the_direct_route_beside_the_sheltered_one(tmp_path):
+    class Chart:  # no chart on disk: the grid is given
+        pass
+    router = S.SmartRouter(Chart(), FakeWeather(180, 12))
+    grid = island_coast()
+
+    async def fixed(*args, **kwargs):
+        return grid
+    router._grid = fixed
+    a, b = grid.latlon(64 + S.BORDER, 5 + S.BORDER), grid.latlon(64 + S.BORDER, 295 + S.BORDER)
+    out = asyncio.run(router.route(a, b, "buster_m"))
+    assert out["style"] == "shelter" and out["alt"]["style"] == "direct"
+    assert out["alt"]["metres"] < out["metres"] and out["alt"]["exposed_nm"] > out["exposed_nm"]
+    other = asyncio.run(router.route(a, b, "buster_m", style="direct"))
+    assert other["style"] == "direct" and other["alt"]["style"] == "shelter"
+    assert other["points"] == out["alt"]["points"]

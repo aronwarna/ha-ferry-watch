@@ -399,6 +399,17 @@ works out the quickest way through water deep enough.
 - The start and the end may be up to 2.5 km from open water (a berth in a shallow
   bay); the route says so when it is more than 300 m.
 
+**Sheltered or Direct.** For the motor boats the planner works out both the
+sheltered route (islands, fairways, green routes, as described above) and the
+direct one (no shelter counted, fairways only 15 % shorter). When they differ, the
+one not chosen is drawn dashed in purple with its time difference; the panel says
+how much shorter it is and how many miles of it lie open. Tap the dashed line or
+the Sheltered / Direct buttons to switch. The choice is remembered.
+
+**Fuel.** The label "Fuel about N l" multiplies the route's length by a typical
+consumption at cruising speed: 0.5 l/NM for Buster M, 0.8 for Buster XL, 1.4 for
+the cabin boat. It is a rough guess; your engine, load and the sea decide.
+
 **Places to check.** The route lists every stretch that passes within the shore
 room of the shore or a shoal for 80 m or more, or over water of uncertain depth.
 Each has an orange sign on the map and a row under "places to check yourself" in

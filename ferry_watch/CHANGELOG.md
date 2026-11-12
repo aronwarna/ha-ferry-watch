@@ -6,6 +6,11 @@
   do: every stretch that passes close to the shore or a shoal, or over water where the chart
   only gives a depth range. Each has a small orange sign on the map and a row in the route
   panel with the reason; tap either to go there.
+- Motor boats get **two routes to choose from**, as the sailboat already did: the
+  **Sheltered** one (inside the islands, along fairways) and the **Direct** one. The other
+  is drawn dashed in purple with the time it saves or costs and its miles of open water;
+  tap it, or the Sheltered / Direct buttons, to take it.
+- A rough **fuel estimate** for the route (litres, from a typical figure for each boat).
 - New **Room from shore** choice for Automatic routes: Close (50 m), Normal (100 m) or Wide
   (200 m). It sets how far the route keeps from the shore and from shoals.
 - New **Reverse** button in the route tool: the same route the other way. Automatic legs are
