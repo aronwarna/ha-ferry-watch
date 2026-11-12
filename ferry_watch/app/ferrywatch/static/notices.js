@@ -1,5 +1,5 @@
 /* Warnings and waterway structures on the map (notices.py):
-   - nautical warnings (Fintraffic): a diamond with "!" at each, its line or area dashed in
+   - nautical warnings (Traficom): a diamond with "!" at each, its line or area dashed in
      the same amber; tap for what, where and until when;
    - sea weather warnings (FMI): the warned sea areas tinted yellow, orange or red, and a
      warning sign in the conditions pill when one covers your own waters;
@@ -51,11 +51,13 @@
     }
     function nauticalPopup(w) {
       const where = [w.place, w.area].filter(Boolean).join(" · ");
+      const rest = Object.entries(w.props || {});
       return `<div class="notice-pop"><strong>${esc(w.type)}${w.number ? ` ${esc(w.number)}` : ""}</strong>`
         + `${where ? `<div class="muted">${esc(where)}</div>` : ""}`
         + `${w.text ? `<p>${esc(w.text)}</p>` : ""}`
         + `<div class="small muted">In force ${esc(validity(w))}${w.published ? ` · published ${esc(fmtWhen(w.published))}` : ""}</div>`
-        + `<div class="small muted">Nautical warning, Fintraffic</div></div>`;
+        + `${rest.length ? `<details${w.text ? "" : " open"}><summary class="small">All details</summary><dl class="facts small">${rest.map(([k, v]) => `<dt>${esc(k.replace(/_/g, " "))}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>` : ""}`
+        + `<div class="small muted">Navigational warning, Traficom</div></div>`;
     }
     function drawNautical() {
       layers.nautical.clearLayers();
@@ -220,7 +222,7 @@
       const fail = (name) => (errors[name] ? `Couldn't be read just now (${errors[name]}). ` : "");
       return [
         { title: "Nautical warnings", color: AMBER, checked: on.nautical, count: on.nautical && n != null ? `${n} in force` : "",
-          note: `${fail("nautical")}Fintraffic's warnings to mariners in Finnish waters: firing exercises, works in a fairway, marks missing or moved, things adrift. A diamond with "!" at each, its line or area dashed; tap for the text and how long it holds. A single faulty light or buoy is in "Faulty lights and buoys".`,
+          note: `${fail("nautical")}The navigational warnings for Finnish waters, from Traficom: firing exercises, works in a fairway, marks missing or moved, things adrift. A diamond with "!" at each, its line or area dashed; tap for the text and how long it holds. A single faulty light or buoy is in "Faulty lights and buoys".`,
           onChange: async (v) => set("nautical", v) },
         { title: "Sea weather warnings", color: WARN_COLORS.orange, checked: on.seawarn, count: w != null ? `${w} in force` : "",
           note: `${fail("seawarn")}The Finnish Meteorological Institute's warnings for the sea areas (wind, waves, icing): the warned areas tinted yellow, orange or red; tap one for the text. A warning for your own waters always shows as a sign in the conditions pill, with or without this switch.`,
