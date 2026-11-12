@@ -43,6 +43,8 @@ from .portcalls import PortTimes
 from .satellite import Satellite
 from .mapsources import MapSources
 from .buildings import Buildings
+from .here import Here
+from .pins import Places
 from .predict import Predictor
 from .stations import Stations
 from .store import Store
@@ -127,6 +129,7 @@ class FerryWatch:
         self.satellite: Satellite | None = None
         self.maps: MapSources | None = None
         self.buildings: Buildings | None = None
+        self.here: Here | None = None
         self.overlays: Overlays | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
@@ -230,6 +233,8 @@ class FerryWatch:
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
+        self.here = Here(self.session, self.vchart, fake=os.environ.get("FW_SIMULATE") == "1")
+        self.places = Places(self.session, fake=os.environ.get("FW_SIMULATE") == "1")
         self.autoroute = AutoRouter(self.vchart)
         self.smartroute = SmartRouter(self.vchart, self.dayscore, self.notices)
         fake_ports = None

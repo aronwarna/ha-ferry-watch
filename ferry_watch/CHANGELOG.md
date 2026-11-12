@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.61.0
+
+- **Where am I**: a locate button (bottom right) centres the map on you: this device's GPS when the
+  browser allows it, else your phone's position from Home Assistant. Tap again to follow you;
+  moving the map stops following. A cone shows which way you're heading.
+- **What's here**: long-press the map (right-click on a computer) for the place's coordinates in
+  sea style (tap to copy), distance and bearing from you, the chart's depth there, the seabed type
+  (GTK), and the wind, gusts, waves and temperatures now and for the next 12 hours (Open-Meteo).
+  When the chart-sample switch in Settings is on, a long press on the drawn chart still saves a sample.
+- **Find a place**: the search button (or the / key) finds islands, bays and villages
+  (OpenStreetMap), harbours, your pins and typed coordinates (decimal or degrees and minutes).
+- **My pins**: save any place as a pin (fishing spot, anchorage, sauna, swimming, campfire, danger,
+  view, home, or plain) with a name and a note. Kept on the NAS, so the phone and the computer
+  share them; Layers › On every map has the switch and a GPX download for the plotter.
+
 ## 0.60.0
 
 - **Then & now**: a new map type with old aerial photos and old maps. Pick Aerial photos or

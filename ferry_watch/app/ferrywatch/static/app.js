@@ -229,6 +229,16 @@
     },
   });
   layers.historic = hist.layer;
+  // Where am I, What's here (long press), Find a place, My pins (whereami.js, here.py, pins.py).
+  const here = FerryHere.create({
+    map, api, store,
+    phoneFix: () => phoneFix(),
+    // A long press on the drawn chart saves a chart sample instead, when that's switched on.
+    busy: () => sampleOnPress && activeLayer === layers.chart && chartStyle === "drawn",
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
   FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
   function setAerial(on) {
     aerialOn = on;
@@ -3464,6 +3474,7 @@
         onChange: async (on) => { setAerial(on); },
       }),
       groupHead("On every map"),
+      ...here.rows().map((r) => switchRow({ compact: true, ...r })),
       ...hist.rows().map((r) => switchRow({ compact: true, ...r, onChange: async (on) => { await r.onChange(on); renderLayers(); } })),
       groupHead("Traffic"),
       trafficRow(),

@@ -88,3 +88,11 @@ def fake_buildings(s: float, w: float, n: float, e: float) -> dict:
 def tile_centre(z: int, x: int, y: int) -> tuple[float, float]:
     s, w, n, e = tile_box(z, x, y)
     return (s + n) / 2, (w + e) / 2
+
+
+def fake_places(q: str) -> list[dict]:
+    names = [("Rönnskär", 59.932, 24.395, "island"), ("Porkkalanniemi", 59.98, 24.42, "peninsula"),
+             ("Kallbådan", 59.885, 24.585, "island"), ("Suomenlinna", 60.146, 24.987, "island"),
+             ("Espoonlahti", 60.15, 24.64, "bay"), ("Pentala", 60.13, 24.68, "island")]
+    ql = q.lower()
+    return [{"name": n, "where": "Uusimaa, Suomi", "kind": k, "lat": a, "lon": b} for n, a, b, k in names if ql in n.lower()]

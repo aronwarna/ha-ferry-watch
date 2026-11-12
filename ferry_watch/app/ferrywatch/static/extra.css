@@ -1298,3 +1298,45 @@ body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area
 .nm-scale .km i { border-top: 1.5px solid currentColor; border-bottom: 0; }
 @media (pointer: coarse) { .leaflet-bottom.leaflet-right .nm-scale { margin-bottom: 84px !important; margin-right: 8px !important; } }
 body:has(.histbar:not([hidden])) .nm-scale { display: none; }
+
+/* --- whereami.js: locate + search buttons, What's here, pins, search sheet ------------- */
+.map-fabs { position: fixed; right: 12px; bottom: 150px; z-index: 900; display: flex; flex-direction: column; gap: 8px; }
+body.menu-open .map-fabs { right: calc(var(--panel-w, 0px) + 12px); }
+.map-fabs .icon-button { width: 42px; height: 42px; border-radius: 50%; }
+.map-fabs .fab-locate.following { color: #fff; background: #0ea5e9; border-color: #0ea5e9; }
+body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
+@media (max-width: 560px) { .map-fabs { bottom: 190px; right: 10px; } }
+.live-dot svg { width: 34px; height: 34px; overflow: visible; }
+.live-dot circle { fill: #0ea5e9; stroke: #fff; stroke-width: 2.5; }
+.live-dot .cone { fill: #0ea5e9; opacity: 0.35; }
+.chip-btn { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line, #cbd5e1); background: var(--panel); color: var(--text); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; text-decoration: none; white-space: nowrap; }
+.chip-btn:hover { border-color: var(--accent, #2563eb); }
+.chip-btn.primary { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+.link-btn { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--text); cursor: copy; text-align: left; }
+.here-box { min-width: 220px; }
+.here-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.here-facts dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 8px 0 0; }
+.here-facts dt { color: var(--muted); }
+.here-facts dd { margin: 0; }
+.here-hours { display: flex; gap: 4px; margin-top: 6px; overflow-x: auto; }
+.here-hours span { display: flex; flex-direction: column; align-items: center; min-width: 34px; padding: 3px 2px; border-radius: 6px; background: color-mix(in srgb, var(--text) 6%, transparent); font-size: 11px; line-height: 1.25; }
+.here-hours svg { width: 12px; height: 12px; fill: currentColor; margin: 1px 0; }
+.here-hours i { color: var(--muted); font-style: normal; font-size: 10px; }
+.pin-note { white-space: pre-wrap; margin: 6px 0 0; }
+.pin-form { display: flex; flex-direction: column; gap: 6px; }
+.pin-form input, .pin-form select, .pin-form textarea { font: inherit; font-size: 13px; padding: 5px 7px; border: 1px solid var(--line, #cbd5e1); border-radius: 6px; background: var(--panel); color: var(--text); }
+.pin-icon { position: relative; }
+.pin-icon svg { width: 26px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+.pin-icon span { position: absolute; left: 0; top: 4px; width: 26px; text-align: center; color: #fff; font-size: 12px; line-height: 16px; pointer-events: none; }
+.search-sheet { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); width: min(440px, calc(100vw - 24px)); z-index: 1400; padding: 6px; border-radius: 12px; }
+.search-row { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
+.search-row > svg { width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 2; flex: none; }
+.search-row input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 16px; padding: 8px 2px; outline: none; }
+.search-results { list-style: none; margin: 0; padding: 0; max-height: min(60vh, 420px); overflow-y: auto; }
+.search-results:not(:empty) { border-top: 1px solid var(--line, #e2e8f0); margin-top: 4px; padding-top: 4px; }
+.search-results button { display: flex; gap: 10px; align-items: center; width: 100%; border: 0; background: none; color: var(--text); text-align: left; padding: 7px 8px; border-radius: 8px; cursor: pointer; font: inherit; }
+.search-results button:hover, .search-results button:focus { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.sr-kind { width: 20px; text-align: center; flex: none; }
+.sr-text { display: flex; flex-direction: column; min-width: 0; }
+.sr-empty { padding: 8px; }
+.fw-toast { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 2000; padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: calc(100vw - 32px); }
