@@ -296,8 +296,8 @@ the bin button take back or clear. Escape or the ✕ leaves route mode; the rout
 you were drawing is kept in the browser until you come back. On a phone the
 panel is a small sheet above the ship chips, on a computer a list on the left.
 
-**Straight / Along fairways** at the top of the panel says how new legs go.
-With **Along fairways**, enter your draught (1.5 m to start with, remembered)
+**Straight / Fairways / Automatic** at the top of the panel says how new legs go
+(Automatic is described below). With **Fairways**, enter your draught (1.5 m to start with, remembered)
 and tap the start and the end: the add-on plans the leg along the fairway
 centre lines of the drawn chart, skipping fairways whose design depth is less
 than your draught plus 0.3 m. A fairway leg has a white line down its middle and
@@ -339,6 +339,77 @@ as dashed lines with their name; tap one for its distance and **Edit route**.
 **On the map → Routes** lists them with a switch to show or hide each, **Edit**
 and **Delete**. There is no navigation guidance.
 
+### Boats
+
+The boat list at the top of the route panel has four boats. Picking one sets the
+draught and the speed (both can be changed by hand afterwards), the depth the
+Automatic mode keeps under it, and the weather limits for Boating weather.
+
+| | Size | Draught | Depth it is routed over | Cruising speed |
+|---|---|---|---|---|
+| Buster M | 4.86 × 1.85 m, 30–40 hp | 0.5 m | 1.0 m | 20 kn |
+| Buster XL | 6.05 × 2.20 m, 80–115 hp | 0.6 m | 1.1 m | 26 kn |
+| Cabin boat 8 m (Ockelbo B25, Viggo C8.1 class) | 8.0 × 2.7 m | 0.8 m | 1.3 m | 25 kn |
+| Sailboat 35 ft | 10.7 × 3.5 m | 1.9 m | 2.5 m | 6 kn |
+
+Sizes and engines of the Busters are from buster.fi; their draughts are not
+published and are estimates with the engine down. **Boat and planning numbers** at
+the bottom of the route panel lists every number the planning uses.
+
+### Automatic: a route over open water
+
+**Automatic** (the third mode beside Straight and Fairways) plans the leg for the
+boat picked, on or off the marked fairways. Tap the start and the end; the add-on
+works out the quickest way through water deep enough.
+
+- The drawn chart's depth areas between the two ends become a grid of 40 m cells
+  (wider on long trips, up to 400 m; one leg can be 150 NM and more, and the first plan of a long leg can take a minute).
+- Water is open where the chart's depth range starts at the depth the boat needs or
+  deeper. Where the range only includes it (0–3 m for a small boat: the chart says
+  no more), the water is used only if nothing better is near, counted three times
+  as long, and that stretch is drawn **amber and dashed**: check it yourself. For
+  the sailboat the 0–3 m band is closed.
+- Rocks, wrecks and soundings shallower than the boat needs close 30 m round them.
+  The shore and shoals are kept 30 m off, and the first 100 m counts a quarter longer.
+- Marked fairways deep enough for the boat are always open, so a narrow sound with a
+  fairway stays passable, and count a little shorter.
+- Inside speed limit areas the boat goes at the limit, so a fast boat is sent round
+  a slow area when that is quicker.
+- The start and the end may be up to 2.5 km from open water (a berth in a shallow
+  bay); the route says so when it is more than 300 m.
+
+The leg can be changed like a fairway leg: drag a dot, add stops, or tap the line
+for the menu (**Automatic, over open water** is there for any leg, as is **Plan it
+again**). Only chart areas already downloaded count; missing ones are fetched and
+the leg is planned again. It is a plan from chart data, not navigation: bridges'
+heights, cables, nets and anything not on the chart are not known to it.
+
+### Sailing: fastest and comfortable routes
+
+With the **Sailboat**, an Automatic leg is planned from the wind forecast, the way
+ocean races are routed. The boat's speed at each angle to the wind comes from a
+speed table for a 35 ft cruiser (in Boat and planning numbers). Too close to the
+wind it tacks, dead downwind it may gybe (the speed made good counts, less 7 % for
+the turns); under 2 m/s of wind, or when beating with less than 150 m of room, the
+engine runs at 5.5 kn. The wind is read hour by hour at up to 30 points over the
+area, so a wind shift on the way moves the route.
+
+Two routes come back. **Fastest** is the least time. **Comfortable** counts time
+as longer when beating (60 %), running dead downwind (15 %), under engine (10 %),
+in wind over 9 m/s (12 % per m/s) and in waves over 0.8 m (60 % per metre), so it
+gives way to an easier point of sail or calmer water when that costs little. The
+one picked is the route; the other is drawn thin, dashed and purple with the time
+it costs or saves, and a tap on it takes it. Beating stretches have dashes down
+the middle, stretches under engine none. The route depends on when you leave: tap
+an hour in Boating weather and it is planned for that hour. Without a forecast the
+leg is the way under engine, and says so.
+
+### Speed limit areas
+
+While the route tool is open (and always with **Speed limit areas** on in Layers)
+Väylävirasto's speed limit areas are drawn from zoom 10: a red dashed outline,
+lightly tinted, with the limit in km/h.
+
 ### Speed limits on the route
 
 Once a route has two points, the add-on checks it against Väylävirasto's speed
@@ -364,17 +435,20 @@ the forecast where the boat would be when it gets there: wind, gusts, waves,
 rain, visibility and daylight (after civil dusk counts as okay at best). The
 worst place along the way decides the hour. The line next to the title says the
 best windows ("good today 10–15, tomorrow 08–12"); tap an hour for the numbers,
-which of them make it okay or bad and how far along the route; the stretches
-that do show as amber or red dots on the route. A darker foot under an hour
+which of them make it okay or bad and how far along the route. A darker foot under an hour
 means part of the trip is in the dark. Tap the title to fold it away.
 
-The boat size sets the limits (okay from / bad from):
+The boat picked at the top of the route panel sets the limits (okay from / bad from):
 
 | | Wind m/s | Gusts m/s | Waves m | Rain mm/h | Sight km |
 |---|---|---|---|---|---|
-| Small open boat | 5 / 8 | 9 / 13 | 0.3 / 0.6 | 0.5 / 2.5 | under 4 / 1 |
-| Small boat | 6 / 10 | 10 / 15 | 0.5 / 1.0 | 0.5 / 3 | under 4 / 1 |
-| Cabin boat | 8 / 13 | 13 / 19 | 0.8 / 1.6 | 1 / 5 | under 3 / 0.8 |
+| Buster M | 5 / 8 | 9 / 13 | 0.3 / 0.6 | 0.5 / 2.5 | under 4 / 1 |
+| Buster XL | 7 / 11 | 11 / 16 | 0.5 / 1.0 | 0.5 / 3 | under 4 / 1 |
+| Cabin boat 8 m | 9 / 14 | 14 / 20 | 0.8 / 1.6 | 1 / 5 | under 3 / 0.8 |
+| Sailboat 35 ft | 10 / 15 | 15 / 21 | 1.2 / 2.2 | 1 / 5 | under 3 / 0.8 |
+
+The route itself is coloured for the hour you picked: a green, amber or red band
+under the line shows what each stretch is like when the boat gets there.
 
 The forecast is asked for at points along the route (every 3 km, at most 30):
 FMI's HARMONIE model for the air (Open-Meteo if FMI doesn't answer), Open-Meteo's

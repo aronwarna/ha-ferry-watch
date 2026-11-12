@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, dayscore, diagnostics, notices, satellite, stats
+from . import __version__, boats, config, dayscore, diagnostics, notices, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
@@ -123,7 +123,7 @@ def _points(value: Any, minimum: int) -> list[list[float]]:
 
 def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
     """A saved route's plan: wp, the indexes of its stops among the points (first and last
-    included, rising); fw, 1 for each leg between stops that follows the fairways; bend,
+    included, rising); fw, 1 for each leg between stops that follows the fairways and 2 for one planned over open water; bend,
     which of the stops (as indexes into wp, neither end) are bends the user pulled the line
     to rather than stops of their own; and via, which are points on a fairway they dragged
     the route onto. None for none, or one that doesn't fit the points."""
@@ -132,7 +132,7 @@ def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
     wp, fw = value.get("wp"), value.get("fw")
     if not isinstance(wp, list) or not isinstance(fw, list) or len(wp) < 2 or len(fw) != len(wp) - 1:
         return None
-    if not all(type(v) is int for v in wp) or not all(v in (0, 1) and type(v) is int for v in fw):
+    if not all(type(v) is int for v in wp) or not all(v in (0, 1, 2) and type(v) is int for v in fw):
         return None
     if wp[0] != 0 or wp[-1] != n - 1 or any(b <= a for a, b in zip(wp, wp[1:])):
         return None
@@ -320,6 +320,9 @@ class Web:
         r.add_post("/api/routes/import", self.import_routes)
         r.add_post("/api/day-score", self.day_score)
         r.add_get("/api/autoroute", self.autoroute)
+        r.add_post("/api/smartroute", self.smartroute)
+        r.add_get("/api/boats", self.boats)
+        r.add_get("/api/speed-limits", self.speed_limits)
         r.add_get("/api/fairways", self.fairways)
         r.add_get("/api/stations", self.stations)
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
@@ -1100,6 +1103,58 @@ class Web:
         # Which ends are via points the user put on a fairway (see autoroute.JOIN_ON_M).
         on = set(request.query.get("on", "").split(","))
         return web.json_response(await self.fw.autoroute.route(start, end, draught, ("from" in on, "to" in on)))
+
+    async def smartroute(self, request: web.Request) -> web.Response:
+        """A route over open water for a boat (see smartroute.py): {from, to: [lat, lon], boat,
+        draught (m), speed (kn), depart (unix time), style ("fast" or "comfort", sailing)}."""
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest(text="Expected a start and an end") from None
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected a start and an end")
+        ends = _points([body.get("from"), body.get("to")], 2)
+
+        def number(name: str, low: float, high: float) -> float | None:
+            if body.get(name) in (None, ""):
+                return None
+            try:
+                v = float(body[name])
+            except (TypeError, ValueError):
+                v = math.nan
+            if not low <= v <= high:
+                raise web.HTTPBadRequest(text=f"{name} must be {low:g}-{high:g}")
+            return v
+
+        out = await self.fw.smartroute.route(tuple(ends[0]), tuple(ends[1]), str(body.get("boat") or ""),
+                                             number("draught", 0, 15), number("speed", 0.5, 60),
+                                             number("depart", 0, 4e9), str(body.get("style") or "fast"))
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
+
+    async def boats(self, request: web.Request) -> web.Response:
+        """The boats the route tool plans for and every planning number (boats.py, smartroute.py)."""
+        from . import smartroute
+        out = boats.listing()
+        out["planner"] = smartroute.numbers()
+        return web.json_response(out, headers={"Cache-Control": "max-age=300"})
+
+    async def speed_limits(self, request: web.Request) -> web.Response:
+        """The speed limit areas in view: bbox=south,west,north,east."""
+        try:
+            south, west, north, east = (float(v) for v in request.query["bbox"].split(","))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox is needed as south,west,north,east") from None
+        if not (-85 <= south < north <= 85 and -180 <= west < east <= 180):
+            raise web.HTTPBadRequest(text="bbox out of range")
+        try:
+            areas = await self.fw.notices.limit_areas(south, west, north, east)
+        except ValueError:
+            return web.json_response({"areas": [], "too_big": True})
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise web.HTTPBadGateway(text=f"Couldn't read the speed limits: {err}") from None
+        resp = web.json_response({"areas": areas}, headers={"Cache-Control": "max-age=600"})
+        resp.enable_compression()
+        return resp
 
     async def fairways(self, request: web.Request) -> web.Response:
         """The fairway lines in an area deep enough for a draught, for the route tool to snap

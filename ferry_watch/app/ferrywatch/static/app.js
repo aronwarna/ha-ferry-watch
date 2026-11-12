@@ -4100,7 +4100,9 @@
   const FAIRWAY_MIN_Z = 11; // the fairways to snap to are fetched from this zoom
   // drag: the dot being dragged { base: the plan before, op, stop: its index now, snap }
   const route = { on: false, stops: [], legs: [], points: [], undo: [], id: null, name: "", status: null, dragging: false, pick: null, drag: null };
-  let routeMode = store.get("fw-route-mode") === "fw" ? "fw" : "line"; // for new legs
+  let routeMode = ["fw", "auto"].includes(store.get("fw-route-mode")) ? store.get("fw-route-mode") : "line"; // for new legs
+  const newLegMode = () => (routeMode === "auto" ? "auto" : routeMode === "fw");
+  let sailStyle = store.get("fw-sail-style") === "comfort" ? "comfort" : "fast";
   let routeSpeed = Number(store.get("fw-route-speed")) || 25;
   let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
   let routeLayer = null; // { group, casing, legs, labels, handles, turns, markers, pick }
@@ -4109,8 +4111,8 @@
   let savedRoutes = [];
   const savedLayer = L.layerGroup().addTo(map);
 
-  const legState = (l) => ({ fw: Boolean(l.fw), path: Array.isArray(l.path) ? l.path : [], planned: Boolean(l.planned),
-    error: l.error || null, note: l.note || "" });
+  const legState = (l) => ({ fw: Boolean(l.fw), ...(l.auto ? { auto: true } : {}), path: Array.isArray(l.path) ? l.path : [],
+    planned: Boolean(l.planned), error: l.error || null, note: l.note || "", info: l.info || null });
   try {
     const draft = JSON.parse(store.get("fw-route-draft") || "null");
     if (Array.isArray(draft?.stops) && Array.isArray(draft.legs) && draft.legs.length === Math.max(0, draft.stops.length - 1)) {
@@ -4208,7 +4210,7 @@
     if (route.points.length >= ROUTE_MAX_POINTS) return;
     pushUndo();
     route.status = null;
-    const todo = Plan.addStop(route.stops, route.legs, latLngOf(ll), routeMode === "fw");
+    const todo = Plan.addStop(route.stops, route.legs, latLngOf(ll), newLegMode());
     planLegs(todo, { fit: route.stops.length === 2 });
   }
 
@@ -4221,7 +4223,7 @@
     for (const i of list) {
       const leg = route.legs[i];
       if (!leg?.fw) continue;
-      Object.assign(leg, { busy: true, planned: false, path: [], error: null, note: "", seq: ++planSeq });
+      Object.assign(leg, { busy: true, planned: false, path: [], error: null, note: "", info: null, seq: ++planSeq });
       const seq = leg.seq;
       planChain = planChain.then(() => planLeg(leg, seq, fit, tries)).catch(console.error);
     }
@@ -4236,7 +4238,11 @@
     const on = [Plan.isOwn(a) ? "" : "from", Plan.isOwn(b) ? "" : "to"].filter(Boolean).join(",");
     let res;
     try {
-      res = await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}${on ? `&on=${on}` : ""}`);
+      res = leg.auto
+        ? await api("api/smartroute", { method: "POST", body: {
+          from: [a[0], a[1]], to: [b[0], b[1]], boat: routeBoat, draught: routeDraught, speed: routeSpeed,
+          depart: isSail() ? departFor(i) : null, style: sailStyle } })
+        : await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}${on ? `&on=${on}` : ""}`);
     } catch (err) {
       res = { error: String(err.message || err) };
     }
@@ -4253,12 +4259,41 @@
       }
     } else {
       leg.path = (res.points || []).slice(1, -1).map((p) => [p[0], p[1]]);
-      leg.note = [...(res.warnings || []), res.downloading ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
+      if (leg.auto) {
+        leg.info = { hows: res.hows || "", nm: res.nm || {}, seconds: res.seconds, shallow: res.shallow_nm || 0, style: res.style || null,
+          alt: res.alt || null, depart: res.depart || null, sail: isSail() && res.style !== "motor", cell: res.cell_m };
+      }
+      leg.note = [...(res.warnings || []), res.downloading && !leg.auto ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
         .filter(Boolean).join(" ");
     }
     drawRoute();
     if (fit && !res.error && route.legs.length === 1) map.fitBounds(L.latLngBounds(route.points), { ...routePadding(), maxZoom: 13 });
   }
+
+  // When the boat is at the start of leg i: the hour picked in Boating weather (or now), and
+  // the legs before it at their planned times.
+  function departFor(i) {
+    const h = rw.data?.hours?.[rw.sel];
+    let t = h && h.t > now() ? h.t : now();
+    for (let k = 0; k < i; k++) t += legSeconds(k) || 0;
+    return Math.round(t);
+  }
+
+  // A leg's time: a sailing leg's as planned from the forecast, the rest at the speed set.
+  function legSeconds(k) {
+    const leg = route.legs[k];
+    if (leg?.info?.sail && leg.info.seconds) return leg.info.seconds;
+    return NavM.etaSeconds(NavM.totalNm(Plan.legPoints(route.stops, route.legs, k)), routeSpeed);
+  }
+  const routeSeconds = (a = 0, b = route.legs.length) => {
+    let t = 0;
+    for (let k = a; k < b; k++) {
+      const v = legSeconds(k);
+      if (v == null) return null;
+      t += v;
+    }
+    return t;
+  };
 
   // --- dragging: stops, fairway turns, bends and via points move; hollow dots pull the line out ---
   // Each step of a drag starts again from the plan as it was (route.drag.base) and does what
@@ -4514,6 +4549,9 @@
         L.polyline(pts, { color: ROUTE_ERROR, weight: 3, dashArray: "5 7", interactive: false }).addTo(group);
       } else if (legPending(leg)) {
         L.polyline(pts, { color: ROUTE_COLOR, weight: 3, opacity: 0.75, dashArray: "5 7", interactive: false }).addTo(group);
+      } else if (leg.auto && leg.info?.hows?.length === pts.length - 1) {
+        drawAutoLeg(group, pts, leg.info.hows);
+        if (leg.info.alt && !route.dragging) drawAltLeg(group, leg, i);
       } else {
         L.polyline(pts, { color: ROUTE_COLOR, weight: leg.fw ? 4.5 : 3.5, opacity: 1, interactive: false }).addTo(group);
         if (leg.fw) L.polyline(pts, { color: "#fff", weight: 1.3, opacity: 0.95, interactive: false }).addTo(group);
@@ -4523,6 +4561,50 @@
         hit.on("click", (e) => { L.DomEvent.stop(e); lineTapped(i, e.latlng); });
       }
     });
+  }
+
+  // An automatic leg, stretch by stretch as the add-on says it is travelled (hows, a letter
+  // per piece): o open water (white dots down the middle), f along a fairway (a white line),
+  // s sailing (dots), b beating (white dashes), g gybing downwind (short dashes), m under
+  // engine (plain). A capital letter is water of uncertain depth: amber and dashed.
+  const AUTO_MID = { o: "1 7", s: "1 7", b: "8 6", g: "3 6", f: null };
+  function drawAutoLeg(group, pts, hows) {
+    let a = 0;
+    for (let k = 1; k <= hows.length; k++) {
+      if (k < hows.length && hows[k] === hows[a]) continue;
+      const run = pts.slice(a, k + 1), c = hows[a], low = c.toLowerCase();
+      if (c !== low) {
+        L.polyline(run, { color: "#b45309", weight: 4.5, dashArray: "7 6", lineCap: "butt", interactive: false }).addTo(group);
+      } else {
+        L.polyline(run, { color: ROUTE_COLOR, weight: 4.5, interactive: false }).addTo(group);
+        if (low !== "m") L.polyline(run, { color: "#fff", weight: low === "f" ? 1.3 : 1.7, opacity: 0.95, dashArray: AUTO_MID[low] ?? null, lineCap: "round", interactive: false }).addTo(group);
+      }
+      a = k;
+    }
+  }
+
+  // The sailing leg's other route (the comfortable one beside the fastest, or the other way
+  // round): thin and dashed, with what it costs; tap it to take it.
+  const ALT_COLOR = "#7c3aed";
+  function drawAltLeg(group, leg, i) {
+    const alt = leg.info.alt, pts = alt.points;
+    L.polyline(pts, { color: "#fff", weight: 5, opacity: 0.7, interactive: false }).addTo(group);
+    L.polyline(pts, { color: ALT_COLOR, weight: 2.5, dashArray: "5 6", interactive: false }).addTo(group);
+    const pick = (e) => { L.DomEvent.stop(e); setSailStyle(alt.style); };
+    L.polyline(pts, { color: "#000", opacity: 0, weight: 20, interactive: true, bubblingMouseEvents: false }).addTo(group).on("click", pick);
+    const diff = Math.round((alt.seconds - leg.info.seconds) / 60);
+    const text = `${alt.style === "comfort" ? "Comfortable" : "Fastest"} ${diff >= 0 ? "+" : "−"}${NavM.duration(Math.abs(diff) * 60)}`;
+    if (screenLength(pts) > 140) {
+      L.marker(halfwayAt(pts, 0.5), { keyboard: false, bubblingMouseEvents: false,
+        icon: L.divIcon({ className: "leg-label alt", html: `<span>${esc(text)}</span>`, iconSize: null }) }).addTo(group).on("click", pick);
+    }
+  }
+
+  function setSailStyle(style) {
+    if (style !== "fast" && style !== "comfort") return;
+    sailStyle = style;
+    store.set("fw-sail-style", style);
+    planLegs(route.legs.map((l, i) => (l.auto ? i : -1)).filter((i) => i >= 0));
   }
 
   const px = (p) => map.latLngToContainerPoint(p);
@@ -4580,8 +4662,12 @@
     if (kind === "line") return `${nm} · ${NavM.degrees(NavM.legs(pts)[0].bearing)}`;
     if (kind === "own") return nm;
     const legs = route.legs.slice(a, b);
-    if (legs.some((l) => l.error)) return "No fairway way";
+    if (legs.some((l) => l.error)) return kind === "auto" ? "No way found" : "No fairway way";
     if (legs.some(legPending)) return "Planning…";
+    if (kind === "auto") {
+      const t = routeSeconds(a, b);
+      return legs.some((l) => l.info?.sail) && t != null ? `${nm} · ${NavM.duration(t)}` : `${nm} · auto`;
+    }
     return `${nm} · fairway`;
   }
 
@@ -4728,11 +4814,13 @@
     const legs = route.legs.slice(a, b);
     const error = legs.find((l) => l.fw && l.error)?.error;
     const vias = route.stops.slice(a + 1, b).filter(Plan.isVia).length;
+    const planned = kind === "fw" || kind === "auto";
     const sub = kind === "line" ? `Straight, ${NavM.degrees(NavM.legs(pts)[0].bearing)}`
       : kind === "own" ? `Your own line, ${b - a - 1} ${b - a === 2 ? "point" : "points"}`
-        : error || (legs.some(legPending) ? "Planning along the marked fairways…"
-          : `Along the marked fairways for ${routeDraught} m draught${vias ? `, through ${vias === 1 ? "your via point" : `your ${vias} via points`}` : ""}`);
-    const el = routeMenu(`Leg ${numbers[a]}–${numbers[b]} · ${NavM.nm(NavM.totalNm(pts))}`, sub, kind === "fw" && Boolean(error));
+        : error || (legs.some(legPending) ? (kind === "auto" ? "Planning a way over open water…" : "Planning along the marked fairways…")
+          : kind === "auto" ? autoLegText(legs)
+            : `Along the marked fairways for ${routeDraught} m draught${vias ? `, through ${vias === 1 ? "your via point" : `your ${vias} via points`}` : ""}`);
+    const el = routeMenu(`Leg ${numbers[a]}–${numbers[b]} · ${NavM.nm(NavM.totalNm(pts))}`, sub, planned && Boolean(error));
     const where = L.latLng(at);
     el.append(menuButton("Straight from here to…", () => startPick({ leg: i, at: where }), true));
     if (kind !== "fw" || vias) {
@@ -4741,7 +4829,13 @@
         planLegs(Plan.setSection(route.stops, route.legs, a, b, true));
       }));
     }
-    if (kind === "fw" && (error || legs.some((l) => l.note))) {
+    if (kind !== "auto") {
+      el.append(menuButton("Automatic, over open water", () => {
+        pushUndo();
+        planLegs(Plan.setSection(route.stops, route.legs, a, b, "auto"));
+      }));
+    }
+    if (planned && (kind === "auto" || error || legs.some((l) => l.note))) {
       el.append(menuButton("Plan it again", () => planLegs(route.legs.map((_, k) => k).slice(a, b))));
     }
     if (kind !== "line") {
@@ -4760,6 +4854,20 @@
     openRoutePopup(at, el);
   }
 
+  // An automatic leg in words: for whom, and how it is travelled.
+  function autoLegText(legs) {
+    const b = boatInfo();
+    const sum = {};
+    let shallow = 0;
+    for (const l of legs) {
+      for (const [k, v] of Object.entries(l.info?.nm || {})) sum[k] = (sum[k] || 0) + v;
+      shallow += l.info?.shallow || 0;
+    }
+    const words = { open: "open water", fairway: "along fairways", sail: "sailing", beat: "beating", gybe: "gybing downwind", motor: "under engine" };
+    const parts = Object.entries(sum).filter(([, v]) => v >= 0.05).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${words[k] || k} ${v.toFixed(1)} NM`);
+    return `Automatic for ${b?.title || "the boat"} (${routeDraught} m draught): ${parts.join(", ") || "planned"}${shallow >= 0.1 ? `; ${shallow.toFixed(1)} NM of uncertain depth` : ""}`;
+  }
+
   function routeSummary(points, speed) {
     const total = NavM.totalNm(points);
     const eta = NavM.etaSeconds(total, speed);
@@ -4770,13 +4878,19 @@
     if (route.pick) return { text: "Now tap where to rejoin the route: a stop, a dot or the line. Tap the map to cancel." };
     if (route.status) return route.status;
     const legs = route.legs;
+    if (legs.some((l) => l.auto && l.busy)) return { text: isSail() ? "Planning the sailing routes from the wind forecast…" : "Planning a way over open water…" };
     if (legs.some((l) => l.fw && l.busy)) return { text: "Planning along the marked fairways…" };
     const bad = legs.findIndex((l) => l.fw && l.error);
     if (bad >= 0) return { text: `${legs[bad].error} Tap the dashed leg to make it straight.`, error: true };
     const notes = [...new Set(legs.filter((l) => l.fw && l.note).map((l) => l.note))];
     if (route.stops.length < 2) {
       return { text: routeMode === "fw" ? "Tap the start, then the end, or find a harbour by name. The route follows the marked fairways."
-        : "Tap the map to add points. Drag a point to move it, tap it to remove it." };
+        : routeMode === "auto" ? `Tap the start, then the end, or find a harbour by name. The route is planned over water deep enough for ${boatInfo()?.title || "the boat"}, on or off the fairways.`
+          : "Tap the map to add points. Drag a point to move it, tap it to remove it." };
+    }
+    if (legs.some((l) => l.auto)) {
+      return { text: [`Planned for ${boatInfo()?.title || "the boat"} from the chart's depths, planning only: check it on the chart.`, ...notes,
+        "Drag a dot to change the way, or tap the line for more."].join(" ") };
     }
     if (legs.some((l) => l.fw)) {
       return { text: [`Fairway legs for ${routeDraught} m draught, planning only: check them on the chart.`, ...notes,
@@ -4787,7 +4901,8 @@
 
   function renderRoutePanel() {
     const pts = route.points, stops = route.stops;
-    const { total, eta } = routeSummary(pts, routeSpeed);
+    const { total } = routeSummary(pts, routeSpeed);
+    const eta = pts.length > 1 ? routeSeconds() : null;
     setText($("route-total"), pts.length > 1 ? NavM.nm(total) : pts.length ? "1 point" : "Route");
     setText($("route-eta"), pts.length > 1 && eta != null ? `${NavM.duration(eta)} · ETA ${clock(now() + eta)}` : "");
     const hint = routeHint();
@@ -4829,9 +4944,9 @@
       li.className = `rp-leg ${kind}${bad ? " error" : ""}${busy ? " busy" : ""}`;
       li.tabIndex = 0;
       li.title = "Change this leg";
-      const t = NavM.etaSeconds(nm, routeSpeed);
+      const t = routeSeconds(a, b);
       const how = kind === "line" ? NavM.degrees(NavM.legs(secPts)[0].bearing) : kind === "own" ? "own line"
-        : bad ? "no fairway" : busy ? "planning…" : "fairway";
+        : bad ? (kind === "auto" ? "no way" : "no fairway") : busy ? "planning…" : kind === "auto" ? "automatic" : "fairway";
       li.innerHTML = `<span class="leg-n">${numbers[a]}–${numbers[b]}</span><strong>${NavM.nm(nm)}</strong><span class="leg-how">${how}</span>${t != null ? `<span class="muted">${NavM.duration(t)}</span>` : ""}`;
       const open = () => {
         const mid = halfwayAt(secPts, 0.5);
@@ -4853,10 +4968,12 @@
     $("route-clear").disabled = !stops.length && !route.id;
     $("route-save").disabled = pts.length < 2 || route.legs.some((l) => l.fw && l.busy);
     $("route-save").textContent = route.id ? "Update" : "Save";
-    $("route-draught-box").hidden = routeMode !== "fw" && !route.legs.some((l) => l.fw);
+    $("route-draught-box").hidden = routeMode === "line" && !route.legs.some((l) => l.fw);
+    renderSail();
     scheduleDayScore();
     notices?.route(route.on && pts.length > 1 ? pts : null, routeSpeed,
       !route.legs.some(legPending) && !route.dragging);
+    notices?.routeOpen(route.on);
   }
 
   // --- boating day score: good, okay or bad to set off on the route, hour by hour ---------
@@ -4869,7 +4986,76 @@
   const RW_WORDS = ["Good", "Okay", "Bad"];
   const RW_NAMES = { wind: "wind", gust: "gusts", wave: "waves", rain: "rain", vis: "visibility", dark: "dark" };
   const rw = { key: "", data: null, error: null, busy: false, sel: null, timer: 0, seq: 0, layer: L.layerGroup() };
-  let routeBoat = ["small", "medium", "large"].includes(store.get("fw-route-boat")) ? store.get("fw-route-boat") : "medium";
+  // The boats (boats.py): what each needs and takes. The add-on's list replaces this one.
+  let boatList = { boats: {
+    buster_m: { title: "Buster M", kind: "power", draught: 0.5, cruise_kn: 20 },
+    buster_xl: { title: "Buster XL", kind: "power", draught: 0.6, cruise_kn: 26 },
+    cabin8: { title: "Cabin boat 8 m", kind: "power", draught: 0.8, cruise_kn: 25 },
+    sail35: { title: "Sailboat 35 ft", kind: "sail", draught: 1.9, cruise_kn: 6 },
+  } };
+  const OLD_BOATS = { small: "buster_m", medium: "buster_xl", large: "cabin8" };
+  let routeBoat = OLD_BOATS[store.get("fw-route-boat")] || store.get("fw-route-boat");
+  if (!boatList.boats[routeBoat]) routeBoat = "buster_xl";
+  const boatInfo = () => boatList.boats[routeBoat];
+  const isSail = () => boatInfo()?.kind === "sail";
+
+  function renderBoats() {
+    const sel = $("route-boat");
+    sel.replaceChildren(...Object.entries(boatList.boats).map(([id, b]) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = b.title;
+      return o;
+    }));
+    sel.value = routeBoat;
+    renderNumbers();
+  }
+
+  // Every number the planning uses, for looking through: the boats, the sailing boat's
+  // speeds, and the planner's own rules.
+  function renderNumbers() {
+    const box = $("route-numbers-body");
+    const P = boatList.planner, S = boatList.sail;
+    if (!P || !S) { box.textContent = "The list comes with the add-on's answer."; return; }
+    const pair = (v, unit) => `${v[0]}–${v[1]} ${unit}`;
+    const rows = Object.values(boatList.boats).map((b) => `<tr><th>${esc(b.title)}</th><td>${b.length} × ${b.beam} m</td><td>${b.draught} m</td><td>${b.depth} m</td><td>${b.cruise_kn} kn</td>`
+      + `<td>${pair(b.wind, "m/s")}</td><td>${pair(b.gust, "m/s")}</td><td>${pair(b.wave, "m")}</td></tr>`).join("");
+    const polar = Object.entries(S.polar).map(([tws, row]) => `<tr><th>${tws} kn</th>${row.map((v) => `<td>${v}</td>`).join("")}</tr>`).join("");
+    const pct = (v) => `${Math.round((v - 1) * 100)} %`;
+    box.innerHTML = `<div class="numbers-scroll"><table class="numbers"><thead><tr><th>Boat</th><th>Size</th><th>Draught</th><th>Depth needed</th><th>Cruise</th><th>Wind okay–bad</th><th>Gusts</th><th>Waves</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      + `<p>Depth needed is the draught plus room under the keel. Wind, gusts and waves: below the first number the hour is good, from the second it is bad. Picking a boat sets the draught and speed above; change them as you like.</p>`
+      + `<p><b>Automatic route.</b> The chart's depth areas become a grid of ${P.cell_steps_m[0]} m cells (wider on long trips, up to ${P.cell_steps_m[P.cell_steps_m.length - 1]} m). Water whose depth range starts at the depth needed or deeper is open. A range that only includes it (0–3 m for a small boat) is used when the boat needs no more than ${Math.round(P.marginal_share * 100)} % of the way into it, counted ${P.marginal_cost}× longer and drawn amber and dashed. Rocks, wrecks and shallow soundings close ${P.rock_clear_m} m round them; the shore is kept ${P.shore_clear_m} m off and the first ${P.near_shore_m} m counts ${pct(P.near_shore_cost)} longer. Fairways with a design draught of the boat's draught plus ${P.fairway_margin_m} m are always open and count ${Math.round((1 - P.fairway_cost) * 100)} % shorter. Speed limits slow the boat inside their areas. The start and end join open water up to ${P.snap_max_m / 1000} km away.</p>`
+      + `<p><b>Sailing.</b> Speeds below are the boat's at each angle to the true wind, times ${S.trim} for cruising trim. Closer to the wind than about 40° it tacks, downwind it may gybe: the speed made good, times ${S.tack_loss} for the turns. Engine (${S.motor_kn} kn) under ${S.motor_wind_ms} m/s of wind, when sailing would be slower than ${S.motor_below_kn} kn, and when beating with less than ${S.narrow_m} m to the nearest shoal. The wind comes from the forecast at ${P.wind_grid[0]} × ${P.wind_grid[1]} points over the area, hour by hour; the boat steers in ${P.headings} directions.</p>`
+      + `<p>The comfortable route counts time as longer: beating ${pct(S.comfort_beat)}, dead downwind ${pct(S.comfort_run)}, engine ${pct(S.comfort_motor)}, each m/s of wind over ${S.comfort_wind_ms} m/s ${Math.round(S.comfort_wind * 100)} %, each metre of waves over ${S.comfort_wave_m} m ${Math.round(S.comfort_wave * 100)} %.</p>`
+      + `<div class="numbers-scroll"><table class="numbers polar"><thead><tr><th>Wind</th>${S.angles.map((a) => `<th>${a}°</th>`).join("")}</tr></thead><tbody>${polar}</tbody></table></div>`
+      + `<p class="muted">Boat speed in knots by true wind speed and angle. Planning only, not for navigation.</p>`;
+  }
+
+  // The sailing choice: fastest or comfortable, and what the planned legs are made of.
+  function renderSail() {
+    const legs = route.legs.filter((l) => l.auto && l.info?.sail);
+    const show = route.on && isSail() && route.legs.some((l) => l.auto);
+    $("route-sail").hidden = !show;
+    if (!show) return;
+    for (const b of $("sail-styles").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.style === sailStyle));
+    if (!legs.length) { setText($("sail-sum"), route.legs.some(legPending) ? "Reading the wind forecast…" : ""); return; }
+    const sum = {};
+    let other = 0, mine = 0, alts = 0;
+    for (const l of legs) {
+      for (const [k, v] of Object.entries(l.info.nm || {})) sum[k] = (sum[k] || 0) + v;
+      mine += l.info.seconds;
+      other += l.info.alt ? l.info.alt.seconds : l.info.seconds;
+      alts += l.info.alt ? 1 : 0;
+    }
+    const words = { sail: "sailing", beat: "beating", gybe: "gybing", motor: "engine", open: "engine", fairway: "engine" };
+    const parts = Object.entries(sum).filter(([, v]) => v >= 0.05).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${words[k] || k} ${v.toFixed(1)} NM`);
+    const otherName = sailStyle === "fast" ? "comfortable" : "fastest";
+    const diff = Math.round(Math.abs(other - mine) / 60);
+    const cmp = alts ? ` The ${otherName} route (dashed purple) takes ${NavM.duration(other)}${diff ? `, ${NavM.duration(diff * 60)} ${other > mine ? "more" : "less"}` : ""}.`
+      : " Fastest and comfortable are the same route in this wind.";
+    const dep = legs[0].info.depart;
+    setText($("sail-sum"), `${NavM.duration(mine)}${dep ? ` leaving ${clock(dep)}` : ""}: ${parts.join(", ")}.${cmp}`);
+  }
   let rwOpen = store.get("fw-route-wx") !== "0";
 
   function scheduleDayScore() {
@@ -4877,10 +5063,19 @@
     const ready = route.on && pts.length > 1 && !route.legs.some(legPending) && !route.dragging;
     $("route-wx").hidden = !(route.on && pts.length > 1);
     if (!ready) { if (!route.on || pts.length < 2) { rw.key = ""; rw.data = null; drawDayScoreMarks(); } return; }
-    const key = JSON.stringify([pts.map((p) => [Math.round(p[0] * 1e4), Math.round(p[1] * 1e4)]), routeSpeed, routeBoat]);
+    const speed = dayScoreSpeed();
+    const key = JSON.stringify([pts.map((p) => [Math.round(p[0] * 1e4), Math.round(p[1] * 1e4)]), speed, routeBoat]);
     if (key === rw.key) return;
     clearTimeout(rw.timer);
     rw.timer = setTimeout(() => loadDayScore(key, pts), rw.data ? 900 : 300);
+  }
+
+  // The speed the weather is read at along the route: the whole trip's own average, so a
+  // sailing route's planned time counts.
+  function dayScoreSpeed() {
+    const t = routeSeconds(), nm = NavM.totalNm(route.points);
+    const v = t > 0 && nm > 0 ? nm / (t / 3600) : routeSpeed;
+    return Math.min(60, Math.max(0.5, Math.round(v * 10) / 10));
   }
 
   async function loadDayScore(key, pts) {
@@ -4890,7 +5085,7 @@
     renderDayScore();
     let data = null, error = null;
     try {
-      data = await api("api/day-score", { method: "POST", body: { points: pts, speed: routeSpeed, boat: routeBoat } });
+      data = await api("api/day-score", { method: "POST", body: { points: pts, speed: dayScoreSpeed(), boat: routeBoat } });
     } catch (err) {
       error = String(err.message || err).slice(0, 160) || "no answer";
     }
@@ -4963,7 +5158,15 @@
       col.title = `${clock(h.t)}: ${RW_WORDS[h.score]}`;
       col.setAttribute("aria-label", `Leave ${fmtWhen(h.t)}: ${RW_WORDS[h.score]}`);
       col.setAttribute("aria-pressed", String(i === rw.sel));
-      col.addEventListener("click", () => { rw.sel = i; renderDayScore(); });
+      col.addEventListener("click", () => {
+        rw.sel = i;
+        renderDayScore();
+        // A sailing route depends on when it leaves: planned again for this hour.
+        if (isSail() && route.legs.some((l) => l.auto)) {
+          clearTimeout(rw.replan);
+          rw.replan = setTimeout(() => planLegs(route.legs.map((l, k) => (l.auto ? k : -1)).filter((k) => k >= 0)), 500);
+        }
+      });
       return col;
     }));
     renderDayScoreDetail();
@@ -5003,18 +5206,44 @@
       + `<span class="rw-note muted">${notes.join(" ")}</span>`;
   }
 
-  // The route's stretches that are okay or bad at the hour picked, as dots along it.
+  // The route coloured by what the forecast says for each stretch when the boat is there,
+  // leaving at the hour picked: a green, amber or red band under the line, and a dot where
+  // it's at its worst.
+  map.createPane("routeWx").style.zIndex = 399;
+  map.getPane("routeWx").style.pointerEvents = "none";
   function drawDayScoreMarks() {
     rw.layer.clearLayers();
     const d = rw.data, h = d?.hours[rw.sel];
-    if (!route.on || !rwOpen || !h || !h.score) { rw.layer.remove(); return; }
+    if (!route.on || !rwOpen || !h || d.samples.length < 2) { rw.layer.remove(); return; }
     if (!map.hasLayer(rw.layer)) rw.layer.addTo(map);
-    [...h.levels].forEach((c, i) => {
-      const lv = Number(c);
-      if (!lv) return;
-      const [lat, lon] = d.samples[i];
-      L.circleMarker([lat, lon], { radius: i === h.at ? 7 : 4.5, color: "#fff", weight: 1.5, fillColor: RW_COLORS[lv], fillOpacity: 0.95, interactive: false }).addTo(rw.layer);
-    });
+    const pts = route.points, legs = NavM.legs(pts);
+    const at = (nm) => { // the point this far along the route, and the leg it's on
+      let left = nm;
+      for (let i = 0; i < legs.length; i++) {
+        if (left <= legs[i].nm || i === legs.length - 1) {
+          const t = legs[i].nm > 0 ? Math.min(1, Math.max(0, left / legs[i].nm)) : 0, a = pts[i], b = pts[i + 1];
+          return { i, p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] };
+        }
+        left -= legs[i].nm;
+      }
+      return { i: 0, p: pts[0] };
+    };
+    const levels = [...h.levels].map(Number);
+    let start = 0;
+    for (let k = 1; k <= levels.length; k++) {
+      if (k < levels.length && levels[k] === levels[start]) continue;
+      // Each sample stands for the route halfway to its neighbours.
+      const from = start ? (d.samples[start - 1][2] + d.samples[start][2]) / 2 : 0;
+      const to = k < levels.length ? (d.samples[k - 1][2] + d.samples[k][2]) / 2 : d.samples[levels.length - 1][2];
+      const a = at(from), b = at(to);
+      const line = [a.p, ...pts.slice(a.i + 1, b.i + 1), b.p];
+      L.polyline(line, { pane: "routeWx", color: RW_COLORS[levels[start]], weight: 15, opacity: 0.5, lineCap: "butt", interactive: false }).addTo(rw.layer);
+      start = k;
+    }
+    if (h.score) {
+      const [lat, lon] = d.samples[h.at];
+      L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 1.5, fillColor: RW_COLORS[h.score], fillOpacity: 0.95, interactive: false }).addTo(rw.layer);
+    }
   }
 
   function compassName(deg) {
@@ -5026,15 +5255,36 @@
     store.set("fw-route-wx", rwOpen ? "1" : "0");
     renderDayScore();
   });
+  // Picking a boat sets its draught and cruising speed, and plans the route again for it.
   $("route-boat").addEventListener("change", (e) => {
-    routeBoat = e.target.value;
+    routeBoat = boatList.boats[e.target.value] ? e.target.value : routeBoat;
     store.set("fw-route-boat", routeBoat);
-    scheduleDayScore();
+    const b = boatInfo();
+    routeDraught = b.draught;
+    routeSpeed = b.cruise_kn;
+    store.set("fw-route-draught", String(routeDraught));
+    store.set("fw-route-speed", String(routeSpeed));
+    $("route-draught").value = String(routeDraught);
+    $("route-speed").value = String(routeSpeed);
+    route.status = null;
+    planLegs(route.legs.map((l, i) => (l.fw ? i : -1)).filter((i) => i >= 0));
+    loadFairways();
+    renderRoutePanel();
   });
+  for (const b of $("sail-styles").querySelectorAll("button")) b.addEventListener("click", () => setSailStyle(b.dataset.style));
+  renderBoats();
+  api("api/boats").then((got) => {
+    if (!got?.boats) return;
+    boatList = got;
+    if (!boatList.boats[routeBoat]) routeBoat = got.default;
+    renderBoats();
+    renderRoutePanel();
+  }).catch(() => {});
 
   function renderRouteModes() {
     for (const b of $("route-modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === routeMode));
-    $("route-modes").title = routeMode === "fw" ? "New legs follow the marked fairways" : "New legs go straight";
+    $("route-modes").title = routeMode === "fw" ? "New legs follow the marked fairways"
+      : routeMode === "auto" ? "New legs are planned over water deep enough for the boat, on or off the fairways" : "New legs go straight";
   }
 
   function routePadding() {

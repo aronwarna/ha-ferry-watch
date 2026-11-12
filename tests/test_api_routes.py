@@ -7,6 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import ferrywatch.web as webmod
 from ferrywatch.autoroute import AutoRouter
+from ferrywatch.smartroute import SmartRouter
 from ferrywatch.harbours import Harbours
 from ferrywatch.simsea import fake_overpass_fetch, fake_stations_fetch
 from ferrywatch.simulate import fake_chart_layer
@@ -21,7 +22,7 @@ def run_with_client(tmp_path, body):
         chart = VectorChart(tmp_path / "vchart", None, fake_chart_layer)
         fw = SimpleNamespace(store=store, stations=Stations(None, fake_stations_fetch),
                              harbours=Harbours(tmp_path / "harbours.json.gz", None, fake_overpass_fetch),
-                             autoroute=AutoRouter(chart))
+                             autoroute=AutoRouter(chart), smartroute=SmartRouter(chart))
         client = TestClient(TestServer(webmod.Web(fw).app))
         await client.start_server()
         try:
@@ -195,5 +196,22 @@ def test_water_tiles_endpoint(tmp_path):
         assert r.headers["X-Chart-Complete"] == "1"
         assert (await client.get("/api/vchart-water/13/0/0")).status == 404  # finer than the weather needs
         assert (await client.get("/api/vchart-water/4/0/0")).status == 404
+
+    run_with_client(tmp_path, body)
+
+
+def test_smartroute_and_boats_endpoints(tmp_path):
+    async def body(client, fw):
+        boats = await (await client.get("/api/boats")).json()
+        assert set(boats["boats"]) == {"buster_m", "buster_xl", "cabin8", "sail35"}
+        assert boats["planner"]["marginal_cost"] > 1 and boats["sail"]["motor_kn"] > 0
+        ask = {"from": [59.972, 24.60], "to": [59.946, 24.40], "boat": "buster_m"}
+        first = await (await client.post("/api/smartroute", json=ask)).json()
+        assert first["downloading"] > 0
+        await fw.smartroute._downloading
+        out = await (await client.post("/api/smartroute", json=ask)).json()
+        assert "error" not in out and out["boat"] == "buster_m" and len(out["points"]) >= 2
+        for bad in ({"from": [59.9, 24.6]}, {**ask, "draught": 40}, {**ask, "speed": "fast"}, {**ask, "to": [99, 0]}):
+            assert (await client.post("/api/smartroute", json=bad)).status == 400, bad
 
     run_with_client(tmp_path, body)
