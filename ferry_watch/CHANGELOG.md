@@ -50,6 +50,11 @@
 - New, in both: a second way for alerts, through ntfy. When it is set up and Home
   Assistant doesn't answer, the alert goes out through ntfy instead (without checking
   where your phone is, which only Home Assistant knows). As an add-on this is off.
+## 0.47.1
+
+- Stats › Times past Porkkala: the "Show the lines on the map" link turns into "Hide the
+  lines from the map" while they're shown, so the same link takes them off again (the
+  "Passage lines shown" pill on the map still does too, and the link follows it).
 
 ## 0.47.0
 

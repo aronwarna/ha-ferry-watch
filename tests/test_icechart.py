@@ -66,8 +66,7 @@ def test_day_grid_tiles_and_value(tmp_path):
     async def run():
         chart = _chart(tmp_path)
         days = await chart.times(None, NOW)
-        # The simulator's service lists days up to yesterday by the real clock, so the
-        # newest one is the 8th when run on the 9th and the 9th (the last before NOW) later.
+        # The simulator lists days up to the real yesterday; none after "now" are kept.
         assert PEAK in days and parse_instant("2026-11-08") <= days[-1] <= NOW
         if chart._reading:
             await chart._reading
