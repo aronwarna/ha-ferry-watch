@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.47.1
+
+- Stats › Times past Porkkala: the "Show the lines on the map" link turns into "Hide the
+  lines from the map" while they're shown, so the same link takes them off again (the
+  "Passage lines shown" pill on the map still does too, and the link follows it).
+
 ## 0.47.0
 
 - New **Ice chart** layer (Weather › On top): FMI's daily ice chart drawn on the map in

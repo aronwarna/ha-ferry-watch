@@ -260,14 +260,17 @@ window.FerryStatsMore = (() => {
 
   // --- times past Porkkala ---
 
-  function timing(rows, ships, now, onShowLine) {
+  function timing(rows, ships, now, lines) {
     const recent = rows.filter((p) => p.ts >= now - TIMING_DAYS * DAY);
     const s = section("Times past Porkkala", `Each dot a passage in the last ${TIMING_DAYS} days. Inner ones (ringed in orange) `
       + "are timed where the ship goes between Utterböte and Östra Styrskär, outer ones where it crosses 24.40° E. "
       + "The line is the usual time and the big dot the latest. ");
-    const show = el("button", "link-button", "Show the lines on the map");
+    // Shows the lines or hides them again; app.js keeps the words in step when the map's
+    // pill hides them.
+    const show = el("button", "link-button sm-lines", "");
     show.type = "button";
-    show.addEventListener("click", onShowLine);
+    lines.label(show);
+    show.addEventListener("click", lines.toggle);
     s.querySelector(".sm-note").append(show);
     let any = false;
     for (const [dir, title] of DIRS) {
@@ -379,7 +382,7 @@ window.FerryStatsMore = (() => {
      { ts, mmsi, route, direction, wind_ms, wind_dir, sog, notified, minute } (minute: the
      time of day it passed its route's timing place off Porkkala, where known).
      ctx: { ships: [{ mmsi, name, color }], year, wind: { ms, dir } | null, firstTs, onDay(ts),
-     onShowLine() } */
+     lines: { label(button), toggle() } } */
   function render(box, rows, ctx) {
     if (!rows.length) { box.replaceChildren(); return; }
     const now = Date.now() / 1000;
@@ -388,7 +391,7 @@ window.FerryStatsMore = (() => {
       outlookSection(ships),
       highlights(rows, ships, now),
       windNow(rows, ctx.wind),
-      timing(rows, ships, now, ctx.onShowLine),
+      timing(rows, ships, now, ctx.lines),
       yearGrid(rows, ctx.year, now, ctx.firstTs, ctx.onDay),
     ].filter(Boolean));
   }

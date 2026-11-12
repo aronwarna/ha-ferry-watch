@@ -1926,9 +1926,17 @@
     }
   }
 
+  const timingLinesShown = () => Boolean(porkkalaLine?._map);
+  // The Stats link that shows the timing lines hides them again too.
+  function labelTimingLines(button) {
+    button.textContent = timingLinesShown() ? "Hide the lines from the map" : "Show the lines on the map";
+    button.setAttribute("aria-pressed", String(timingLinesShown()));
+  }
   function renderZonesShown() {
     $("areas-shown").hidden = !zonesShown || editing;
-    $("areas-shown").firstElementChild.textContent = porkkalaLine?._map ? "Passage lines shown" : "Alert areas shown";
+    $("areas-shown").firstElementChild.textContent = timingLinesShown() ? "Passage lines shown" : "Alert areas shown";
+    $("areas-shown").title = timingLinesShown() ? "Hide the passage lines from the map" : "Hide the alert areas from the map";
+    document.querySelectorAll("#stats-more .sm-lines").forEach(labelTimingLines);
     $("areas-show").textContent = zonesShown ? "Hide from map" : "Show on map";
     $("areas-show").setAttribute("aria-pressed", String(zonesShown));
   }
@@ -2939,7 +2947,7 @@
       year: statsYear,
       wind: w.enabled !== false && fresh(w.wind) ? w.wind : null,
       firstTs: all.length ? all[0].ts : null,
-      onShowLine: () => showZones(true, null, { porkkala: true }),
+      lines: { label: labelTimingLines, toggle: () => showZones(!timingLinesShown(), null, { porkkala: true }) },
       onDay: (ts) => {
         const d = new Date(ts * 1000);
         statsView = "month";
