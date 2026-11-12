@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.52.0
+
+- The sea ice layer no longer covers the islands: it is cut to the water, like the wave layer.
+- Rain radar: frames now melt into each other while playing instead of jumping.
+- Rain radar forecast: the time bar carries on two hours past the newest radar picture. FMI
+  has no open radar forecast, so the app makes one by moving the newest picture on the way
+  the rain has moved in the last quarter of an hour. The frames get fainter and softer the
+  further ahead they are, and the time bar says "forecast". Showers that form or die are
+  not foreseen.
+
 ## 0.51.1
 
 - Nautical warnings could not be read ("404 Not Found"): they were removed from Fintraffic's

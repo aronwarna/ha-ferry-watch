@@ -76,7 +76,7 @@ def overlay(**changes: Any) -> Overlay:
     kw: dict[str, Any] = dict(
         id=ID, title="Sea ice", kind="tiles", url=URL, times=list_times,
         max_age=15 * 86400, refresh=3 * 3600, frame_ms=900, opacity=0.6, color="#7dd3fc",
-        min_zoom=4, max_zoom=8, bounds=(53.0, 9.0, 66.0, 31.0), valid_for=86400, season=in_season,
+        min_zoom=4, max_zoom=8, bounds=(53.0, 9.0, 66.0, 31.0), valid_for=86400, season=in_season, sea=True,
         attribution=ATTRIBUTION,
         note="Daily ice concentration, blue for thin cover to white for solid ice. November to May.",
     )

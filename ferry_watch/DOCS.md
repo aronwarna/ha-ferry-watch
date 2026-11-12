@@ -500,6 +500,15 @@ the switch turns them off. The forecast is fetched at most every 3 hours, only w
 the switch is on. When the weather stations have been read, **Settings →
 Troubleshooting** says how far the forecast is from their latest readings.
 
+### Rain radar forecast
+
+With the rain radar on, the time bar runs from an hour back to two hours ahead.
+The frames after the newest radar picture are made by the app: it measures how
+the rain moved over the last 15 minutes and keeps moving the newest picture the
+same way. They are fainter and softer the further ahead, and the time bar says
+"forecast" in orange. It answers "will that band reach us within the hour"; it
+cannot foresee showers forming or dying, and it is less sure with every step.
+
 ## Night sky
 
 **Night sky** at the top of the weather panel opens a star map: the whole sky as seen

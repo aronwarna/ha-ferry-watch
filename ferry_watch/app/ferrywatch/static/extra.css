@@ -1180,3 +1180,6 @@ body.menu-sheet .sky-note { display: none; }
 .sm-month-bar i { display: block; width: 16px; border-radius: 3px 3px 0 0; }
 .sm-month-bar i.up { background: #16a34a; }
 .sm-month-bar i.down { background: #dc2626; }
+
+/* the time bar while it shows a forecast frame of the radar */
+.timebar.is-forecast .player-info { color: #c2410c; font-weight: 600; }
