@@ -18,6 +18,9 @@
   else root.FerrySky = api;
 })(typeof self !== "undefined" ? self : this, () => {
   "use strict";
+  // This file's version (?v=), so the star catalogue it fetches later is the same one.
+  const SCRIPT_V = typeof document !== "undefined" && document.currentScript
+    ? new URL(document.currentScript.src).searchParams.get("v") : null;
 
   const RAD = Math.PI / 180;
   const sin = (d) => Math.sin(d * RAD), cos = (d) => Math.cos(d * RAD);
@@ -360,7 +363,20 @@
   /* opts: { where() -> { lat, lon, label } } (the phone, else the map's centre),
      esc(text) */
   function create({ where, esc, mapCentre }) {
-    const data = typeof FerrySkyData !== "undefined" ? FerrySkyData : { stars: [], names: {}, lines: [], constellations: [] };
+    // The star catalogue (static/sky-data.js) is only fetched when the sky map is opened.
+    let data = typeof FerrySkyData !== "undefined" ? FerrySkyData : { stars: [], names: {}, lines: [], constellations: [] };
+    let dataLoading = null;
+    function loadData() {
+      if (typeof FerrySkyData !== "undefined") return Promise.resolve();
+      dataLoading ||= new Promise((resolve) => {
+        const el = document.createElement("script");
+        el.src = `static/sky-data.js${SCRIPT_V ? `?v=${SCRIPT_V}` : ""}`;
+        el.onload = () => { if (typeof FerrySkyData !== "undefined") data = FerrySkyData; resolve(); };
+        el.onerror = () => { dataLoading = null; resolve(); };
+        document.head.append(el);
+      });
+      return dataLoading;
+    }
     let place = null, t = Date.now() / 1000, facing = Number(store.get("fw-sky-facing") || 180), playing = 0;
     let extra = { kp: [], clouds: [] }, result = null, hits = [];
 
@@ -626,6 +642,7 @@
       setNight();
       draw();
       renderList();
+      loadData().then(() => { if (!box.hidden) draw(); });
       await loadExtra();
       renderList();
     }

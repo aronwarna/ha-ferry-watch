@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.51.0
+
+- The inner route outlook now checks itself. Every chance it gives for a coming sailing is
+  written down beforehand and marked right or wrong once the ship has passed. Stats shows
+  the scorecard under the outlook: forecasts checked, inner passages called, false alarms,
+  how it compares with each ship's usual share, month by month and by ship.
+- It adapts with time: recent months count more when it learns, its percentages are
+  corrected from the scorecard once 40 forecasts are checked, and the scorecard decides
+  whether its chances are shown at all. Expect a few weeks before there is enough to see.
+
+## 0.50.0
+
+- **Terrain**: a fourth map type next to Map, Satellite and Chart, the Land Survey's
+  topographic map (maastokartta) with contours, paths, cliffs and place names. Finland only.
+- **Nautical warnings** (On the map › Warnings and waterways): Fintraffic's warnings to
+  mariners, such as firing exercises, fairway works and marks missing or moved, as amber
+  diamonds with their line or area dashed. Tap one for the text and how long it holds.
+- **Sea weather warnings**: FMI's wind, wave and icing warnings for the sea areas, tinted
+  yellow, orange or red. A warning for your own waters always shows as a warning sign with
+  the wind speed in the conditions pill, and in full when you tap the pill.
+- **Bridges, locks and canals**: Väylävirasto's opening bridges, locks and lock canals with
+  clearance, width, length and depth where the data has them.
+- **Speed limits on a planned route**: the route tool lists the speed limits the route runs
+  through (km/h and knots, for how far), marks them on the route, and says about how many
+  minutes they add at your speed.
+- Saved routes can be downloaded as **GPX** for a plotter, and GPX routes or tracks can be
+  imported (On the map › Routes).
+
+## 0.49.0
+
+- The panel opens faster: its own files are sent compressed (about 0.4 MB instead of 1.3)
+  and kept by the browser until the next update, so a second open fetches none of them.
+  Stats is sent compressed too, and the star catalogue only when the sky map is opened.
+- **What's new**: after an update, a small card lists what changed since the version this
+  browser last saw.
+- Settings is shorter: each box folds, and only Alerts starts open. Which ones are open is
+  remembered.
+- What is switched on (layers, weather layers, Stats choices, boat size and speed for the
+  route tool) is now kept on the NAS, so the phone and the desktop agree. The map type,
+  the open tab and unsaved routes stay with each device.
+- Settings › Troubleshooting › **Copy diagnostics**: a text report of the version, memory,
+  every data source and the latest warnings, to paste when something looks wrong. Keys
+  and passwords are left out.
+- Alerts in Settings name your phone as Home Assistant does instead of showing only its
+  entity id, and the first areas lose the "(from old setup)" in their names.
+- Stats says "Loading the passages…" instead of opening blank, and offers to try again if
+  they can't be loaded.
+- The "Tonight" sky note no longer covers the open menu.
+
+## 0.48.0
+
+- Ferry Watch can now also run as its own container, outside Home Assistant, so tracking
+  and stats carry on when the Home Assistant VM is down. Nothing changes for the app
+  inside Home Assistant: this is a second way to run it, set up by hand (see "Running
+  without Home Assistant" in the documentation).
+- As its own container it reaches Home Assistant over the network for phone alerts, your
+  phone's position and the ship entities, and can ask for a password.
+- New, in both: a second way for alerts, through ntfy. When it is set up and Home
+  Assistant doesn't answer, the alert goes out through ntfy instead (without checking
+  where your phone is, which only Home Assistant knows). As an add-on this is off.
 ## 0.47.1
 
 - Stats › Times past Porkkala: the "Show the lines on the map" link turns into "Hide the

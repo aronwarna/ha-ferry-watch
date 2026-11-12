@@ -159,7 +159,7 @@ window.FerryStatsMore = (() => {
 
   function testDetails(t) {
     const d = el("details", "sm-test");
-    d.append(el("summary", null, "How good is it?"));
+    d.append(el("summary", null, "How good is it on past passages?"));
     const p = [];
     if (t.tested) {
       p.push(`When it said 50% or more, ${t.caught} of the ${t.inner} inner passages were caught, with ${t.false_alarms} false alarm${t.false_alarms === 1 ? "" : "s"}`
@@ -178,6 +178,77 @@ window.FerryStatsMore = (() => {
       d.append(table);
     }
     d.append(el("p", "small muted", "The test uses the weather that actually came. Real forecasts a day or two ahead are less sure, so expect it to do a little worse than this."));
+    return d;
+  }
+
+  // The self-check: what it really said before each sailing against what the ship did
+  // (the forecast log, outlook_log), by month, and what it has changed because of it.
+  function liveCard(o, ships) {
+    const lv = o.live || {};
+    const d = el("details", "sm-test sm-live");
+    d.open = true;
+    d.append(el("summary", null, "Self-check: its real forecasts so far"));
+    const n = lv.tested || 0, waiting = lv.waiting || 0;
+    const since = lv.since ? ` since ${shortDate(lv.since)}` : "";
+    if (!n) {
+      d.append(el("p", "small", esc(`Every chance shown here is written down before the sailing and marked right or wrong once the ship has passed. `
+        + `${waiting ? `${waiting} sailing${waiting === 1 ? " is" : "s are"} waiting for the ship to pass.` : "Nothing is written down yet; the first entries come within the hour."}`
+        + ` The scorecard starts to say something after about ${o.adapts?.correction_from || 40} sailings.`)));
+      return d;
+    }
+    const skill = lv.skill == null ? null : Math.round(lv.skill * 100);
+    const tiles = el("div", "sm-live-tiles");
+    const tile = (big, small) => `<div><strong>${big}</strong><span class="small muted">${small}</span></div>`;
+    tiles.innerHTML = tile(n, `forecasts checked${esc(since)}`)
+      + tile(`${lv.caught} of ${lv.inner}`, "inner passages it called (50% or more)")
+      + tile(lv.false_alarms, `false alarm${lv.false_alarms === 1 ? "" : "s"}`)
+      + tile(skill == null ? "–" : `${skill > 0 ? "+" : ""}${skill}%`, "against the usual share");
+    d.append(tiles);
+    const words = { better: "Its real forecasts beat going by each ship's usual share.", slightly_better: "Its real forecasts are a little better than each ship's usual share.",
+      same: "Its real forecasts are about as good as each ship's usual share.", worse: "Its real forecasts have done worse than each ship's usual share, so the usual share is shown until that changes. It keeps logging and can earn its place back.",
+      too_little: "Too few checked forecasts to judge yet." };
+    if (lv.verdict === "worse" && o.using === "model") words.worse = "As they came, its real forecasts did worse than each ship's usual share; with the correction below they hold their own, so they are still shown.";
+    d.append(el("p", "small", esc(`${words[lv.verdict] || ""}${waiting ? ` ${waiting} more waiting for the ship to pass.` : ""}`)));
+    if (lv.day_ahead?.tested) {
+      const s2 = lv.day_ahead.skill == null ? null : Math.round(lv.day_ahead.skill * 100);
+      d.append(el("p", "small", esc(`Half a day or more ahead (${lv.day_ahead.tested} forecasts): ${s2 == null ? "not scored yet" : `${s2 > 0 ? "+" : ""}${s2}% against the usual share`}, `
+        + `${lv.day_ahead.caught} called, ${lv.day_ahead.false_alarms} false alarm${lv.day_ahead.false_alarms === 1 ? "" : "s"}.`)));
+    }
+    if (lv.bands?.length) {
+      const table = el("table", "sm-bands");
+      table.innerHTML = "<thead><tr><th>It said</th><th>Sailings</th><th>Went inner</th></tr></thead><tbody>"
+        + lv.bands.map(([lo, hi, k, inner]) => `<tr><td>${Math.round(lo * 100)}–${Math.round(hi * 100)}%</td><td>${k}</td><td>${inner} (${pct(inner, k)}%)</td></tr>`).join("")
+        + "</tbody>";
+      d.append(table);
+    }
+    const months = (lv.months || []).filter((m) => m.tested);
+    if (months.length > 1) {
+      const max = Math.max(20, ...months.map((m) => Math.abs((m.skill || 0) * 100)));
+      const bars = el("div", "sm-months");
+      bars.setAttribute("role", "img");
+      bars.setAttribute("aria-label", "Month by month, how much better or worse than the usual share");
+      bars.innerHTML = months.map((m) => {
+        const v = Math.round((m.skill || 0) * 100);
+        const h = Math.max(2, Math.round(Math.abs(v) / max * 28));
+        const label = new Date(`${m.month}-15`).toLocaleDateString("en-GB", { month: "short" });
+        return `<div class="sm-month" title="${esc(label)}: ${m.tested} forecasts, ${m.caught} of ${m.inner} inner called, ${m.false_alarms} false alarms, ${v > 0 ? "+" : ""}${v}% against the usual share">`
+          + `<div class="sm-month-bar"><i class="${v >= 0 ? "up" : "down"}" style="height:${h}px"></i></div><span>${esc(label)}</span><span class="muted">${v > 0 ? "+" : ""}${v}%</span></div>`;
+      }).join("");
+      d.append(el("p", "small muted", "Month by month, against the usual share:"), bars);
+    }
+    const perShip = (lv.ships || []).filter((x) => x.tested >= 5 && ships.has(x.mmsi));
+    if (perShip.length > 1) {
+      d.append(el("p", "small", esc(`By ship: ${perShip.map((x) => `${shortName(ships.get(x.mmsi).name)} ${x.caught} of ${x.inner} called, ${x.false_alarms} false`).join(" · ")}.`)));
+    }
+    const adapt = [`Passages from the last months count the most when it learns (half as much after ${o.adapts?.half_life_days || 120} days).`];
+    if (lv.correction) {
+      const [a, b] = lv.correction;
+      const shift = b < 0.9 ? "It was too sure of itself, so its percentages are now pulled towards the middle." : b > 1.1 ? "It was too cautious, so its percentages are now stretched." : a > 0.15 ? "It ran low, so its percentages are now raised a little." : a < -0.15 ? "It ran high, so its percentages are now lowered a little." : "Its percentages have matched what happened, so they are shown nearly as they come.";
+      adapt.push(shift);
+    } else {
+      adapt.push(`From ${o.adapts?.correction_from || 40} checked forecasts on, its percentages are corrected by how they have matched what happened, and this scorecard decides whether it is shown at all.`);
+    }
+    d.append(el("p", "small muted", esc(adapt.join(" "))));
     return d;
   }
 
@@ -218,6 +289,7 @@ window.FerryStatsMore = (() => {
         parts.push(...rows.map((x) => sailingRow(x, ships, o.using)));
       }
       parts.push(el("p", "small sm-verdict", esc(testText(o.test || {}, o.using))));
+      parts.push(liveCard(o, ships));
       if (o.test?.tested) parts.push(testDetails(o.test));
       parts.push(el("p", "small muted", `The mark on each bar is the ship's usual share that way. ${esc(o.weather?.credit || "")}`));
       box.replaceChildren(...parts);

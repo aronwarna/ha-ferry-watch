@@ -33,6 +33,7 @@
   let harbourLayer = null;
   // Nature reserves (static/reserves.js): made once the map is up, see below.
   let reserves = null;
+  let notices = null;
   let logbook = null;
   // One canvas for every canvas-drawn mark (other ships, weather stations, harbours). Each
   // Leaflet canvas covers the whole map, so a second one would swallow the taps meant for
@@ -157,6 +158,16 @@
       }),
     ]),
     chart: null, // built by buildChartLayer below
+    // The Land Survey's terrain map (maastokartta: contours, paths, cliffs, marshes, every
+    // building), fetched and kept by the add-on, over the plain map, which shows outside
+    // Finland. It stops at zoom 16; closer in the last picture is enlarged.
+    terrain: L.layerGroup([
+      streets(),
+      L.tileLayer("api/tiles/topo/{z}/{x}/{y}.png", {
+        minZoom: 5, maxZoom: 19, maxNativeZoom: 16, zIndex: 2,
+        attribution: "Terrain map © Maanmittauslaitos (CC BY 4.0)",
+      }),
+    ]),
   };
   if (aerialOn) layers.satellite.addLayer(aerialPhotos);
   function setAerial(on) {
@@ -1752,6 +1763,36 @@
   const menuModal = () => menu.open && menu.matches(":modal");
   const tabScroll = new Map();
 
+  // Stats while its numbers are on the way (the first time), and when they don't come.
+  function openStats(pane) {
+    let status = pane.querySelector(".pane-status");
+    if (!status) {
+      status = document.createElement("div");
+      status.className = "pane-status";
+      pane.prepend(status);
+    }
+    const first = !statsData;
+    pane.classList.toggle("pane-loading", first);
+    status.hidden = !first;
+    status.textContent = "Loading the passages…";
+    loadStats().then(() => {
+      status.hidden = true;
+      pane.classList.remove("pane-loading");
+      pane.scrollTop = tabScroll.get("stats") || 0;
+    }).catch((err) => {
+      console.error(err);
+      if (statsData) return; // the earlier numbers stay up
+      status.hidden = false;
+      status.textContent = "Couldn't load the stats. ";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "small";
+      retry.textContent = "Try again";
+      retry.addEventListener("click", () => openStats(pane));
+      status.append(retry);
+    });
+  }
+
   function setTab(name) {
     const current = menu.querySelector("[data-pane]:not([hidden])");
     if (current) tabScroll.set(current.dataset.pane, current.scrollTop);
@@ -1764,7 +1805,7 @@
     const pane = menu.querySelector(`[data-pane="${name}"]`);
     pane.scrollTop = tabScroll.get(name) || 0;
     store.set("fw-tab", name);
-    if (name === "stats") loadStats().then(() => { pane.scrollTop = tabScroll.get(name) || 0; }).catch(console.error);
+    if (name === "stats") openStats(pane);
     if (name === "layers") renderLayers();
     if (name === "settings") renderSettings();
     if (name === "logbook") logbook?.load();
@@ -1785,13 +1826,14 @@
       document.body.classList.add("menu-open");
       menu.show();
     } else {
+      document.body.classList.add("menu-sheet");
       menu.showModal();
     }
     setTab(tab || (["stats", "logbook", "layers", "settings"].includes(saved) ? saved : "ships"));
     menu.focus(); // not the first tab, which would show a focus ring
   }
   menu.addEventListener("close", () => {
-    document.body.classList.remove("menu-open", "menu-wide");
+    document.body.classList.remove("menu-open", "menu-wide", "menu-sheet");
     menu.style.transform = "";
   });
   $("ships-button").addEventListener("click", () => {
@@ -2126,14 +2168,25 @@
 
   // Alerts in one box: where they go, when they're held back, the areas, which ships alert,
   // the last one sent, and the add-on options (changed in Home Assistant).
+  // "notify.mobile_app_samsung_galaxy_s22" reads "Samsung Galaxy S22 (companion app)".
+  function serviceName(service) {
+    if (!service) return "–";
+    const m = /^notify\.mobile_app_(.+)$/.exec(service);
+    if (!m) return service;
+    const words = m[1].split("_").map((w) => (/\d/.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)));
+    return `${words.join(" ")} (companion app)`;
+  }
+
   function renderAlertBox() {
     const st = lastState;
     if (!st) return;
     const a = st.alerts || {};
+    const canNotify = st.can_notify ?? st.ha_connected;
     $("notify-status").textContent = st.ha_connected
       ? "A phone alert when one of your ships takes the inner route."
+      : canNotify ? "A phone alert through ntfy when one of your ships takes the inner route. Home Assistant isn't set up, so where your phone is can't be checked."
       : "Not connected to Home Assistant, so no alerts can be sent.";
-    $("notify-test").disabled = !st.ha_connected;
+    $("notify-test").disabled = !canNotify;
     const zones = st.zones || [];
     const areas = zones.filter((z) => z.role === "phone" && z.shape !== "line");
     const ph = phoneFix();
@@ -2145,9 +2198,10 @@
     const last = st.last_notification;
     const lastShip = last && ships.get(last.mmsi)?.info.name;
     const facts = [
-      ["Sent to", a.notify_service || "–"],
+      ["Sent to", (st.ha_connected ? serviceName(a.notify_service) : a.ntfy ? "ntfy" : "–")
+        + (st.ha_connected && a.ntfy ? ", or ntfy when Home Assistant doesn't answer" : "")],
       ["Only in my area", a.require_phone_area === false ? "No: alerts go out wherever you are" : `Yes: ${where}`],
-      ["Phone position", a.phone_entity || "–"],
+      ["Phone position", a.phone_name ? `${a.phone_name} (${a.phone_entity})` : a.phone_entity || "–"],
       ["Feed problems", a.notify_feed_problems === false ? "Not alerted" : "Alerted when ship data stops coming"],
       ["Last alert", last ? `${lastShip ? `${shortName(lastShip)}, ` : ""}${fmtWhen(last.ts)}` : "None yet"],
     ];
@@ -2161,7 +2215,8 @@
     }));
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
-    dd.innerHTML = `<a href="${esc(a.config_url || "/hassio/dashboard")}" target="_top">Change these in Home Assistant</a> <span class="muted">(the app's Configuration tab)</span>`;
+    if (a.standalone) dd.innerHTML = `<span class="muted">Change these in the container's settings (its FW_… environment values), then restart it.</span>`;
+    else dd.innerHTML = `<a href="${esc(a.config_url || "/hassio/dashboard")}" target="_top">Change these in Home Assistant</a> <span class="muted">(the app's Configuration tab)</span>`;
     dl.append(dt, dd);
 
     const list = $("alert-areas");
@@ -3339,6 +3394,8 @@
         note: reserves?.note || "Tints and names every nature reserve and national park in view, from zoom 10, on any map. On the drawn chart you can also tap inside one (zoom 11 and in) for its card and links. Bird and seal sanctuaries closed today (no landing or no access) are shown in red dashes with the date they open (on the drawn chart from zoom 11 even with this off). From OpenStreetMap and SYKE's register of movement restriction areas.",
         onChange: async (on) => { reserves?.setAll(on); renderLayers(); },
       }),
+      groupHead("Warnings and waterways"),
+      ...(notices?.rows() || []).map((r) => switchRow({ compact: true, ...r, onChange: async (on) => { await r.onChange(on); renderLayers(); } })),
       groupHead("On the satellite view"),
       switchRow({
         compact: true,
@@ -4798,6 +4855,8 @@
     $("route-save").textContent = route.id ? "Update" : "Save";
     $("route-draught-box").hidden = routeMode !== "fw" && !route.legs.some((l) => l.fw);
     scheduleDayScore();
+    notices?.route(route.on && pts.length > 1 ? pts : null, routeSpeed,
+      !route.legs.some(legPending) && !route.dragging);
   }
 
   // --- boating day score: good, okay or bad to set off on the route, hour by hour ---------
@@ -5219,13 +5278,47 @@
     return el;
   }
 
+  // "Import GPX": routes (or tracks) from a file become saved routes.
+  function routeImportRow() {
+    const row = document.createElement("p");
+    row.className = "small route-import";
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".gpx,application/gpx+xml,text/xml,application/xml";
+    input.hidden = true;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Import GPX";
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.setAttribute("role", "status");
+    button.addEventListener("click", () => input.click());
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      note.textContent = " Reading…";
+      try {
+        const res = await fetch("api/routes/import", { method: "POST", body: file });
+        if (!res.ok) throw new Error(await res.text());
+        const n = (await res.json()).routes.length;
+        await loadRoutes();
+        const row2 = $("routes-list").querySelector(".route-import [role=status]");
+        if (row2) row2.textContent = ` Added ${n} route${n === 1 ? "" : "s"}.`;
+      } catch (err) {
+        note.textContent = ` ${err.message || err}`;
+      }
+    });
+    row.append(button, input, note);
+    return row;
+  }
+
   function renderRoutesList() {
     const box = $("routes-list");
     if (!savedRoutes.length) {
       const p = document.createElement("p");
       p.className = "small muted";
       p.textContent = "Measure and plan with the ruler button at the top of the map, then Save. Saved routes are listed here.";
-      box.replaceChildren(p);
+      box.replaceChildren(p, routeImportRow());
       return;
     }
     const list = document.createElement("ul");
@@ -5273,10 +5366,17 @@
         if (route.id === r.id) route.id = null;
         await loadRoutes();
       });
-      li.append(toggle, grow, edit, del);
+      // For the chart plotter: the route as a GPX file.
+      const gpx = document.createElement("a");
+      gpx.className = "button-link";
+      gpx.href = `api/routes/${r.id}.gpx`;
+      gpx.download = "";
+      gpx.textContent = "GPX";
+      gpx.title = "Download as a GPX route for a chart plotter";
+      li.append(toggle, grow, gpx, edit, del);
       return li;
     }));
-    box.replaceChildren(list);
+    box.replaceChildren(list, routeImportRow());
   }
 
   // --- weather stations (FMI), live on every map --------------------------------------------
@@ -5538,6 +5638,13 @@
   reserves = FerryReserves.create({
     map, api, esc, store,
     canTap: () => !route.on && activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11,
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  // Nautical and sea weather warnings, bridges and locks, speed limits on a route (notices.js).
+  notices = FerryNotices.create({
+    map, api, esc, store, fmtWhen,
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     },

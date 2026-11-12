@@ -1098,3 +1098,85 @@ body.weather-open .sky-note, body.sky-open .sky-note { display: none; }
 .sm-bands { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
 .sm-bands th, .sm-bands td { padding: 2px 10px 2px 0; text-align: left; font-variant-numeric: tabular-nums; }
 .sm-bands th { color: var(--muted); font-weight: 600; }
+
+/* The sky note stays over the map: beside the side panel, and away under the phone's sheet. */
+@media (min-width: 900px) {
+  body.menu-open .sky-note {
+    left: calc((100vw - var(--panel-w)) / 2);
+    width: min(520px, calc(100vw - var(--panel-w) - 20px));
+  }
+}
+body.menu-sheet .sky-note { display: none; }
+
+/* A pane whose numbers are still on the way. */
+.pane-status { padding: 28px 12px; text-align: center; color: var(--muted, #64748b); }
+.pane-status[hidden] { display: none; }
+.pane-loading > :not(.pane-status) { display: none; }
+
+/* Settings boxes that fold (panel-extras.js). */
+.group > h3.fold-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
+.group > h3.fold-head::after { content: ""; width: 8px; height: 8px; margin-right: 4px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-135deg); transition: transform 0.15s; }
+.group.folded > h3.fold-head::after { transform: rotate(45deg); }
+.group.folded { padding-bottom: 0; }
+.group.folded > h3.fold-head { margin: 12px 0; }
+.group.folded > :not(h3) { display: none !important; }
+
+.diag-text { width: 100%; height: 160px; margin-top: 6px; font: 11px/1.4 ui-monospace, monospace; }
+
+/* What's new after an update. */
+.whats-new {
+  position: fixed; z-index: 1600; left: 10px; bottom: calc(var(--strip-h, 84px) + 16px);
+  width: min(420px, calc(100vw - 20px)); max-height: min(60vh, 520px);
+  display: flex; flex-direction: column; padding: 10px 12px; border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); font-size: 13px; line-height: 1.4;
+}
+.whats-new header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.whats-new-body { overflow: auto; margin-top: 4px; }
+.whats-new h4 { margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
+.whats-new ul { margin: 0; padding-left: 18px; }
+.whats-new li { margin: 3px 0; }
+.whats-new li.sub { margin-left: 14px; }
+
+.button-link { padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; color: inherit; text-decoration: none; font-size: 12px; }
+.route-import { margin-top: 8px; }
+
+/* --- warnings, bridges and locks, speed limits on a route (notices.js) --- */
+.notice-icon { background: none; border: 0; }
+.notice-icon svg { width: 100%; height: 100%; display: block; overflow: visible; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)); }
+.notice-nautical path { fill: #fbbf24; stroke: #7c2d12; stroke-width: 1.6; stroke-linejoin: round; }
+.notice-nautical text { font: 700 13px system-ui, sans-serif; fill: #431407; }
+.notice-structure circle { fill: #fff; stroke: #0e7490; stroke-width: 1.8; }
+.notice-structure path { fill: none; stroke: #0e7490; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.notice-label { background: rgba(255, 255, 255, 0.9); border: 1px solid #0e7490; color: #0e4a5c; border-radius: 4px; padding: 0 4px; font-size: 11px; font-weight: 600; box-shadow: none; }
+.notice-label::before { display: none; }
+.notice-pop { min-width: 190px; max-width: 280px; }
+.notice-pop p { margin: 6px 0; white-space: pre-line; max-height: 40vh; overflow-y: auto; }
+.notice-pop .facts { margin: 6px 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.notice-pop .facts dt { color: var(--muted, #64748b); }
+.notice-pop .facts dd { margin: 0; overflow-wrap: anywhere; }
+.notice-pop details { margin: 4px 0; }
+.notice-pop summary { cursor: pointer; }
+.warn-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; border: 1px solid rgba(0, 0, 0, 0.35); }
+.pill-warn svg path:first-child { fill: var(--warn, #eab308); stroke: rgba(0, 0, 0, 0.55); stroke-width: 1; stroke-linejoin: round; }
+.pill-warn svg .mark { stroke: #111; stroke-width: 1.6; stroke-linecap: round; fill: none; }
+.pill-warn span:empty { display: none; }
+.sea-warnings { display: grid; gap: 6px; margin: 0 0 10px; }
+.sea-warning { border-left: 4px solid var(--warn, #eab308); background: color-mix(in srgb, var(--warn, #eab308) 12%, transparent); border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+.route-limits { margin: 6px 0 2px; line-height: 1.7; }
+.limit-chip { display: inline-block; border: 1px solid #f59e0b; background: rgba(245, 158, 11, 0.12); border-radius: 10px; padding: 0 7px; margin-right: 2px; white-space: nowrap; }
+.limit-sign { background: none; border: 0; }
+.limit-sign span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 3px solid #dc2626; color: #111; font: 700 10px system-ui, sans-serif; box-sizing: border-box; }
+.notice-warn path:first-child { stroke: rgba(0, 0, 0, 0.6); stroke-width: 1.3; stroke-linejoin: round; }
+.notice-warn .mark { stroke: #111; stroke-width: 2.2; stroke-linecap: round; fill: none; }
+
+/* --- outlook self-check scorecard --- */
+.sm-live { margin: 10px 0; }
+.sm-live-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; margin: 8px 0; }
+.sm-live-tiles > div { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; min-width: 0; }
+.sm-live-tiles strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.sm-months { display: flex; gap: 6px; align-items: flex-end; overflow-x: auto; padding: 2px 0 4px; }
+.sm-month { display: flex; flex-direction: column; align-items: center; font-size: 11px; min-width: 34px; }
+.sm-month-bar { height: 30px; display: flex; align-items: flex-end; }
+.sm-month-bar i { display: block; width: 16px; border-radius: 3px 3px 0 0; }
+.sm-month-bar i.up { background: #16a34a; }
+.sm-month-bar i.down { background: #dc2626; }

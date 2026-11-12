@@ -22,6 +22,7 @@
         <button type="button" data-layer="map">Map</button>
         <button type="button" data-layer="satellite">Satellite</button>
         <button type="button" data-layer="chart">Chart</button>
+        <button type="button" data-layer="terrain">Terrain</button>
       </div>
       <button type="button" id="route-button" class="panel icon-button" aria-label="Measure and plan a route" title="Measure and plan a route" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 16.5L16.5 3.5l4 4-13 13z"/><path d="M7.5 12.5l2 2M10 10l2.5 2.5M12.5 7.5l2 2"/></svg>
@@ -45,6 +46,7 @@
         <span id="pill-status" class="status" data-state="connecting"><i></i></span>
         <span id="pill-wind" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg><span></span></span>
         <span id="pill-water" class="pill-part" hidden></span>
+        <span id="pill-warn" class="pill-part pill-warn" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6.5 L7 6 H-7 Z"/><path class="mark" d="M0 -2 V2 M0 4 V4.4"/></svg><span></span></span>
         <span id="pill-sun" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="horizon" d="M-7 4 H7"/><path class="sun" d="M-4 4 A4 4 0 0 1 4 4"/><path class="ray" d="M0 -5 V-2.5 M-4.6 -2.8 L-3 -1.2 M4.6 -2.8 L3 -1.2"/></svg><span></span></span>
       </button>
       <button type="button" id="areas-shown" class="areas-shown panel" hidden title="Hide the alert areas from the map">
@@ -87,6 +89,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
+    <div id="sea-warnings" class="sea-warnings" hidden></div>
     <dl id="conditions-list" class="facts"></dl>
     <p class="small muted" id="conditions-note"></p>
   </section>
@@ -243,6 +246,7 @@
         <p id="rw-detail" class="rw-detail small" role="status"></p>
       </div>
     </div>
+    <div id="route-limits" class="route-limits" role="status" hidden></div>
     <div class="route-actions">
       <button type="button" id="route-undo" class="icon-button" aria-label="Undo" title="Undo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
@@ -355,6 +359,12 @@
           </label>
           <p class="small muted note">Long press the drawn chart where it looks wrong: what the chart has there (tiles at zoom 8 to 12 and the depth areas) is saved to Home Assistant's Media folder, under ferry_watch › chart-samples, with a download link. Send the file in so it can be fixed.</p>
         </div>
+        <div class="row-buttons">
+          <button type="button" id="diag-copy">Copy diagnostics</button>
+        </div>
+        <p class="small muted note">A text report of the version, memory, every data source and the latest warnings, to paste to whoever is helping. No keys or passwords are in it.</p>
+        <p class="small" id="diag-result" role="status"></p>
+        <textarea id="diag-text" class="diag-text" readonly hidden aria-label="Diagnostics"></textarea>
       </section>
       <section class="group">
         <h3>Data sources</h3>
@@ -436,6 +446,7 @@
     </div>
   </dialog>
 
+  <script src="static/prefs.js"></script>
   <script src="static/vendor/leaflet/leaflet.js"></script>
   <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/vchart.js"></script>
@@ -450,10 +461,11 @@
   <script src="static/fields.js"></script>
   <script src="static/icechart.js"></script>
   <script src="static/algae.js"></script>
-  <script src="static/sky-data.js"></script>
   <script src="static/sky.js"></script>
   <script src="static/reserves.js"></script>
+  <script src="static/notices.js"></script>
   <script src="static/logbook.js"></script>
   <script src="static/app.js"></script>
+  <script src="static/panel-extras.js"></script>
 </body>
 </html>

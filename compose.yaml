@@ -1,0 +1,36 @@
+# Ferry Watch as its own container, outside Home Assistant.
+# How to use it, and how to bring the add-on's data over: ferry_watch/DOCS.md,
+# "Running without Home Assistant".
+#
+#   docker compose up -d --build        start, or update after `git pull`
+#
+services:
+  ferry-watch:
+    build:
+      context: ./ferry_watch
+      dockerfile: Dockerfile.standalone
+    container_name: ferry-watch
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    volumes:
+      # Everything the app keeps: tracks, stats, areas, settings, logbook, chart caches.
+      - ./data:/data
+    mem_limit: 400m
+    environment:
+      TZ: Europe/Helsinki
+      # Home Assistant, for phone alerts and the phone's position (optional).
+      # The token is a long-lived access token: HA › your profile › Security.
+      FW_HA_URL: "http://192.168.1.30:8123"
+      FW_HA_TOKEN: "${FW_HA_TOKEN:-}"
+      FW_NOTIFY_SERVICE: "notify.mobile_app_samsung_galaxy_s22"
+      FW_PHONE_ENTITY: "device_tracker.samsung_galaxy_s22"
+      # Where your phone reaches this panel: what a tap on an alert opens, and where the
+      # alert's map picture is loaded from. Leave empty for alerts without a picture.
+      FW_PUBLIC_URL: "${FW_PUBLIC_URL:-}"
+      # A second way for alerts when Home Assistant is down: an ntfy topic address,
+      # like https://ntfy.sh/a-long-name-nobody-can-guess (optional).
+      FW_NTFY_URL: "${FW_NTFY_URL:-}"
+      # A password for the panel (optional; without one, anyone who can reach port 8099
+      # on your network or tailnet can open it).
+      FW_PASSWORD: "${FW_PASSWORD:-}"

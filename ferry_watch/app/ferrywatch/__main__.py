@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from . import __version__, memory
+from . import __version__, diagnostics, memory
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .airhistory import AircraftHistory
@@ -22,6 +22,7 @@ from .autoroute import AutoRouter
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .faults import Faults
 from .fleets import FleetManager, FleetMatcher
+from . import config
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
 from .geo import sun_info
@@ -30,6 +31,7 @@ from .harbours import Harbours
 from .logbook import Logbook
 from .reserves import Reserves
 from .ice import IceWatch
+from .notices import Notices
 from .notify import Notifier, sun_place
 from .outlook import Outlook, fake_get_json
 from . import algae, aurora, dayscore, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
@@ -59,6 +61,26 @@ FLEET_REFRESH = 24 * 3600
 SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
 # Heights for the sunset spots' view (Mapzen terrain tiles on AWS Open Data: EU-DEM in
 # Finland, sea floor below 0), as terrarium PNGs: height = R*256 + G + B/256 - 32768 m.
+# The Land Survey's terrain map (maastokartta, CC BY 4.0) for the Terrain view: from its own
+# open map service with the user's key, otherwise from Kapsi's free copy of the same maps.
+TOPO_MML = ("https://avoin-karttakuva.maanmittauslaitos.fi/avoin/wmts/1.0.0/maastokartta/default/"
+            "WGS84_Pseudo-Mercator/{z}/{y}/{x}.png?api-key={key}")
+TOPO_KAPSI = "https://tiles.kartat.kapsi.fi/peruskartta/{z}/{x}/{y}.jpg"
+TOPO_MIN_Z, TOPO_MAX_Z = 5, 16
+TOPO_BOX = (59.3, 19.0, 70.2, 31.7)  # Finland: south, west, north, east
+
+
+def topo_covers(z: int, x: int, y: int) -> bool:
+    """Whether a map tile touches Finland's box (the terrain map has nothing elsewhere)."""
+    import math
+    n = 2**z
+    west, east = x / n * 360 - 180, (x + 1) / n * 360 - 180
+    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))  # noqa: E731
+    north, south = lat(y), lat(y + 1)
+    return TOPO_MIN_Z <= z <= TOPO_MAX_Z and south < TOPO_BOX[2] and north > TOPO_BOX[0] \
+        and west < TOPO_BOX[3] and east > TOPO_BOX[1]
+
+
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 FLEET_STORE_MOVING, FLEET_STORE_STOPPED = 60, 600  # sparser tracks than the main ships
 
@@ -70,6 +92,7 @@ class FerryWatch:
         self.store = Store(DATA_DIR / "ferrywatch.db")
         self._seed_ships()
         self._seed_zones()
+        self._rename_old_zones()
         self.tracker = Tracker(self.store)
         self.tracker.load()
         self.fleets = FleetManager(self.store)
@@ -107,6 +130,7 @@ class FerryWatch:
         self.weather: SeaWeather | None = None
         self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
         self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
+        self.phone_name: str | None = None  # its name in Home Assistant, for Settings
         self._wakers: list[asyncio.Event] = []
         self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
         self._keep_task: asyncio.Task | None = None
@@ -128,6 +152,15 @@ class FerryWatch:
         for zone in DEFAULT_ZONES:
             self.store.add_zone(zone["name"], zone["role"], zone["shape"], zone["points"])
         self.store.kv_set("zones_seeded", True)
+
+    def _rename_old_zones(self) -> None:
+        """The first areas were named "... (from old setup)"; once, drop that ending."""
+        if self.store.kv_get("zones_renamed"):
+            return
+        for zone in self.store.zones():
+            if zone["name"].endswith(" (from old setup)"):
+                self.store.update_zone(zone["id"], zone["name"][:-len(" (from old setup)")], zone["points"])
+        self.store.kv_set("zones_renamed", True)
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -169,6 +202,10 @@ class FerryWatch:
                                live=self.predictor.get, ice=self.ice)
         # These only answer the panel's requests: nothing runs while no one looks.
         self.faults = Faults(self.session, fake_faults)
+        fake_notices = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simnotices import FAKE as fake_notices
+        self.notices = Notices(DATA_DIR / "notices", self.session, fake_notices)
         self.traffic = Traffic(self.session, self.store,
                                lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
         self.stations = Stations(self.session, fake_stations)
@@ -217,8 +254,8 @@ class FerryWatch:
             from .simulate import FakeHA
             self.ha = FakeHA()
             self.next_sensor = NextPassageSensor(self.ha)
-        elif SUPERVISOR_TOKEN and not DEV:
-            self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
+        elif config.HA_TOKEN and not DEV:
+            self.ha = HAClient(self.session, config.HA_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
             self.tasks.append(asyncio.create_task(self.notifier.get_panel_url()))  # for Settings' link
@@ -227,6 +264,13 @@ class FerryWatch:
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
                 self.tasks.append(asyncio.create_task(self.publisher.run()))
+
+        elif config.NTFY_URL and not DEV:  # no Home Assistant: feed warnings still go out, through ntfy
+            self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
+        if config.STANDALONE:
+            _LOGGER.info("Standalone: Home Assistant %s, ntfy %s, panel %s",
+                         config.HA_URL if self.ha else "not set up", "set" if config.NTFY_URL else "not set",
+                         "asks for the password" if config.PASSWORD else "open to anyone who reaches this port")
 
         runner = web.AppRunner(self.web.app, access_log=None)
         await runner.setup()
@@ -255,6 +299,7 @@ class FerryWatch:
         self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
         self.tasks.append(asyncio.create_task(self.outlook.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run_log()))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
         self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
         if self.vchart_keep:
@@ -410,6 +455,8 @@ class FerryWatch:
     async def _phone_tick(self) -> None:
         if not self.ha or not self.options.phone_entity:
             return
+        if self.phone_name is None:  # once; "" when Home Assistant has none
+            self.phone_name = await self.ha.friendly_name(self.options.phone_entity) or ""
         fix = await self.ha.phone_state(self.options.phone_entity)
         phone = {**fix, "max_age": self.options.phone_max_age_minutes * 60} if fix else None
         if phone != self.phone:
@@ -537,6 +584,7 @@ class FerryWatch:
             "zones": self.store.zones(),
             "last_notification": self.store.kv_get("last_notification"),
             "ha_connected": self.ha is not None,
+            "can_notify": self.ha is not None or bool(config.NTFY_URL),
             "version": __version__,
             "now": time.time(),
             "ships": ships,
@@ -570,6 +618,7 @@ class FerryWatch:
             "require_phone_area": o.require_phone_area, "notify_feed_problems": o.notify_feed_problems,
             "phone_max_age_minutes": o.phone_max_age_minutes,
             "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
+            "standalone": config.STANDALONE, "ntfy": bool(config.NTFY_URL), "phone_name": self.phone_name or None,
         }
 
     def _register_weather_layers(self) -> None:
@@ -625,6 +674,11 @@ class FerryWatch:
         """Upstream address of a chart or sea mark tile the panel asks for."""
         if source == "seamark":
             return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "topo":
+            if not topo_covers(z, x, y):
+                return None
+            key = self.store.kv_get("mml_api_key", "")
+            return TOPO_MML.format(z=z, x=x, y=y, key=key) if key else TOPO_KAPSI.format(z=z, x=x, y=y)
         if source == "terrain":
             return TERRAIN_URL.format(z=z, x=x, y=y) if 8 <= z <= 13 else None
         if source == "enc":  # the panel asks for these as 512-pixel tiles one zoom out
@@ -706,6 +760,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger().addHandler(diagnostics.RING)  # the latest warnings, for Copy diagnostics
     fw = FerryWatch(options)
     await fw.start()
     stop = asyncio.Event()

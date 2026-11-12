@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import base64
 import gzip
+import hashlib
+import hmac
 import json
 import logging
 import math
@@ -22,12 +25,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, dayscore, satellite, stats
+from . import __version__, config, dayscore, diagnostics, notices, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
+from .notify import sun_place
 from .fleets import FLEET_IDS
 from .tracker import STOP_SPEED
 from .vchart import MIN_Z, WATER_MAX_Z
@@ -42,6 +47,8 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+STATIC_TYPES = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml",
+                ".json": "application/json"}
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
 # A passage replay shows its whole trip, port to port, but no more than this either side.
@@ -49,14 +56,54 @@ REPLAY_MAX_SPAN = 18 * 3600
 FLEET_PUSH_SECONDS = 5
 
 
+AUTH_COOKIE = "fw_auth"
+# Loaded by the phone's notification, which can't log in; and the container's health check.
+OPEN_PATHS = ("/api/notify/picture/", "/api/health")
+PICTURE_NAME = re.compile(r"passage-[A-Za-z0-9_-]+\.png")
+
+
+def _cookie_value(password: str) -> str:
+    return hmac.new(password.encode(), b"ferry-watch-panel", hashlib.sha256).hexdigest()
+
+
+def _logged_in(request: web.Request, password: str) -> bool:
+    """The password, from the browser's own login box (HTTP Basic, any user name) or from
+    the cookie set after it, which the live connection (a websocket) carries too."""
+    if hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _cookie_value(password)):
+        return True
+    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        given = base64.b64decode(value).decode().partition(":")[2]
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return hmac.compare_digest(given.encode(), password.encode())
+
+
 @web.middleware
 async def ingress_only(request: web.Request, handler):
+    if DEV:
+        return await handler(request)
+    if config.STANDALONE:
+        # A plain container: whoever reaches the port gets the panel, so it belongs on a
+        # private network (the LAN, Tailscale). FW_PASSWORD adds a password on top.
+        password = config.PASSWORD
+        if not password or request.path.startswith(OPEN_PATHS):
+            return await handler(request)
+        if not _logged_in(request, password):
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Ferry Watch"'})
+        resp = await handler(request)
+        if AUTH_COOKIE not in request.cookies and not resp.prepared:
+            resp.set_cookie(AUTH_COOKIE, _cookie_value(password), max_age=365 * 86400, httponly=True, samesite="Lax")
+        return resp
     # Only the Supervisor's ingress proxy may reach the panel (it handles HA login).
-    if not DEV and request.remote not in (INGRESS_PROXY, "127.0.0.1", "::1"):
+    if request.remote not in (INGRESS_PROXY, "127.0.0.1", "::1"):
         raise web.HTTPForbidden()
     return await handler(request)
 
 
+PREF_MAX_KEYS, PREF_MAX_LEN = 200, 2000
 ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
 MAX_ROUTES = 100
 MAX_ROUTE_POINTS = 500
@@ -102,6 +149,58 @@ def _route_plan(value: Any, n: int) -> dict[str, list[int]] | None:
     if not any(fw) and not marks:
         return None
     return {"wp": wp, "fw": fw, **marks}
+
+
+def route_to_gpx(route: dict[str, Any]) -> str:
+    esc = lambda text: (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))  # noqa: E731
+    points = route["points"]
+    wp = set((route.get("plan") or {}).get("wp") or range(len(points)))
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<gpx version="1.1" creator="Ferry Watch" xmlns="http://www.topografix.com/GPX/1/1">',
+             f'  <metadata><name>{esc(route["name"])}</name><desc>Planning only, not for navigation</desc></metadata>',
+             f'  <rte><name>{esc(route["name"])}</name>']
+    stop = 0
+    for i, (lat, lon) in enumerate(points):
+        # The user's own stops are numbered; the turns of a fairway leg between them aren't.
+        if i in wp:
+            stop += 1
+            label = f"{stop:02d}"
+        else:
+            label = f"t{i:03d}"
+        lines.append(f'    <rtept lat="{lat:.6f}" lon="{lon:.6f}"><name>{label}</name></rtept>')
+    lines += ["  </rte>", "</gpx>", ""]
+    return "\n".join(lines)
+
+
+def routes_from_gpx(body: bytes) -> list[tuple[str, list[list[float]]]]:
+    """[(name, [[lat, lon], ...])] for each route in a GPX file, or each track when it has
+    no routes; long ones thinned evenly to MAX_ROUTE_POINTS."""
+    root = ET.fromstring(body)
+    local = lambda el: el.tag.rsplit("}", 1)[-1]  # noqa: E731
+    out = []
+    for kind, pt in (("rte", "rtept"), ("trk", "trkpt")):
+        for el in root.iter():
+            if local(el) != kind:
+                continue
+            name = next((c.text or "" for c in el if local(c) == "name"), "").strip()
+            points = []
+            for p in el.iter():
+                if local(p) != pt:
+                    continue
+                try:
+                    lat, lon = float(p.get("lat")), float(p.get("lon"))
+                except (TypeError, ValueError):
+                    continue
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    points.append([round(lat, 6), round(lon, 6)])
+            if len(points) > MAX_ROUTE_POINTS:
+                step = (len(points) - 1) / (MAX_ROUTE_POINTS - 1)
+                points = [points[round(i * step)] for i in range(MAX_ROUTE_POINTS)]
+            if len(points) >= 2:
+                out.append((name, points))
+        if out:
+            break
+    return out
 
 
 def _mmsi(request: web.Request) -> int:
@@ -161,6 +260,11 @@ class Web:
         r.add_get("/", self.index)
         r.add_get("/ship/{mmsi}", self.index)
         r.add_get("/api/state", self.state)
+        r.add_get("/api/health", self.health)
+        r.add_get("/api/prefs", self.prefs)
+        r.add_post("/api/prefs", self.set_prefs)
+        r.add_get("/api/diagnostics", self.diagnostics)
+        r.add_get("/api/changelog", self.changelog)
         r.add_get("/api/tails", self.tails)
         r.add_get("/api/track/{mmsi}", self.track)
         r.add_get("/api/photo/{mmsi}", self.photo)
@@ -179,6 +283,7 @@ class Web:
         r.add_get("/api/passages.csv", self.passages_csv)
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
+        r.add_get("/api/notify/picture/{name}", self.notify_picture)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
@@ -196,6 +301,10 @@ class Web:
         r.add_get("/api/aircraft/overview", self.air_overview)
         r.add_post("/api/weather", self.set_weather)
         r.add_get("/api/faults", self.faults)
+        r.add_get("/api/notices/nautical", self.nautical_warnings)
+        r.add_get("/api/notices/weather", self.weather_warnings)
+        r.add_get("/api/notices/structures", self.structures)
+        r.add_post("/api/route-limits", self.route_limits)
         r.add_get("/api/outlook", self.outlook)
         r.add_get("/api/traffic", self.traffic)
         r.add_get("/api/ports/{mmsi}", self.port_times)
@@ -207,6 +316,8 @@ class Web:
         r.add_get("/api/routes", self.routes)
         r.add_post("/api/routes", self.save_route)
         r.add_delete("/api/routes/{route_id}", self.delete_route)
+        r.add_get("/api/routes/{route_id}.gpx", self.route_gpx)
+        r.add_post("/api/routes/import", self.import_routes)
         r.add_post("/api/day-score", self.day_score)
         r.add_get("/api/autoroute", self.autoroute)
         r.add_get("/api/fairways", self.fairways)
@@ -219,7 +330,8 @@ class Web:
         r.add_get("/api/logbook/{trip_id}", self.logbook_trip)
         r.add_post("/api/logbook/{trip_id}", self.logbook_edit)
         r.add_delete("/api/logbook/{trip_id}", self.logbook_delete)
-        r.add_static("/static/", STATIC, append_version=False)
+        r.add_get("/static/{path:.+}", self.static_file)
+        self._static_gz: dict[str, tuple[int, bytes]] = {}  # path -> (mtime ns, gzipped body)
         if DEV:
             # Every chart symbol drawn by vchart.js, for checking against Traficom's key.
             r.add_get("/dev/symbols", self.dev_symbols)
@@ -233,11 +345,13 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
-                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/algae.js", "static/icechart.js", "static/sky-data.js",
-                     "static/sky.js", "static/reserves.js", "static/logbook.js"):
-            html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
+        # (Every script and stylesheet, the map library's included: with the version on, the
+        # browser may keep the file for good, see static_file.)
+        html = re.sub(r'(src|href)="(static/[^"?]+\.(?:js|css))"', rf'\1="\2?v={__version__}"', html)
+        # What is switched on, kept on the NAS so the phone and the desktop agree
+        # (static/prefs.js puts it in place before the other scripts read it).
+        prefs = json.dumps(self.fw.store.kv_get("prefs", {})).replace("<", "\\u003c")
+        html = html.replace("<head>", f"<head>\n  <script>window.FW_PREFS = {prefs};</script>", 1)
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
         prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
@@ -245,6 +359,75 @@ class Web:
         if base:
             html = html.replace("<head>", f'<head>\n  <base href="{base}">', 1)
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    async def static_file(self, request: web.Request) -> web.StreamResponse:
+        """The panel's own files. Scripts and styles go out gzipped (1.3 MB becomes 0.4), and
+        one asked for with its version (?v=) is kept by the browser for good: the next
+        version has another address. The gzipped copies are made once and kept (~0.4 MB)."""
+        rel = request.match_info["path"]
+        path = (STATIC / rel).resolve()
+        if STATIC.resolve() not in path.parents or not path.is_file():
+            raise web.HTTPNotFound()
+        headers = {"Cache-Control": "public, max-age=31536000, immutable" if "v" in request.query else "no-cache"}
+        kind = STATIC_TYPES.get(path.suffix)
+        if not kind or "gzip" not in request.headers.get("Accept-Encoding", ""):
+            return web.FileResponse(path, headers=headers)
+        mtime = path.stat().st_mtime_ns
+        etag = f'"{mtime:x}"'
+        headers.update({"ETag": etag, "Vary": "Accept-Encoding"})
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        kept = self._static_gz.get(rel)
+        if not kept or kept[0] != mtime:
+            kept = (mtime, await asyncio.to_thread(lambda: gzip.compress(path.read_bytes(), 6)))
+            self._static_gz[rel] = kept
+        return web.Response(body=kept[1], content_type=kind, charset="utf-8",
+                            headers={**headers, "Content-Encoding": "gzip"})
+
+    async def prefs(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.store.kv_get("prefs", {}), headers={"Cache-Control": "no-store"})
+
+    async def set_prefs(self, request: web.Request) -> web.Response:
+        """Changed preferences {key: text, or null to forget it}; only the panel's own fw- keys."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected an object")
+        prefs = dict(self.fw.store.kv_get("prefs", {}))
+        for key, value in body.items():
+            if not isinstance(key, str) or not key.startswith("fw-") or len(key) > 64:
+                raise web.HTTPBadRequest(text="Not a preference")
+            if value is None:
+                prefs.pop(key, None)
+            elif isinstance(value, str) and len(value) <= PREF_MAX_LEN:
+                prefs[key] = value
+            else:
+                raise web.HTTPBadRequest(text="Preferences are short texts")
+        if len(prefs) > PREF_MAX_KEYS:
+            raise web.HTTPBadRequest(text="Too many preferences")
+        self.fw.store.kv_set("prefs", prefs)
+        return web.json_response({"ok": True})
+
+    async def diagnostics(self, request: web.Request) -> web.Response:
+        fw = self.fw
+        listing = await fw.overlays.listing(set()) if fw.overlays else []
+        secrets = [config.HA_TOKEN, config.PASSWORD, config.NTFY_URL, fw.store.kv_get("mml_api_key")]
+        text = diagnostics.report(await fw.state(), listing, secrets)
+        return web.Response(text=text, headers={"Cache-Control": "no-store"})
+
+    async def changelog(self, request: web.Request) -> web.Response:
+        """What changed up to this version since the one the panel last saw (?since=)."""
+        for path in (Path(__file__).parents[1] / "CHANGELOG.md", Path(__file__).parents[2] / "CHANGELOG.md"):
+            if path.is_file():
+                text = await asyncio.to_thread(path.read_text)
+                break
+        else:
+            text = ""
+        since = request.query.get("since") or None
+        return web.json_response({"version": __version__, "sections": diagnostics.whats_new(text, __version__, since)},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def health(self, request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "version": __version__})
 
     async def state(self, request: web.Request) -> web.Response:
         return web.json_response(await self.fw.state())
@@ -307,6 +490,8 @@ class Web:
                 raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800"})
             source = "seamark"
         url = self.fw.tile_url(source, z, x, y)
+        if not url and source == "topo":  # outside Finland, for good: the plain map shows there
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800"})
         if not url or not (0 <= z <= 20 and 0 <= x < 2**z and 0 <= y < 2**z):
             raise web.HTTPNotFound()
         if source == "terrain" and os.environ.get("FW_SIMULATE") == "1":
@@ -316,7 +501,7 @@ class Web:
         path = await self.fw.tiles.get(source, z, x, y, url)
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
-        return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": "image/png"})
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": _image_type(path)})
 
     async def overlays(self, request: web.Request) -> web.Response:
         on = {i for i in request.query.get("times", "").split(",") if i}
@@ -565,7 +750,16 @@ class Web:
         )
 
     async def stats(self, request: web.Request) -> web.Response:
-        return web.json_response(stats.payload(self.fw.store))
+        # Every passage there is, so it goes out gzipped (about a sixth of the size), and not
+        # at all when the panel already has this very answer.
+        body = json.dumps(stats.payload(self.fw.store)).encode()
+        etag = f'"{hashlib.sha1(body).hexdigest()[:20]}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        resp = web.Response(body=body, content_type="application/json", headers=headers)
+        resp.enable_compression()
+        return resp
 
     async def set_fleet(self, request: web.Request) -> web.Response:
         fleet_id = request.match_info["fleet_id"]
@@ -630,6 +824,46 @@ class Web:
         body = await request.json()
         await self.fw.set_weather(bool(body.get("enabled")))
         return web.json_response({"ok": True})
+
+    async def nautical_warnings(self, request: web.Request) -> web.Response:
+        n = self.fw.notices
+        return web.json_response({"warnings": await n.nautical.get(), **n.nautical.status()},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def weather_warnings(self, request: web.Request) -> web.Response:
+        """Sea weather warnings with their areas, and which of them hold the place asked
+        about (?at=lat,lon; else the middle of my area, or Porkkala)."""
+        n = self.fw.notices
+        warnings = await n.weather.get()
+        try:
+            lat, lon = (float(v) for v in request.query["at"].split(","))
+        except (KeyError, ValueError):
+            lat, lon = sun_place(self.fw.store)
+        return web.json_response({"warnings": warnings, "here": notices.warnings_at(warnings, lat, lon),
+                                  "at": [lat, lon], **n.weather.status()}, headers={"Cache-Control": "no-store"})
+
+    async def structures(self, request: web.Request) -> web.Response:
+        n = self.fw.notices
+        resp = web.json_response({"items": await n.structures(), "error": n.structures_error},
+                                 headers={"Cache-Control": "max-age=3600"})
+        resp.enable_compression()
+        return resp
+
+    async def route_limits(self, request: web.Request) -> web.Response:
+        """The speed limits a route runs through: {points, speed (kn)}."""
+        body = await request.json()
+        points = _points(body.get("points") if isinstance(body, dict) else None, 2)
+        try:
+            speed = float(body.get("speed")) if body.get("speed") is not None else None
+        except (TypeError, ValueError):
+            speed = None
+        try:
+            out = await self.fw.notices.route_limits(points, speed if speed and 0 < speed <= 80 else None)
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise web.HTTPBadGateway(text=f"Couldn't read the speed limits: {err}") from None
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
 
     async def faults(self, request: web.Request) -> web.Response:
         return web.json_response({"faults": await self.fw.faults.get(), "error": self.fw.faults.error})
@@ -798,6 +1032,42 @@ class Web:
         self.fw.store.kv_set("routes", routes)
         return web.json_response(route)
 
+    async def route_gpx(self, request: web.Request) -> web.Response:
+        """A saved route as a GPX route, which chart plotters read (Garmin: copy it to the
+        card's Garmin/UserData folder and import user data)."""
+        try:
+            route_id = int(request.match_info["route_id"])
+        except ValueError:
+            raise web.HTTPNotFound() from None
+        route = next((r for r in self.fw.store.kv_get("routes", []) if r["id"] == route_id), None)
+        if not route:
+            raise web.HTTPNotFound()
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", route["name"]).strip("-") or f"route-{route_id}"
+        return web.Response(text=route_to_gpx(route), content_type="application/gpx+xml", headers={
+            "Content-Disposition": f'attachment; filename="{name}.gpx"', "Cache-Control": "no-store"})
+
+    async def import_routes(self, request: web.Request) -> web.Response:
+        """Routes (or tracks, as routes) from an uploaded GPX file, saved like drawn ones."""
+        body = await request.read()
+        try:
+            found = routes_from_gpx(body)
+        except ET.ParseError as err:
+            raise web.HTTPBadRequest(text=f"Not a GPX file ({err})") from None
+        if not found:
+            raise web.HTTPBadRequest(text="No route or track with at least two points in this file")
+        routes = self.fw.store.kv_get("routes", [])
+        if len(routes) + len(found) > MAX_ROUTES:
+            raise web.HTTPBadRequest(text=f"At most {MAX_ROUTES} routes can be saved")
+        added = []
+        for name, points in found:
+            route = {"id": max((r["id"] for r in routes), default=0) + 1, "shown": True, "speed": 25.0,
+                     "created": int(time.time()), "points": points,
+                     "name": name[:60] or f"Route {len(routes) + 1}"}
+            routes.append(route)
+            added.append(route)
+        self.fw.store.kv_set("routes", routes)
+        return web.json_response({"routes": added})
+
     async def delete_route(self, request: web.Request) -> web.Response:
         try:
             route_id = int(request.match_info["route_id"])
@@ -929,6 +1199,14 @@ class Web:
         resp = web.json_response(self.fw.reserves.in_view(south, west, north, east))
         resp.enable_compression()  # outlines: a national park can be a few hundred kB
         return resp
+
+    async def notify_picture(self, request: web.Request) -> web.StreamResponse:
+        """A notification's map picture, standalone (as an add-on Home Assistant serves it)."""
+        name = request.match_info["name"]
+        path = config.MEDIA_DIR / name
+        if not config.STANDALONE or not PICTURE_NAME.fullmatch(name) or not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/png"})
 
     async def test_notification(self, request: web.Request) -> web.Response:
         try:

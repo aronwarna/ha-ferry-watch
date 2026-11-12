@@ -211,6 +211,9 @@ class FakeHA:
     async def phone_location(self, entity: str, notify_service: str, max_age: float):
         return self.phone[0], self.phone[1], 30.0
 
+    async def friendly_name(self, entity: str):
+        return "Galaxy S22"
+
     async def phone_state(self, entity: str):
         return {"lat": self.phone[0], "lon": self.phone[1], "ts": time.time() - 30, "accuracy": 15}
 

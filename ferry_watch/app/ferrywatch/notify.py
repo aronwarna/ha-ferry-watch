@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -62,6 +63,14 @@ def conditions_line(conditions: dict[str, Any] | None, sun: dict[str, Any] | Non
         return None
     text = ", ".join(parts)
     return text[0].upper() + text[1:] + "."
+
+
+async def ha_answers(ha) -> bool:
+    """Whether Home Assistant is there to send through and to ask where the phone is."""
+    if not ha:
+        return False
+    check = getattr(ha, "reachable", None)
+    return await check() if check else True
 
 
 class Notifier:
@@ -130,7 +139,8 @@ class Notifier:
                 return False, "outer route"
             if not store.alerts_on(passage["mmsi"]):
                 return False, "alerts off for this ship"
-            if not self.fw.ha:
+            ha = self.fw.ha
+            if not ha and not config.NTFY_URL:
                 return False, "Home Assistant not connected"
             if time.time() - passage["ts"] > MAX_PASSAGE_AGE:
                 return False, "detected late (old data)"
@@ -139,8 +149,15 @@ class Notifier:
                 weather.start_refresh(WEATHER_MAX_AGE)
             opts = self.fw.options
             phone_zones = [z for z in store.zones() if z["role"] == "phone"]
-            phone = await self.fw.ha.phone_location(opts.phone_entity, opts.notify_service,
-                                                    opts.phone_max_age_minutes * 60)
+            if not await ha_answers(ha):
+                # Home Assistant is down or not set up: the alert goes out the other way,
+                # without the area check (nothing else knows where the phone is).
+                if not config.NTFY_URL:
+                    return False, "Home Assistant not answering"
+                await self.send_passage(passage, None, conditions=await self._conditions(), ntfy=True)
+                return True, "sent through ntfy (Home Assistant not answering, area not checked)"
+            phone = await ha.phone_location(opts.phone_entity, opts.notify_service,
+                                            opts.phone_max_age_minutes * 60)
             if opts.require_phone_area and phone_zones:
                 if not phone:
                     return False, "phone location unknown"
@@ -227,7 +244,8 @@ class Notifier:
         return title, message
 
     async def send_passage(self, passage: dict[str, Any], phone: tuple[float, float] | None,
-                           test: bool = False, conditions: dict[str, Any] | None = None) -> None:
+                           test: bool = False, conditions: dict[str, Any] | None = None,
+                           ntfy: bool = False) -> None:
         title, message = self.build_message(passage, phone, conditions=conditions)
         if test:
             title = f"Test: {title}"
@@ -248,15 +266,46 @@ class Notifier:
         image = await self.picture(passage, phone)
         if image:
             data["image"] = image
-        await self.fw.ha.call_service(self.fw.options.notify_service,
-                                      {"title": title, "message": message, "data": data})
+        await self._deliver(title, message, data, ntfy=ntfy)
         self.fw.store.kv_set("last_notification", {
             "passage_id": passage.get("id"), "mmsi": passage["mmsi"], "ts": time.time(),
         })
         _LOGGER.info("Notification sent: %s. %s", title, message)
 
+    async def _deliver(self, title: str, message: str, data: dict[str, Any], ntfy: bool = False) -> None:
+        """Through Home Assistant's notify service; through ntfy instead when asked to, when
+        there is no Home Assistant, or when Home Assistant fails and ntfy is set up."""
+        ha = self.fw.ha
+        if ha and not ntfy:
+            try:
+                await ha.call_service(self.fw.options.notify_service,
+                                      {"title": title, "message": message, "data": data})
+                return
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                if not config.NTFY_URL:
+                    raise
+                _LOGGER.warning("Home Assistant didn't take the notification (%s); sending through ntfy", err)
+        if not config.NTFY_URL:
+            raise RuntimeError("No way to send notifications is set up")
+        base, _, topic = config.NTFY_URL.rpartition("/")
+        body: dict[str, Any] = {"topic": topic, "title": title, "message": message, "tags": ["ferry"]}
+        if data.get("priority") == "high":
+            body["priority"] = 4
+        click = data.get("clickAction")
+        if click and click.startswith("http"):
+            body["click"] = click
+        if str(data.get("image", "")).startswith("http"):
+            body["attach"] = data["image"]
+        async with self.fw.session.post(base, json=body, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            resp.raise_for_status()
+
     async def picture(self, passage: dict[str, Any], phone: tuple[float, float] | None) -> str | None:
-        """Render the map picture into HA's media folder; returns its /media/local URL."""
+        """Render the map picture into HA's media folder; returns its /media/local URL.
+        Standalone, it is kept in the app's own folder and served by the app, under a name
+        that can't be guessed (the phone loads it without logging in); with no public
+        address set there is nowhere to load it from, so no picture is drawn."""
+        if config.STANDALONE and not config.PUBLIC_URL:
+            return None
         try:
             config.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -275,7 +324,11 @@ class Notifier:
             _LOGGER.exception("Could not draw the notification picture")
             return None
         name = f"passage-{passage.get('id') or int(time.time())}.png"
+        if config.STANDALONE:
+            name = f"{name[:-4]}-{secrets.token_urlsafe(9)}.png"
         (config.MEDIA_DIR / name).write_bytes(png)
+        if config.STANDALONE:
+            return f"{config.PUBLIC_URL}/api/notify/picture/{name}"
         return f"/media/local/ferry_watch/{name}"
 
     def cleanup_pictures(self) -> None:
@@ -289,6 +342,8 @@ class Notifier:
 
     async def get_panel_url(self) -> str | None:
         """Frontend URL of this app's panel, so tapping a notification opens it."""
+        if config.STANDALONE:
+            return config.PUBLIC_URL or None
         if self.panel_url or not config.SUPERVISOR_TOKEN:
             return self.panel_url
         try:
@@ -307,8 +362,9 @@ class Notifier:
 
     async def send_test(self) -> str:
         """Send a sample passage notification for the ship that moved most recently."""
-        if not self.fw.ha:
-            raise RuntimeError("Not running inside Home Assistant")
+        ha = self.fw.ha
+        if not ha and not config.NTFY_URL:
+            raise RuntimeError("Not connected to Home Assistant, and no ntfy address is set")
         states = [s for s in self.fw.tracker.ships.values() if s.last]
         if not states:
             raise RuntimeError("No ship positions yet")
@@ -320,8 +376,14 @@ class Notifier:
             "lat": p.lat, "lon": p.lon, "sog": p.sog,
         }
         opts = self.fw.options
-        phone = await self.fw.ha.phone_location(opts.phone_entity, opts.notify_service,
-                                                opts.phone_max_age_minutes * 60)
+        if not await ha_answers(ha):
+            if not config.NTFY_URL:
+                raise RuntimeError("Home Assistant is not answering")
+            await self.send_passage(passage, None, test=True, conditions=await self._conditions(), ntfy=True)
+            return ("Sent through ntfy, because Home Assistant is not answering. Real alerts go the same way "
+                    "until it is back, without checking where your phone is.")
+        phone = await ha.phone_location(opts.phone_entity, opts.notify_service,
+                                        opts.phone_max_age_minutes * 60)
         await self.send_passage(passage, phone[:2] if phone else None, test=True, conditions=await self._conditions())
         phone_zones = [z for z in self.fw.store.zones() if z["role"] == "phone"]
         if not phone:
@@ -337,7 +399,7 @@ class Notifier:
         while True:
             await asyncio.sleep(60)
             feed = self.fw.feed
-            if not feed or not self.fw.ha or not self.fw.options.notify_feed_problems:
+            if not feed or not (self.fw.ha or config.NTFY_URL) or not self.fw.options.notify_feed_problems:
                 continue
             last = feed.last_message_ts or started
             silent = time.time() - last > FEED_SILENCE
@@ -350,7 +412,7 @@ class Notifier:
                 elif not silent and self.feed_warned:
                     await self._feed_message("Ferry Watch: ship data is back", "Live positions are arriving again.")
                     self.feed_warned = False
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as err:
                 _LOGGER.warning("Could not send feed notification: %s", err)
 
     async def _feed_message(self, title: str, message: str) -> None:
@@ -358,5 +420,4 @@ class Notifier:
         url = await self.get_panel_url()
         if url:
             data["clickAction"] = url
-        await self.fw.ha.call_service(self.fw.options.notify_service,
-                                      {"title": title, "message": message, "data": data})
+        await self._deliver(title, message, data)
