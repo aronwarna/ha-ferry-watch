@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.54.0
+
+- Automatic routes for the open boats and the cabin boat now **keep to the shelter of the
+  islands**. Open water counts longer than water among islands, the more so the smaller the
+  boat and the stronger the wind forecast for the hour you pick under Boating weather. The
+  lee side of islands counts as sheltered, the windward side does not. The panel says which
+  wind the route was planned for and how much of it lies open; pick another hour and the
+  route is planned again for that hour's wind.
+- Automatic routes **stay on a fairway** once they are on one: no more cutting a fairway's
+  bend or running beside it. Turning points on a fairway sit on the fairway's own line.
+- Smoother Automatic routes: fewer turning points, no small kinks in open water, and shoals
+  of uncertain depth are given 100 m of room instead of being brushed past.
+- Polish: the night sky note no longer covers the weather pill and the chart style switch;
+  the map credits stay on one line on a computer too (tap to read them all) instead of
+  running under the ship list; the small texts in the Stats tiles are no longer cut off.
+
 ## 0.53.0
 
 - Route tool: pick your **boat** (Buster M, Buster XL, an 8 m aluminium cabin boat, or a

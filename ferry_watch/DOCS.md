@@ -371,8 +371,25 @@ works out the quickest way through water deep enough.
   the sailboat the 0–3 m band is closed.
 - Rocks, wrecks and soundings shallower than the boat needs close 30 m round them.
   The shore and shoals are kept 30 m off, and the first 100 m counts a quarter longer.
+- Rocks and shoals are given room as well: the first 100 m off water of uncertain
+  depth counts a quarter longer too.
 - Marked fairways deep enough for the boat are always open, so a narrow sound with a
-  fairway stays passable, and count a little shorter.
+  fairway stays passable, and count 15 % shorter. Once the route is on a fairway it
+  stays on it: it doesn't cut the fairway's bends or run beside it, and its turning
+  points lie on the fairway's own line.
+- **Shelter.** For the open boats and the cabin boat, open water counts longer than
+  water among islands, so the route goes inside the archipelago where that isn't
+  much further. How much depends on the wind forecast for the hour picked under
+  Boating weather (or now): with the wind at the boat's "okay" limit, open water
+  counts 70 % longer for Buster M, 45 % for Buster XL and 25 % for the cabin boat;
+  about a third of that in light wind and up to twice that in strong wind. A place
+  is sheltered when there is land or shoal water about 1.5 km upwind of it (within
+  about 1.3 km on any side when there is no forecast). The panel says which wind
+  the route was planned for and how many miles of it lie open. Picking another
+  hour plans the route again for that hour's wind. The sailboat is not steered
+  this way: its comfortable route already counts wind and waves.
+- The line is drawn with as few turns as the water allows: small steps round a shoal
+  are made into one bend.
 - Inside speed limit areas the boat goes at the limit, so a fast boat is sent round
   a slow area when that is quicker.
 - The start and the end may be up to 2.5 km from open water (a berth in a shallow

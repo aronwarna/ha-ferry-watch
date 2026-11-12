@@ -570,14 +570,6 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
     padding: 4px 6px;
     color: var(--text);
   }
-  .leaflet-control-attribution {
-    max-width: calc(100vw - 16px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-  }
-  .leaflet-control-attribution.expanded { white-space: normal; }
   dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); padding: 12px; }
   .dialog-head { gap: 6px; }
   .tabs { flex: 1 1 auto; min-width: 0; }
@@ -1000,3 +992,13 @@ body.attribution-open .strip { visibility: hidden; }
 .card-ports .port-time { white-space: nowrap; }
 .card-ports .port-time.expected { color: var(--accent); }
 .popup-ports { font-size: 12px; margin-top: 4px; }
+
+/* The credits stay on one line at every width; a tap opens them in full. */
+.leaflet-control-attribution {
+  max-width: calc(100vw - 16px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.leaflet-control-attribution.expanded { white-space: normal; }

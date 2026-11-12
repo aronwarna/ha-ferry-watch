@@ -57,7 +57,20 @@ SHORE_CLEAR_M = 30  # the shore and shoals are kept this far off (in whole cells
 NEAR_SHORE_M = 100  # nearer the shore than this counts as longer...
 NEAR_SHORE_COST = 1.25
 MARGINAL_COST = 3.0  # ...and so does water of uncertain depth
-FAIRWAY_COST = 0.95  # a marked fairway counts a little shorter
+FAIRWAY_COST = 0.85  # a marked fairway counts shorter: once on one, the route stays on it
+FAIRWAY_SNAP_CELLS = 1.5  # a turning point on a fairway cell is moved onto the fairway's own line this near
+# Shelter: open water counts longer for a small boat, the more the more wind there is.
+SHELTER_PX_M = 250  # the land picture the shelter is read from, metres across a dot
+SHELTER_RADIUS_M = 1300  # land and shoals about this near give shelter (a soft edge)
+SHELTER_UPWIND_M = 1500  # with a forecast: land this far upwind counts most
+SHELTER_UPWIND_SHARE = 1.0
+SHELTER_LAND_SHARE = 0.10  # this much land around (or upwind): fully sheltered
+SHELTER_WIND = (0.35, 2.0)  # the boat's weight times wind / its "okay" wind, kept within these
+EXPOSED_FROM = 0.5  # of full exposure: counted as open water in the sums
+STRAIGHT_SLACK = 1.02  # a straight line may cost this much more than the way it replaces
+FAIRWAY_KEEP = 0.9  # a straight line keeps this much of the fairway the way it replaces ran on
+MERGE_M = 600  # two turning points this near are made one where that costs no more than DROP_SLACK
+DROP_SLACK = 1.03  # ...and a turning point goes when the line past it costs no more than this
 SNAP_MAX_M = 2500  # the start and end join the nearest open water this near
 SNAP_WARN_M = 300
 MAX_POINTS = 160  # in the answer
@@ -95,6 +108,8 @@ class Grid:
         self.h = round((by1 - by0 + 1) * size / self.c) + 2 * BORDER
         self.flags = b""
         self.limit = b""
+        self.land: Image.Image | None = None  # the share of land and shoals around, coarse (see finish)
+        self.fw_lines: dict[tuple[int, int], array] = {}  # fairway lines by 16-cell tile: r0, c0, r1, c1...
         self.built = 0.0
         self.missing = 0
         self.coarse = 0  # blocks with only the base map's coastline
@@ -137,8 +152,10 @@ def depth_class(drval1: Any, drval2: Any, need: float) -> int:
 
 
 def render_block(layers: dict[str, Any], w: int, h: int, need: float, draught: float, cell_m: float,
-                 sea: list | None = None) -> tuple[Image.Image, Image.Image]:
-    """A block's cells from its chart layers: (depth class per cell, fairway mask)."""
+                 sea: list | None = None) -> tuple[Image.Image, Image.Image, list[list[tuple[float, float]]]]:
+    """A block's cells from its chart layers: (depth class per cell, fairway mask, the
+    fairway lines in cells)."""
+    lines: list[list[tuple[float, float]]] = []
     img = Image.new("L", (w, h), 0)
     fw = Image.new("L", (w, h), 0)
     draw, fdraw = ImageDraw.Draw(img), ImageDraw.Draw(fw)
@@ -218,7 +235,8 @@ def render_block(layers: dict[str, Any], w: int, h: int, need: float, draught: f
         pts = [(co[2 * v] * sx, co[2 * v + 1] * sy) for v in range(fline.vo[i], fline.vo[i + 1])]
         if len(pts) >= 2:
             fdraw.line(pts, fill=255, width=1)
-    return img, fw
+            lines.append(pts)
+    return img, fw, lines
 
 
 def render_base(bx: int, by: int, w: int, h: int) -> Image.Image:
@@ -247,12 +265,19 @@ def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, 
     if shore:
         nav = nav.filter(ImageFilter.MinFilter(2 * shore + 1))
     nav = ImageChops.lighter(nav, fw)
-    near = max(1, math.ceil(NEAR_SHORE_M / cell))
-    open_water = nav.filter(ImageFilter.MinFilter(2 * near + 1))
-    narrow = max(1, math.ceil(boats.SAIL["narrow_m"] / cell))
-    wide = open_water if narrow == near else nav.filter(ImageFilter.MinFilter(2 * narrow + 1))
-    flags = nav.point(lambda v: NAV if v else 0)
     marginal = ImageChops.multiply(marginal, ImageChops.invert(fw))  # a fairway is deep enough
+    near = max(1, math.ceil(NEAR_SHORE_M / cell))
+    # Near the shore, and as near water of uncertain depth: shoals are given room too.
+    sure = ImageChops.multiply(nav, ImageChops.invert(marginal))
+    open_water = sure.filter(ImageFilter.MinFilter(2 * near + 1))
+    narrow = max(1, math.ceil(boats.SAIL["narrow_m"] / cell))
+    wide = nav.filter(ImageFilter.MinFilter(2 * narrow + 1))
+    flags = nav.point(lambda v: NAV if v else 0)
+    # Shelter: how much land and water too shallow for waves to run lies around each place.
+    f = max(1, round(SHELTER_PX_M / cell))
+    land = cls.point(lambda v: 0 if v else 255)
+    small = land.reduce(f) if f > 1 else land
+    grid.land = small.filter(ImageFilter.GaussianBlur(SHELTER_RADIUS_M / (cell * f)))
     for mask, bit in ((marginal, MARGINAL), (fw, FAIRWAY), (ImageChops.invert(open_water), NEAR),
                       (ImageChops.invert(wide), NARROW)):
         flags = ImageChops.add(flags, ImageChops.darker(mask, nav).point(lambda v, bit=bit: bit if v else 0))
@@ -272,6 +297,60 @@ def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, 
             if len(pts) >= 3:
                 draw.polygon(pts, fill=max(1, min(255, round(area["kmh"] / 1.852))))
     grid.limit = lim.tobytes()
+
+
+def exposure(grid: Grid, wind_from: float | None = None) -> bytes:
+    """How open each cell lies, 0 (among islands) to 255 (open sea). With a wind direction the
+    land upwind counts most: the lee of an island is sheltered, its windward side is not."""
+    land = grid.land
+    if land is None:
+        return bytes(grid.w * grid.h)
+    share = land
+    if wind_from is not None:
+        px = grid.cell_m * grid.w / land.size[0]
+        d = SHELTER_UPWIND_M / px
+        a = math.radians(wind_from)
+        upwind = land.transform(land.size, Image.Transform.AFFINE, (1, 0, d * math.sin(a), 0, 1, -d * math.cos(a)),
+                                Image.Resampling.BILINEAR)
+        share = Image.blend(land, upwind, SHELTER_UPWIND_SHARE)
+    full = 255 * SHELTER_LAND_SHARE
+    expo = share.point(lambda v: max(0, round(255 * (1 - v / full))))
+    return expo.resize((grid.w, grid.h), Image.Resampling.BILINEAR).tobytes()
+
+
+def add_fairway_lines(grid: Grid, lines: list[list[tuple[float, float]]], left: int, top: int) -> None:
+    """Keeps a block's fairway lines (in its own cells) for moving turning points onto them."""
+    store = grid.fw_lines
+    for pts in lines:
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            n = max(1, math.ceil(max(abs(x1 - x0), abs(y1 - y0)) / 12))  # pieces of at most 12 cells
+            for i in range(n):
+                ra, ca = top + y0 + (y1 - y0) * i / n, left + x0 + (x1 - x0) * i / n
+                rb, cb = top + y0 + (y1 - y0) * (i + 1) / n, left + x0 + (x1 - x0) * (i + 1) / n
+                key = (int((ra + rb) / 2) >> 4, int((ca + cb) / 2) >> 4)
+                bucket = store.get(key)
+                if bucket is None:
+                    bucket = store[key] = array("f")
+                bucket.extend((ra, ca, rb, cb))
+
+
+def on_fairway(grid: Grid, r: int, c: int) -> tuple[float, float] | None:
+    """The point of a fairway's own line nearest a cell's middle, within FAIRWAY_SNAP_CELLS."""
+    best, at = FAIRWAY_SNAP_CELLS**2, None
+    pr, pc = r + 0.5, c + 0.5  # the lines are in cell edges' numbers: a cell's middle is half a cell on
+    for tr in range((r >> 4) - 1, (r >> 4) + 2):
+        for tc in range((c >> 4) - 1, (c >> 4) + 2):
+            seg = grid.fw_lines.get((tr, tc))
+            for i in range(0, len(seg) if seg else 0, 4):
+                r0, c0, r1, c1 = seg[i], seg[i + 1], seg[i + 2], seg[i + 3]
+                dr, dc = r1 - r0, c1 - c0
+                ll = dr * dr + dc * dc
+                f = 0.0 if ll <= 0 else min(1.0, max(0.0, ((pr - r0) * dr + (pc - c0) * dc) / ll))
+                qr, qc = r0 + dr * f, c0 + dc * f
+                d = (qr - pr) ** 2 + (qc - pc) ** 2
+                if d < best:
+                    best, at = d, (qr - 0.5, qc - 0.5)
+    return at
 
 
 # --- the search ----------------------------------------------------------------------------
@@ -310,7 +389,12 @@ def _cost_table() -> list[float]:
     return out
 
 
-def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed_kn: float) -> dict[str, Any] | None:
+def exposure_table(weight: float) -> list[float]:
+    return [1 + weight * i / 255 for i in range(256)]
+
+
+def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed_kn: float,
+                 expo: bytes | None = None, weight: float = 0.0) -> dict[str, Any] | None:
     """The quickest way for a motor boat: {"cells": [(r, c)...], "seconds", "cost": per cell}."""
     flags, limit, w = grid.flags, grid.limit, grid.w
     mult = _cost_table()
@@ -318,6 +402,9 @@ def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed
     has_limits = any(limit) if limit else False
     lim_v = [v] + [min(v, kn * KN) for kn in range(1, 256)]
     cell = grid.cell_m
+    if not expo or weight <= 0:
+        expo, weight = bytes(len(flags)), 0.0
+    ex = exposure_table(weight)
     moves = []
     for d in (0, 2, 4, 6, 8, 10, 12, 14):
         dr, dc, through = _DIRS[d]
@@ -347,7 +434,7 @@ def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed
             if through and not (flags[u + through[0]] and flags[u + through[1]]):
                 continue
             step = dist / (lim_v[limit[n]] if has_limits else v)
-            nc = cost + step * mult[f]
+            nc = cost + step * mult[f] * ex[expo[n]]
             if nc < g[n]:
                 g[n] = nc
                 t[n] = tu + step
@@ -360,7 +447,7 @@ def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed
         cells.append(prev[cells[-1]])
     cells.reverse()
     return {"cells": [(i // w, i % w) for i in cells], "seconds": t[e], "g": [g[i] for i in cells],
-            "t": [t[i] for i in cells]}
+            "t": [t[i] for i in cells], "expo": expo, "weight": weight}
 
 
 @lru_cache(maxsize=1)
@@ -530,7 +617,8 @@ def _line_cells(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[in
     return out
 
 
-def line_cost(grid: Grid, a: tuple[int, int], b: tuple[int, int], speed_ms: float, mult: list[float]) -> float:
+def _line_cost(grid: Grid, a: tuple[int, int], b: tuple[int, int], speed_ms: float, mult: list[float],
+              expo: bytes | None = None, ex: list[float] | None = None) -> float:
     """What a straight line between two cells costs (as search_power counts), inf if closed."""
     flags, limit, w = grid.flags, grid.limit, grid.w
     cells = _line_cells(a, b)
@@ -540,21 +628,43 @@ def line_cost(grid: Grid, a: tuple[int, int], b: tuple[int, int], speed_ms: floa
         if not f:
             return math.inf
         lv = limit[r * w + c]
-        total += mult[f] / (min(speed_ms, lv * KN) if lv else speed_ms)
+        m = mult[f] * ex[expo[r * w + c]] if expo else mult[f]
+        total += m / (min(speed_ms, lv * KN) if lv else speed_ms)
     return total / len(cells) * math.hypot(b[0] - a[0], b[1] - a[1]) * grid.cell_m
 
 
-def straighten(grid: Grid, cells: list[tuple[int, int]], g: list[float], speed_ms: float) -> list[int]:
+def straighten(grid: Grid, cells: list[tuple[int, int]], g: list[float], speed_ms: float,
+               expo: bytes | None = None, weight: float = 0.0) -> list[int]:
     """Indices of the cells kept when every stretch that a straight line does as well is
-    replaced by that line: the grid's eight directions leave a staircase otherwise."""
+    replaced by that line: the grid's eight directions leave a staircase otherwise. Then
+    turning points the route does as well without are taken out, so no small kinks stay.
+    A stretch along a fairway is only replaced by a line that is on the fairway too: the
+    route doesn't cut a fairway's bends or run beside it."""
     mult = _cost_table()
+    ex = exposure_table(weight) if expo and weight > 0 else None
+    if ex is None:
+        expo = None
+    flags, w = grid.flags, grid.w
+    on_fw = [0]
+    for r, c in cells:
+        on_fw.append(on_fw[-1] + (1 if flags[r * w + c] & FAIRWAY else 0))
+
+    def cost(i: int, j: int) -> float:
+        """A straight line from cell i to cell j, inf if closed or off a fairway the way keeps to."""
+        had = on_fw[j + 1] - on_fw[i]
+        if had > 3:
+            line = _line_cells(cells[i], cells[j])
+            if sum(1 for r, c in line if flags[r * w + c] & FAIRWAY) < FAIRWAY_KEEP * had - 2:
+                return math.inf
+        return _line_cost(grid, cells[i], cells[j], speed_ms, mult, expo, ex)
+
     keep = [0]
     i, n = 0, len(cells)
     while i < n - 1:
         good, step = i + 1, 2
         while i + step < n:
             j = i + step
-            if line_cost(grid, cells[i], cells[j], speed_ms, mult) <= (g[j] - g[i]) * 1.001 + 1e-6:
+            if cost(i, j) <= (g[j] - g[i]) * STRAIGHT_SLACK + 1e-6:
                 good = j
                 step *= 2
             else:
@@ -562,15 +672,45 @@ def straighten(grid: Grid, cells: list[tuple[int, int]], g: list[float], speed_m
         lo, hi = good, min(n - 1, i + step)
         while hi - lo > 1:  # the furthest between the last that did and the first that didn't
             mid = (lo + hi) // 2
-            if line_cost(grid, cells[i], cells[mid], speed_ms, mult) <= (g[mid] - g[i]) * 1.001 + 1e-6:
+            if cost(i, mid) <= (g[mid] - g[i]) * STRAIGHT_SLACK + 1e-6:
                 lo = mid
             else:
                 hi = mid
-        if hi == n - 1 and lo != hi and line_cost(grid, cells[i], cells[hi], speed_ms, mult) <= (g[hi] - g[i]) * 1.001 + 1e-6:
+        if hi == n - 1 and lo != hi and cost(i, hi) <= (g[hi] - g[i]) * STRAIGHT_SLACK + 1e-6:
             lo = hi
         keep.append(lo)
         i = lo
+    for _ in range(4):
+        changed = False
+        # Turning points the route does as well without.
+        j = 1
+        while j < len(keep) - 1:
+            a, m, b = keep[j - 1], keep[j], keep[j + 1]
+            if cost(a, b) <= (cost(a, m) + cost(m, b)) * DROP_SLACK + 1e-6:
+                del keep[j]
+                changed = True
+            else:
+                j += 1
+        # Two turning points close together become one where that does as well: a small
+        # step round a shoal turns into a single bend.
+        j = 1
+        while j < len(keep) - 2:
+            a, m1, m2, b = keep[j - 1], keep[j], keep[j + 1], keep[j + 2]
+            (r1, c1), (r2, c2) = cells[m1], cells[m2]
+            if math.hypot(r2 - r1, c2 - c1) * grid.cell_m <= MERGE_M:
+                now = cost(a, m1) + cost(m1, m2) + cost(m2, b)
+                best = min(((cost(a, k) + cost(k, b), k) for k in {m1, (m1 + m2) // 2, m2}), key=lambda t: t[0])
+                if best[0] <= now * DROP_SLACK + 1e-6:
+                    keep[j:j + 2] = [best[1]]
+                    changed = True
+                    continue
+            j += 1
+        if not changed:
+            break
     return keep
+
+
+line_cost = _line_cost
 
 
 def _open_line(grid: Grid, a: tuple[int, int], b: tuple[int, int]) -> bool:
@@ -606,10 +746,17 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
              start: tuple[float, float], end: tuple[float, float]) -> dict[str, Any]:
     """The answer for the panel: points, how each stretch is travelled, and the sums."""
     flags, w = grid.flags, grid.w
-    points = [[round(v, 6) for v in grid.latlon(*cells[i])] for i in idx]
+    # A turning point on a fairway goes onto the fairway's own line, not the middle of its cell.
+    at = []
+    for n, i in enumerate(idx):
+        r, c = cells[i]
+        snapped = on_fairway(grid, r, c) if 0 < n < len(idx) - 1 and flags[r * w + c] & FAIRWAY else None
+        at.append(snapped or (r, c))
+    points = [[round(v, 6) for v in grid.latlon(*p)] for p in at]
     hows = []
     sums: dict[str, float] = {}
-    shallow = fairway = 0.0
+    shallow = fairway = exposed = 0.0
+    expo = found.get("expo") if found.get("weight") else None
     for a, b in zip(idx, idx[1:]):
         on = _line_cells(cells[a], cells[b])
         fl = [flags[r * w + c] for r, c in on]
@@ -618,6 +765,8 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
         on_fw = sum(1 for f in fl if f & FAIRWAY) / len(fl)
         shallow += metres * marginal
         fairway += metres * on_fw
+        if expo:
+            exposed += metres * sum(1 for r, c in on if expo[r * w + c] >= 255 * EXPOSED_FROM) / len(on)
         if sail:
             run = found["how"][a + 1:b + 1] or ["s"]
             code = max(set(run), key=run.count)
@@ -646,6 +795,7 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
     return {"points": points, "hows": "".join(hows), "metres": round(metres), "seconds": round(found["seconds"]),
             "nm": {names[k]: round(v / NM, 1) for k, v in sums.items()},
             "shallow_nm": round(shallow / NM, 1), "fairway_nm": round(fairway / NM, 1),
+            "exposed_nm": round(exposed / NM, 1) if expo else None,
             "snap_m": [round(d0), round(d1)]}
 
 
@@ -740,11 +890,12 @@ class SmartRouter:
                     if near_finland(block_bounds(bx, by)):
                         missing.append((bx, by))
                         continue
-                    got = (await in_thread(render_base, bx, by, w, h), None)
+                    got = (await in_thread(render_base, bx, by, w, h), None, [])
                     grid.coarse += 1
                 cls.paste(got[0], (left, top))
                 if got[1] is not None:
                     fw.paste(got[1], (left, top))
+                    add_fairway_lines(grid, got[2], left, top)
         grid.missing = len(missing)
         if missing and (self._downloading is None or self._downloading.done()):
             self._downloading = asyncio.create_task(self._download(missing))
@@ -792,11 +943,14 @@ class SmartRouter:
             if sail:
                 out = await self._sail(grid, a, b, start, end, depart or time.time(), style)
             else:
-                found = await in_thread(search_power, grid, a, b, speed_kn)
+                shelter = await self._shelter(grid, boat, depart)
+                expo = await in_thread(exposure, grid, shelter.get("wind_from")) if shelter["weight"] > 0 else None
+                found = await in_thread(search_power, grid, a, b, speed_kn, expo, shelter["weight"])
                 out = None
                 if found:
                     idx = await in_thread(self._shape_power, grid, found, speed_kn)
                     out = describe(grid, found["cells"], idx, found, False, start, end)
+                    out["shelter"] = shelter
         if not out:
             why = (f"Chart data for {grid.missing} of the {count} areas along the way is still downloading. "
                    "Try again in a minute." if grid.missing else
@@ -816,10 +970,40 @@ class SmartRouter:
             warnings.append("Part of the way is outside the chart data: only a coarse coastline is known there.")
         return {**base, **out, "need": round(need, 1)}
 
+    async def _shelter(self, grid: Grid, boat: dict[str, Any], depart: float | None) -> dict[str, Any]:
+        """How much open water counts longer for this boat, from the wind forecast for the
+        middle of the area at the hour of leaving: {"weight", "wind_ms", "wind_from", "at"}."""
+        base = float(boat.get("shelter") or 0)
+        out: dict[str, Any] = {"weight": base, "wind_ms": None, "wind_from": None, "at": None}
+        if base <= 0 or self.dayscore is None:
+            return out
+        lat, lon = grid.latlon(grid.h / 2, grid.w / 2)
+        try:
+            air, _sea, _errors = await asyncio.wait_for(
+                self.dayscore.conditions([(round(lat, 2), round(lon, 2), 0.0)]), 20)
+        except Exception as err:  # noqa: BLE001 - planned for shelter all round then
+            _LOGGER.info("Route planning without the wind forecast: %s", err)
+            return out
+        if air is None or not air.times or "ms" not in air.values:
+            return out
+        when = depart or time.time()
+        j = min(range(len(air.times)), key=lambda i: abs(air.times[i] - when))
+        ms = air.values["ms"][0][j]
+        if ms is None:
+            return out
+        low, high = SHELTER_WIND
+        out["weight"] = round(base * min(high, max(low, ms / boat["wind"][0])), 2)
+        out["wind_ms"] = round(ms, 1)
+        out["at"] = air.times[j]
+        d = air.values["dir"][0][j] if "dir" in air.values else None
+        if d is not None and ms >= 3:
+            out["wind_from"] = round(d)
+        return out
+
     @staticmethod
     def _shape_power(grid: Grid, found: dict[str, Any], speed_kn: float) -> list[int]:
         cells = found["cells"]
-        idx = straighten(grid, cells, found["g"], max(0.5, speed_kn) * KN)
+        idx = straighten(grid, cells, found["g"], max(0.5, speed_kn) * KN, found.get("expo"), found.get("weight") or 0)
         tol = 0.4
         while len(idx) > MAX_POINTS and tol < 6:
             sub = [cells[i] for i in idx]
@@ -897,5 +1081,6 @@ def numbers() -> dict[str, Any]:
             "pad_min_m": PAD_MIN_M, "pad_share": PAD_SHARE, "pad_max_m": PAD_MAX_M,
             "marginal_share": MARGINAL_SHARE, "rock_clear_m": ROCK_CLEAR_M, "shore_clear_m": SHORE_CLEAR_M,
             "near_shore_m": NEAR_SHORE_M, "near_shore_cost": NEAR_SHORE_COST, "marginal_cost": MARGINAL_COST,
-            "fairway_cost": FAIRWAY_COST, "fairway_margin_m": DRAUGHT_MARGIN, "snap_max_m": SNAP_MAX_M,
+            "fairway_cost": FAIRWAY_COST, "shelter_radius_m": SHELTER_RADIUS_M, "shelter_upwind_m": SHELTER_UPWIND_M,
+            "shelter_land_share": SHELTER_LAND_SHARE, "shelter_wind": SHELTER_WIND, "fairway_margin_m": DRAUGHT_MARGIN, "snap_max_m": SNAP_MAX_M,
             "wind_grid": WIND_GRID, "headings": 16}

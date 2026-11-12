@@ -570,7 +570,7 @@ details.sources ul { margin-top: 4px; }
 }
 .stats-tiles .tile strong { font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stats-tiles .tile span { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stats-tiles .tile em { font-style: normal; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats-tiles .tile em { font-style: normal; font-size: 11px; line-height: 1.25; color: var(--muted); }
 .stats-tiles .tile em.up { color: #15803d; }
 .stats-tiles .tile em.down { color: #b45309; }
 /* A narrow column (phones, the side panel's Stats column): two by two, the number beside its label. */
@@ -994,7 +994,7 @@ body.sky-open .leaflet-control-container { visibility: hidden; }
   position: fixed;
   z-index: 1500;
   left: 50%;
-  top: calc(var(--top, 10px) + var(--topbar-h, 52px) + 10px);
+  top: calc(var(--top, 10px) + var(--topbar-h, 52px) + 54px); /* under the weather pill's row */
   transform: translateX(-50%);
   display: flex;
   align-items: center;

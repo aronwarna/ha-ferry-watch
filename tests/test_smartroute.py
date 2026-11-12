@@ -57,13 +57,13 @@ def test_block_cells_from_chart_layers():
         "fline": [{"type": "Feature", "properties": {"mitoitussyvays": 2.0, "jnro": 1},
                    "geometry": {"type": "LineString", "coordinates": [at(0.05, 0.9), at(0.95, 0.9)]}}],
     })
-    cls, fw = S.render_block(layers, 100, 100, 1.1, 0.6, 100.0)
+    cls, fw, lines = S.render_block(layers, 100, 100, 1.1, 0.6, 100.0)
     px = cls.load()
     assert px[10, 10] == 2 and px[25, 25] == 1 and px[60, 20] == 1 and px[50, 95] == 0
     assert px[75, 40] == 0  # the shallow sounding closes its cell
     assert 255 in (fw.load()[50, 89], fw.load()[50, 90])
     # The sailing boat: the 0-3 m band is closed, and the 2.0 m fairway is too shallow.
-    cls, fw = S.render_block(layers, 100, 100, 2.5, 1.9, 100.0)
+    cls, fw, lines = S.render_block(layers, 100, 100, 2.5, 1.9, 100.0)
     assert cls.load()[60, 20] == 0 and cls.load()[10, 10] == 2 and not fw.getbbox()
 
 
@@ -194,3 +194,77 @@ def test_corridor_and_cell_size_grow_with_the_trip():
     assert S.cell_size((0, 0, 200, 200), 60, S.MAX_CELLS) is None
     x, y = lonlat_to_mercator(24.6, 59.97)
     assert x > 0 and y > 0
+
+
+# --- shelter, fairways and smooth lines (0.54) -------------------------------------------------
+
+def island_coast(w=300, h=160):
+    """Open sea in the south, a row of islands half way up, a sheltered channel behind them."""
+    grid = S.Grid(1164, 594, 1164, 594, 80.0)
+    grid.w, grid.h = w + 2 * S.BORDER, h + 2 * S.BORDER
+    cls = Image.new("L", (grid.w, grid.h), 2)
+    cls.paste(0, (0, 0, grid.w, 20))  # the mainland
+    for x in range(10, w, 26):  # islands with gaps between them
+        cls.paste(0, (x, 45, x + 20, 60))
+    S.finish(grid, cls, Image.new("L", (grid.w, grid.h), 0))
+    return grid
+
+
+def test_small_boat_keeps_behind_the_islands_in_wind():
+    grid = island_coast()
+    a, b = (64 + S.BORDER, 5 + S.BORDER), (64 + S.BORDER, 295 + S.BORDER)  # both just outside the islands
+    plain = S.search_power(grid, a, b, 20)
+    assert min(r for r, _ in plain["cells"]) >= 60 + S.BORDER  # the straight way, outside
+    expo = S.exposure(grid, 180)  # wind from the south, off the open sea
+    assert expo[(120 + S.BORDER) * grid.w + 150] > 240  # open sea
+    assert expo[(35 + S.BORDER) * grid.w + 20 + S.BORDER] < 60  # behind an island
+    found = S.search_power(grid, a, b, 20, expo, 1.2)
+    inside = sum(1 for r, _ in found["cells"] if r < 45 + S.BORDER) / len(found["cells"])
+    assert inside > 0.7
+    idx = S.SmartRouter._shape_power(grid, found, 20)
+    out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
+    assert out["exposed_nm"] < 0.25 * out["metres"] / 1852
+    # A northerly: the islands' south side is the lee, the channel's north shore still shelters.
+    assert S.exposure(grid, 0)[(64 + S.BORDER) * grid.w + 20 + S.BORDER] < expo[(64 + S.BORDER) * grid.w + 20 + S.BORDER]
+
+
+def test_route_stays_on_a_fairway_and_on_its_line():
+    grid = S.Grid(1164, 594, 1164, 594, 80.0)
+    grid.w, grid.h = 240 + 2 * S.BORDER, 120 + 2 * S.BORDER
+    cls = Image.new("L", (grid.w, grid.h), 2)
+    fw = Image.new("L", (grid.w, grid.h), 0)
+    line = [(10.3, 60.4), (100.6, 60.4), (130.2, 40.7), (230.5, 40.7)]  # x, y: a fairway with a dog-leg
+    from PIL import ImageDraw
+    ImageDraw.Draw(fw).line(line, fill=255, width=1)
+    S.add_fairway_lines(grid, [line], 0, 0)
+    S.finish(grid, cls, fw)
+    a, b = (60, 10), (40, 230)
+    found = S.search_power(grid, a, b, 20)
+    on = sum(1 for r, c in found["cells"] if grid.flags[r * grid.w + c] & S.FAIRWAY) / len(found["cells"])
+    assert on > 0.9  # not a line of its own beside the fairway or across its bend
+    idx = S.SmartRouter._shape_power(grid, found, 20)
+    assert len(idx) <= 6
+    out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
+    assert out["nm"].get("fairway", 0) > 0.9 * out["metres"] / 1852
+    # The turning points lie on the fairway's own line (its bends), not in the middle of cells.
+    bends = [grid.latlon(y - 0.5, x - 0.5) for x, y in line[1:3]]
+    for p in out["points"][1:-1]:
+        assert min(distance_m(*p, *q) for q in bends) < 60
+
+
+def test_no_small_kinks_in_open_water():
+    grid = open_grid(w=200, h=80)
+    found = S.search_power(grid, (10 + S.BORDER, 5 + S.BORDER), (60 + S.BORDER, 195 + S.BORDER), 20)
+    assert len(S.SmartRouter._shape_power(grid, found, 20)) == 2  # one straight line
+
+
+def test_shelter_weight_follows_the_wind():
+    grid = island_coast()
+    router = S.SmartRouter(None, FakeWeather(200, 12))
+    _, buster = S.boats.boat("buster_m")
+    got = asyncio.run(router._shelter(grid, buster, None))
+    assert got["wind_ms"] == 12 and got["wind_from"] == 200 and got["weight"] == round(0.7 * 2.0, 2)
+    calm = asyncio.run(S.SmartRouter(None, FakeWeather(200, 1))._shelter(grid, buster, None))
+    assert calm["weight"] == round(0.7 * 0.35, 2) and calm["wind_from"] is None
+    assert asyncio.run(S.SmartRouter(None, FakeWeather(0, 5, fail=True))._shelter(grid, buster, None))["weight"] == 0.7
+    assert asyncio.run(router._shelter(grid, S.boats.boat("sail35")[1], None))["weight"] == 0
