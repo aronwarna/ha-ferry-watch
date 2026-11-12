@@ -33,13 +33,15 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
-from .ais import HEADERS
 from .config import USER_AGENT
 from .geo import distance_m, point_in_polygon
 
 _LOGGER = logging.getLogger(__name__)
 
-NAUTICAL_URL = "https://meri.digitraffic.fi/api/nautical-warning/v1/warnings/active"
+# Nautical warnings left Digitraffic in early 2026; since 13 Jan 2026 Traficom publishes them
+# in its open spatial data service, as three layers by shape.
+TRAFICOM_OPEN_WFS = "https://julkinen.traficom.fi/inspirepalvelu/avoin/wfs"
+NAUTICAL_LAYERS = ("avoin:navigational_warnings_p", "avoin:navigational_warnings_l", "avoin:navigational_warnings_a")
 CAP_URL = "https://alerts.fmi.fi/cap/feed/atom_en-GB.xml"
 VAYLA_WFS = "https://avoinapi.vaylapilvi.fi/vaylatiedot/vesivaylatiedot/wfs"
 STRUCTURES = {  # kind -> Väylävirasto layer
@@ -68,10 +70,14 @@ def _ts(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return value / 1000 if value > 1e11 else float(value)
     if isinstance(value, str) and value:
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
+        text = value.strip()
+        for candidate in (text.replace("Z", "+00:00"), text.rstrip("Z"), text[:19], text[:10]):
+            try:
+                return datetime.fromisoformat(candidate).timestamp()
+            except ValueError:
+                continue
+        if re.fullmatch(r"\d{10,13}", text):
+            return _ts(int(text))
     return None
 
 
@@ -166,32 +172,74 @@ def _text(value: Any) -> str | None:
 
 # --- nautical warnings ---------------------------------------------------------------------
 
+_LANG_ORDER = ("en", "eng", "fi", "fin", "sv", "swe", "se")
+_seen_fields: set[tuple[str, ...]] = set()
+
+
+def _like(props: dict[str, Any], *words: str, skip: tuple[str, ...] = ()) -> tuple[str | None, Any]:
+    """(key, value) of the property whose name holds one of these words, earlier words first;
+    among the same field in several languages English, then Finnish, then Swedish. Traficom's
+    field names for the warnings aren't published, so they are found by what they are called."""
+    def lang(key: str) -> int:
+        tail = re.split(r"[^a-z]+", key.lower())[-1]
+        tail = tail if tail in _LANG_ORDER else key.lower()[-2:]
+        return _LANG_ORDER.index(tail) if tail in _LANG_ORDER else len(_LANG_ORDER)
+    for word in words:
+        found = [k for k, v in props.items() if word in k.lower() and v not in (None, "", [], {})
+                 and not any(x in k.lower() for x in skip)]
+        if found:
+            key = min(found, key=lambda k: (lang(k), len(k)))
+            return key, props[key]
+    return None, None
+
+
 def parse_nautical(data: Any, now: float | None = None) -> list[dict[str, Any]]:
     now = now or time.time()
+    mercator = bool((data or {}).get("mercator"))
     out = []
     for feature in (data or {}).get("features") or []:
         props = feature.get("properties") or {}
-        shapes = shapes_of(feature.get("geometry"))
+        shapes = shapes_of(feature.get("geometry"), mercator=mercator)
         at = centre_of(shapes)
         if not _in_area(at):
             continue
-        end = _ts(_first(props, "validityEndTime", "validity_end_time", "endTime"))
+        fields = tuple(sorted(props))
+        if fields not in _seen_fields and len(_seen_fields) < 6:  # for tuning the guesses, via Copy diagnostics
+            _seen_fields.add(fields)
+            _LOGGER.info("Nautical warnings: fields in the data: %s", ", ".join(fields))
+        used: set[str | None] = set()
+
+        def pick(*words: str, skip: tuple[str, ...] = ()) -> Any:
+            key, value = _like(props, *words, skip=skip)
+            used.add(key)
+            return value
+
+        dates = ("time", "date", "pvm", "aika")
+        end = _ts(pick("validityend", "validity_end", "endtime", "end_time", "loppu", "paatty", "until", "valid_to", "validto",
+                       "expir", "cancel"))
         if end and end < now:
             continue
-        out.append({
-            "id": _first(props, "id") or feature.get("id"),
-            "number": _first(props, "number"),
-            "type": _text(_first(props, "typeEn", "typeFi", "typeSv", "type")) or "Nautical warning",
-            "area": _text(_first(props, "areasEn", "areasFi", "areasSv", "areas")),
-            "place": _text(_first(props, "locationEn", "locationFi", "locationSv", "location")),
-            "text": _text(_first(props, "contentsEn", "contentsFi", "contentsSv", "contents")),
-            "text_fi": _text(_first(props, "contentsFi", "contentsSv")),
-            "start": _ts(_first(props, "validityStartTime", "validity_start_time", "startTime")),
+        item = {
+            "id": pick("warningid", "warning_id") or feature.get("id") or props.get("id"),
+            "number": pick("number", "numero", "nro", skip=dates),
+            "type": _text(pick("type", "tyyppi", "category", "luokka")) or "Nautical warning",
+            "area": _text(pick("areas", "area", "alue", "sea")),
+            "place": _text(pick("location", "sijainti", "paikka", "place", "position")),
+            "text": _text(pick("contents", "content", "sisalto", "sisältö", "text", "teksti", "description", "kuvaus",
+                               "message", "viesti")),
+            "start": _ts(pick("validitystart", "validity_start", "starttime", "start_time", "alku", "valid_from", "validfrom",
+                              "start")),
             "end": end,
-            "published": _ts(_first(props, "publishingTime", "creationTime", "created")),
+            "published": _ts(pick("publish", "julkai", "creat", "issue", "luonti")),
             "at": at,
             "shapes": shapes,
-        })
+        }
+        item["text_fi"] = item["text"]
+        # Whatever else the data says, so nothing is lost if a guess above missed.
+        item["props"] = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in list(props.items())[:40]
+                         if k not in used and isinstance(v, (str, int, float)) and not isinstance(v, bool) and v != ""
+                         and not re.search(r"(?i)^(objectid|fid|gid|shape|geom)", k) and len(str(v)) <= 600}
+        out.append(item)
         if len(out) >= MAX_WARNINGS:
             break
     out.sort(key=lambda w: -(w["published"] or w["start"] or 0))
@@ -489,7 +537,17 @@ class Notices:
     async def _nautical(self) -> Any:
         if "nautical" in self.fake:
             return self.fake["nautical"]()
-        return await self._json(NAUTICAL_URL, headers=HEADERS)
+        params = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "srsName": "EPSG:3857",
+                  "outputFormat": "application/json", "count": "2000"}
+        answers = await asyncio.gather(*(self._json(TRAFICOM_OPEN_WFS, {**params, "typeNames": layer})
+                                         for layer in NAUTICAL_LAYERS), return_exceptions=True)
+        good = [a for a in answers if isinstance(a, dict)]
+        if not good:  # all three failed: say why
+            raise next(a for a in answers if isinstance(a, BaseException))
+        for layer, a in zip(NAUTICAL_LAYERS, answers):
+            if isinstance(a, BaseException):
+                _LOGGER.warning("Nautical warnings: %s could not be read: %s", layer, a)
+        return {"mercator": True, "features": [f for a in good for f in a.get("features") or []]}
 
     async def _cap(self) -> Any:
         if "cap" in self.fake:

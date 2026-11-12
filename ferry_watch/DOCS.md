@@ -257,7 +257,7 @@ most every 30 minutes, only while the chart view is shown. Switch it off under
 **On the map → Warnings and waterways** has three switches. They work on every
 map type.
 
-- **Nautical warnings**: Fintraffic's warnings to mariners for Finnish waters,
+- **Nautical warnings**: the navigational warnings for Finnish waters (from Traficom),
   such as firing exercises, works in a fairway, marks missing or moved and
   things adrift. Each shows as an amber diamond with "!", with its line or area
   dashed in the same colour. Tap the diamond for the text, the place and how
@@ -746,7 +746,7 @@ by name.
 - Terrain for the sunset spots: [Mapzen terrain tiles](https://registry.opendata.aws/terrain-tiles/) on AWS Open Data (in Europe mostly from EU-DEM; © the providers listed there).
 - Stars and constellations: [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD 3-Clause), from the HYG star database. Planet orbits: JPL's approximate Keplerian elements.
 - Ice chart: Finnish Ice Service (FMI), via E.U. Copernicus Marine Service Information (Baltic sea ice concentration and thickness charts).
-- Nautical warnings: Digitraffic (Fintraffic), CC BY 4.0. Sea weather warnings: Finnish Meteorological Institute, CC BY 4.0.
+- Nautical warnings: Traficom's open spatial data service (navigational warnings), CC BY 4.0. Sea weather warnings: Finnish Meteorological Institute, CC BY 4.0.
 - Bridges, locks, canals and speed limit areas: Väylävirasto, CC BY 4.0.
 - Terrain map: National Land Survey of Finland (maastokartta), CC BY 4.0.
 - Harbours: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL, via the Overpass API.

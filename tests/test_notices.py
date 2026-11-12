@@ -74,3 +74,23 @@ def test_speed_limits_on_a_route(tmp_path):
     assert (tmp_path / "structures.json.gz").is_file()
     n2 = notices.Notices(tmp_path, None, {"wfs": lambda *a: 1 / 0})  # read from disk, the service not asked
     assert len(asyncio.run(n2.structures())) == 3
+
+
+def test_nautical_from_traficom_layers_with_unknown_field_names():
+    from ferrywatch import notices as n
+    x, y = n._merc(59.95, 24.45) if hasattr(n, "_merc") else (None, None)
+    data = {"mercator": True, "features": [{
+        "type": "Feature", "id": "navigational_warnings_p.7",
+        "geometry": {"type": "Point", "coordinates": [x, y]},
+        "properties": {"OBJECTID": 7, "warning_number": 123, "type_fi": "Paikallisvaroitus", "type_en": "Local warning",
+                       "location_fi": "Porkkala", "content_fi": "Viitta poissa", "content_en": "Spar buoy missing",
+                       "validity_start": "2026-11-01T08:00:00Z", "validity_end": None,
+                       "publishing_time": "2026-11-01T07:30:00Z", "source": "VTS"},
+    }]}
+    w = n.parse_nautical(data, now=1794470000)
+    assert len(w) == 1
+    w = w[0]
+    assert w["type"] == "Local warning" and w["text"] == "Spar buoy missing" and w["number"] == 123
+    assert w["place"] == "Porkkala" and w["start"] and w["published"] and w["end"] is None
+    assert abs(w["at"][0] - 59.95) < 1e-3 and abs(w["at"][1] - 24.45) < 1e-3
+    assert w["props"].get("source") == "VTS" and "OBJECTID" not in w["props"]

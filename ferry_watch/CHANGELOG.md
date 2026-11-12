@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.51.1
+
+- Nautical warnings could not be read ("404 Not Found"): they were removed from Fintraffic's
+  Digitraffic this year and are now published by Traficom. They are read from there now.
+  The popup also shows every detail the data carries under "All details".
+
 ## 0.51.0
 
 - The inner route outlook now checks itself. Every chance it gives for a coming sailing is
