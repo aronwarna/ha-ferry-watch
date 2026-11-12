@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.53.0
+
+- Route tool: pick your **boat** (Buster M, Buster XL, an 8 m aluminium cabin boat, or a
+  35 ft sailboat with 1.9 m draught). The boat sets the depth it needs, its cruising speed
+  and its own wind, gust and wave limits for Boating weather. Draught and speed can still
+  be changed by hand.
+- New route mode **Automatic**, next to Straight and Fairways: the app plans a way over
+  water deep enough for the boat, on or off the marked fairways, round islands, rocks and
+  shoals, keeping off the shore and slowing down in speed limit areas. Water where the
+  chart only gives a depth range that may be too shallow (0–3 m for a small boat) is
+  avoided where it can be, and drawn amber and dashed where the route does use it.
+  Planning only: check the route on the chart.
+- **Sailing routes from the wind forecast**: for the sailboat, Automatic works like race
+  weather routing. It reads the wind hour by hour and works out the **Fastest** route and
+  a **Comfortable** one (less beating, less strong wind and waves). Both are drawn, with
+  the time each takes; tap the other one to take it. Beating stretches are dashed. Tap an
+  hour in Boating weather to plan for leaving then.
+- The route is now **coloured by the expected conditions**: a green, amber or red band
+  under the line for the hour you picked in Boating weather.
+- **Speed limit areas** are shown on the map while you plan a route (red dashed outline
+  with the limit), and can be left on with a new switch in Layers.
+- Long trips: Automatic plans well past 50 NM in one go (150 NM and more; the first plan of a long leg can take a minute), and the speed
+  limits are checked on long routes too.
+- "Boat and planning numbers" at the bottom of the route panel lists every number used.
+
 ## 0.52.0
 
 - The sea ice layer no longer covers the islands: it is cut to the water, like the wave layer.

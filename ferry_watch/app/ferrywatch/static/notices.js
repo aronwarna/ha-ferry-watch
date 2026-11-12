@@ -27,8 +27,9 @@
       nautical: store.get("fw-nautical") !== "0",
       seawarn: store.get("fw-seawarn") === "1",
       structures: store.get("fw-structures") !== "0",
+      limitAreas: store.get("fw-limitAreas") === "1",
     };
-    const layers = { nautical: L.layerGroup(), seawarn: L.layerGroup(), structures: L.layerGroup(), limits: L.layerGroup() };
+    const layers = { nautical: L.layerGroup(), seawarn: L.layerGroup(), structures: L.layerGroup(), limits: L.layerGroup(), limitAreas: L.layerGroup() };
     const data = { nautical: null, weather: null, structures: null };
     const errors = {};
     const loadedAt = {};
@@ -192,7 +193,7 @@
       onChange?.();
     }
     function apply() {
-      for (const name of ["nautical", "seawarn", "structures"]) {
+      for (const name of ["nautical", "seawarn", "structures"]) { // (limitAreas: see loadAreas)
         if (on[name]) {
           if (!map.hasLayer(layers[name])) layers[name].addTo(map);
           load(name);
@@ -208,6 +209,7 @@
       apply();
     }
     map.on("moveend", () => {
+      loadAreas();
       if (on.structures) drawStructures();
       if (on.seawarn && !map._popup) drawWeather(); // the signs follow the view, but not from under an open popup
     });
@@ -230,7 +232,66 @@
         { title: "Bridges, locks and canals", color: "#0e7490", checked: on.structures, count: on.structures && s != null ? `${s}` : "",
           note: `${fail("structures")}Väylävirasto's opening bridges, locks and lock canals, from zoom ${STRUCT_MIN_Z}, with clearance and size where the data has them. Fixed bridges are on the chart itself.`,
           onChange: async (v) => set("structures", v) },
+        { title: "Speed limit areas", color: "#dc2626", checked: on.limitAreas, count: on.limitAreas && la.areas ? `${la.areas.length} in view` : "",
+          note: `${la.error ? `Couldn't be read just now (${la.error}). ` : ""}Väylävirasto's speed limit areas, from zoom ${AREAS_MIN_Z}: a red dashed outline, tinted, with the limit in km/h. They always show while you plan a route.`,
+          onChange: async (v) => { set("limitAreas", v); loadAreas(); } },
       ];
+    }
+
+    // --- speed limit areas in view (with the Layers switch, and always while planning a route) ---
+    const AREAS_MIN_Z = 10;
+    const la = { areas: null, bounds: null, error: null, seq: 0, routeOpen: false };
+    function drawAreas() {
+      layers.limitAreas.clearLayers();
+      const z = map.getZoom(), view = map.getBounds();
+      for (const a of la.areas || []) {
+        const poly = L.polygon(a.ring, { color: "#dc2626", weight: 1.5, dashArray: "5 5", fillColor: "#dc2626", fillOpacity: 0.07, interactive: false }).addTo(layers.limitAreas);
+        const b = poly.getBounds();
+        if (z < 11 || !view.intersects(b)) continue;
+        // The sign where the area shows: in the middle of what is in view, if that is in it.
+        const south = Math.max(b.getSouth(), view.getSouth()), north = Math.min(b.getNorth(), view.getNorth());
+        const west = Math.max(b.getWest(), view.getWest()), east = Math.min(b.getEast(), view.getEast());
+        let at = [(south + north) / 2, (west + east) / 2];
+        if (!inRing(at, a.ring)) at = [b.getCenter().lat, b.getCenter().lng];
+        if (!inRing(at, a.ring)) continue;
+        const size = map.latLngToContainerPoint(b.getNorthWest()).distanceTo(map.latLngToContainerPoint(b.getSouthEast()));
+        if (size < 60) continue;
+        L.marker(at, { interactive: false, keyboard: false, icon: L.divIcon({ className: "limit-sign area", html: `<span>${Math.round(a.kmh)}</span>`, iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(layers.limitAreas);
+      }
+    }
+    function inRing(p, ring) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i], b = ring[j];
+        if ((a[0] > p[0]) !== (b[0] > p[0]) && p[1] < ((b[1] - a[1]) * (p[0] - a[0])) / (b[0] - a[0]) + a[1]) inside = !inside;
+      }
+      return inside;
+    }
+    async function loadAreas() {
+      const want = (on.limitAreas || la.routeOpen) && map.getZoom() >= AREAS_MIN_Z;
+      if (!want) { layers.limitAreas.remove(); return; }
+      if (!map.hasLayer(layers.limitAreas)) layers.limitAreas.addTo(map);
+      const view = map.getBounds();
+      if (la.bounds && la.bounds.contains(view)) { drawAreas(); return; }
+      const b = view.pad(0.5), seq = ++la.seq;
+      try {
+        const got = await api(`api/speed-limits?bbox=${b.getSouth().toFixed(4)},${b.getWest().toFixed(4)},${b.getNorth().toFixed(4)},${b.getEast().toFixed(4)}`);
+        if (seq !== la.seq) return;
+        la.areas = got.areas || [];
+        la.bounds = got.too_big ? null : b;
+        la.error = null;
+      } catch (err) {
+        if (seq !== la.seq) return;
+        la.error = String(err.message || err).slice(0, 120);
+        la.bounds = null;
+      }
+      drawAreas();
+      onChange?.();
+    }
+    function routeOpen(open) {
+      if (open === la.routeOpen) return;
+      la.routeOpen = open;
+      loadAreas();
     }
 
     // --- speed limits on the planned route ---
@@ -297,7 +358,7 @@
     }
 
     apply();
-    return { rows, route, apply, get here() { return data.weather?.here || []; }, get limits() { return rl.data; } };
+    return { rows, route, routeOpen, apply, get here() { return data.weather?.here || []; }, get limits() { return rl.data; } };
   }
 
   window.FerryNotices = { create };

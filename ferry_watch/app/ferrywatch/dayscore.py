@@ -3,7 +3,7 @@
 For each whole hour of the next two days the route is followed at the boat's speed and the
 forecast read where the boat would be, when it would be there: wind, gusts, waves, rain,
 visibility and daylight. Each counts as good, okay or bad against the limits of the chosen
-boat size, and the hour takes the worst of them all along the way, with the reasons and
+boat (boats.py), and the hour takes the worst of them all along the way, with the reasons and
 where on the route they bite.
 
 The weather comes for the route's own points rather than the colour layers' 33 km grid:
@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
-from . import forecast, marine
+from . import boats, forecast, marine
 from .geo import distance_m
 from .stations import parse_coverage
 from .sunset import sun_position
@@ -47,16 +47,9 @@ KN = 1852 / 3600  # m/s in a knot
 DARK_SUN = -6.0  # the sun below this (civil dusk) counts as dark
 SHELTER_FROM_KM, SHELTER_FULL_KM, SHELTER_MIN = 2.0, 8.0, 0.5
 
-# Each limit: (okay from, bad from). Visibility is the other way round (okay below, bad below).
-BOATS: dict[str, dict[str, Any]] = {
-    "small": {"title": "Small open boat", "wind": (5, 8), "gust": (9, 13), "wave": (0.3, 0.6),
-              "rain": (0.5, 2.5), "vis": (4, 1)},
-    "medium": {"title": "Small boat", "wind": (6, 10), "gust": (10, 15), "wave": (0.5, 1.0),
-               "rain": (0.5, 3), "vis": (4, 1)},
-    "large": {"title": "Cabin boat", "wind": (8, 13), "gust": (13, 19), "wave": (0.8, 1.6),
-              "rain": (1, 5), "vis": (3, 0.8)},
-}
-DEFAULT_BOAT = "medium"
+# Each boat's limits are in boats.py: (okay from, bad from); visibility the other way round.
+BOATS = boats.BOATS
+DEFAULT_BOAT = boats.DEFAULT_BOAT
 
 FMI_PARAMS = [("WindSpeedMS", "ms"), ("WindGust", "gust"), ("WindDirection", "dir"), ("Precipitation1h", "rain"),
               ("Temperature", "t"), ("Visibility", "vis")]
@@ -348,7 +341,7 @@ def shelter(cell_km: float | None) -> float:
 
 def score_hours(pts: list[tuple[float, float, float]], air: Series | None, sea: Series | None, speed_kn: float,
                 boat: str, now: float, errors: dict[str, str] | None = None) -> dict[str, Any]:
-    limits = BOATS.get(boat) or BOATS[DEFAULT_BOAT]
+    boat, limits = boats.boat(boat)
     total = pts[-1][2]
     speed = max(0.5, float(speed_kn)) * KN
     trip = total / speed
@@ -361,9 +354,9 @@ def score_hours(pts: list[tuple[float, float, float]], air: Series | None, sea: 
                 break
             out.append(_hour(pts, air, sea, cell_km, dep, speed, limits))
     return {
-        "boat": boat if boat in BOATS else DEFAULT_BOAT,
+        "boat": boat,
         "boats": {k: v["title"] for k, v in BOATS.items()},
-        "limits": {k: v for k, v in limits.items() if k != "title"},
+        "limits": {k: limits[k] for k in ("wind", "gust", "wave", "rain", "vis")},
         "nm": round(total / 1852, 2), "trip_s": round(trip),
         "samples": [[p[0], p[1], round(p[2] / 1852, 2)] for p in pts],
         "hours": out,

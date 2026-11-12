@@ -28,7 +28,10 @@
 })(typeof self !== "undefined" ? self : this, () => {
   "use strict";
 
-  const newLeg = (fw) => ({ fw: Boolean(fw), path: [] });
+  // fw: false (straight), true (along the fairways) or "auto" (the add-on's own way over open
+  // water for the boat, api/smartroute: a planned leg like a fairway one, marked auto).
+  const newLeg = (fw) => (fw === "auto" ? { fw: true, auto: true, path: [] } : { fw: Boolean(fw), path: [] });
+  const modeOf = (leg) => (leg.auto ? "auto" : leg.fw);
   const fairwayLegs = (legs, list) => list.filter((i) => i >= 0 && i < legs.length && legs[i].fw);
   const bend = (p) => [p[0], p[1], 1];
   const via = (p) => [p[0], p[1], 2];
@@ -82,9 +85,10 @@
     return out;
   }
 
-  // What a section is: "fw" (automatic fairway legs, through any via points), "line" (one
-  // straight leg) or "own" (the user's own line, through bends).
+  // What a section is: "fw" (automatic fairway legs, through any via points), "auto" (the add-on's own way
+  // over open water), "line" (one straight leg) or "own" (the user's own line, through bends).
   function sectionKind(legs, a, b) {
+    if (legs.slice(a, b).every((l) => l.auto)) return "auto";
     if (legs.slice(a, b).every((l) => l.fw)) return "fw";
     return b - a > 1 ? "own" : "line";
   }
@@ -101,7 +105,7 @@
   function moveStop(stops, legs, i, p) {
     stops[i] = like(stops[i], p);
     const touched = fairwayLegs(legs, [i - 1, i]);
-    for (const k of touched) legs[k] = newLeg(true);
+    for (const k of touched) legs[k] = newLeg(modeOf(legs[k]));
     return touched;
   }
 
@@ -112,7 +116,7 @@
     if (!legs.length) return [];
     if (i === 0) { legs.shift(); return []; }
     if (i >= legs.length) { legs.pop(); return []; }
-    const fw = legs[i - 1].fw && legs[i].fw;
+    const fw = legs[i - 1].fw && legs[i].fw && (legs[i - 1].auto || legs[i].auto ? "auto" : true);
     legs.splice(i - 1, 2, newLeg(fw));
     return fairwayLegs(legs, [i - 1]);
   }
@@ -149,8 +153,9 @@
   // A via point at p on fairway leg i: the leg becomes two, planned to it and on from it.
   // Returns the legs to plan; the via point is stop i + 1.
   function insertVia(stops, legs, i, p) {
+    const mode = modeOf(legs[i]); // an automatic leg stays automatic either side
     stops.splice(i + 1, 0, via(p));
-    legs.splice(i, 1, newLeg(true), newLeg(true));
+    legs.splice(i, 1, newLeg(mode), newLeg(mode));
     return [i, i + 1];
   }
 
@@ -201,7 +206,7 @@
       wp.push(n);
       n += 1 + (legs[i] && legs[i].fw ? legs[i].path.length : 0);
     });
-    const plan = { wp, fw: legs.map((l) => (l.fw ? 1 : 0)) };
+    const plan = { wp, fw: legs.map((l) => (l.auto ? 2 : l.fw ? 1 : 0)) };
     if (bends.length) plan.bend = bends;
     if (vias.length) plan.via = vias;
     return { points: pts, plan };
@@ -217,7 +222,7 @@
     const bends = new Set(Array.isArray(plan.bend) ? plan.bend : []);
     const vias = new Set(Array.isArray(plan.via) ? plan.via : []);
     const stops = wp.map((k, i) => (vias.has(i) ? via(pts[k]) : bends.has(i) ? bend(pts[k]) : plain(pts[k])));
-    const legs = fw.map((f, k) => (f ? { fw: true, path: pts.slice(wp[k] + 1, wp[k + 1]).map(plain) } : null));
+    const legs = fw.map((f, k) => (f ? { fw: true, ...(f === 2 ? { auto: true } : {}), path: pts.slice(wp[k] + 1, wp[k + 1]).map(plain) } : null));
     // A straight leg with points between its stops (not saved by this tool): those are stops too.
     for (let k = legs.length - 1; k >= 0; k--) {
       if (legs[k]) continue;
@@ -231,7 +236,7 @@
 
   return {
     points, legPoints, sections, sectionOf, sectionPoints, sectionKind, isBend, isVia, isOwn, addStop, moveStop,
-    removeStop, unpackLeg, turnStop, insertBend, insertVia, toVia, viaToBend, setSection, setLegMode, toSaved,
+    removeStop, unpackLeg, modeOf, turnStop, insertBend, insertVia, toVia, viaToBend, setSection, setLegMode, toSaved,
     fromSaved,
   };
 });

@@ -1183,3 +1183,27 @@ body.menu-sheet .sky-note { display: none; }
 
 /* the time bar while it shows a forecast frame of the radar */
 .timebar.is-forecast .player-info { color: #c2410c; font-weight: 600; }
+
+/* --- route tool: boats, the sailing choice, planning numbers (0.53) --- */
+.route-mode .rw-boat { max-width: 150px; flex: 0 1 auto; }
+.route-sail { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 2px; }
+.route-sail p { margin: 0; flex: 1 1 180px; line-height: 1.35; }
+.rp-leg.auto { border-left-style: dashed; border-left-width: 3px; padding-left: 17px; }
+.leg-label.alt { cursor: pointer; }
+.leg-label.alt span { color: #7c3aed; border-color: rgba(124, 58, 237, 0.45); }
+.route-numbers { margin: 4px 0 2px; }
+.route-numbers summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+.route-numbers p { margin: 6px 0; line-height: 1.4; }
+.numbers-scroll { overflow-x: auto; margin: 4px 0; }
+table.numbers { border-collapse: collapse; font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.numbers th, table.numbers td { padding: 2px 6px; border-bottom: 1px solid var(--border); text-align: right; }
+table.numbers th:first-child { text-align: left; }
+table.numbers thead th { color: var(--muted); font-weight: 600; }
+.limit-sign.area span { opacity: 0.9; }
+@media (max-width: 560px) {
+  .route-mode .rw-boat { max-width: 124px; }
+  .route-modes button { padding: 4px 7px; }
+}
+/* The route panel scrolls as a whole when it holds more than fits (weather, sailing, numbers). */
+.route-panel { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.route-panel > * { flex-shrink: 0; }

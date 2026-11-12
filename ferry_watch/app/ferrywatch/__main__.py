@@ -19,6 +19,7 @@ from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .airhistory import AircraftHistory
 from .autoroute import AutoRouter
+from .smartroute import SmartRouter
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .faults import Faults
 from .fleets import FleetManager, FleetMatcher
@@ -222,6 +223,7 @@ class FerryWatch:
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
         self.autoroute = AutoRouter(self.vchart)
+        self.smartroute = SmartRouter(self.vchart, self.dayscore, self.notices)
         fake_ports = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simports import fake_port_calls as fake_ports

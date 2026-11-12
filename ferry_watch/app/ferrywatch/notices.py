@@ -601,12 +601,23 @@ class Notices:
 
     async def route_limits(self, points: list[list[float]], speed_kn: float | None) -> dict[str, Any]:
         """The speed limits a route runs through. The restriction areas are asked for in
-        squares of about 0.2 degrees round the route and kept for some hours."""
+        squares of a degree round the route and kept for some hours."""
         cells = set()
         for lat, lon, _ in route_samples(points, 2000):
             cells.add((math.floor(lat * 5), math.floor(lon * 5)))
-        if len(cells) > 400:
+        if len(cells) > 2000:
             raise ValueError("The route is too long to check")
+        return limits_on_route(points, await self._areas(cells), speed_kn)
+
+    async def limit_areas(self, south: float, west: float, north: float, east: float) -> list[dict[str, Any]]:
+        """The speed limit areas [{kmh, ring}] over an area, for the map and the route planner."""
+        if (north - south) * (east - west) > 40:
+            raise ValueError("The area is too big")
+        cells = {(cy, cx) for cy in range(math.floor(south * 5), math.floor(north * 5) + 1)
+                 for cx in range(math.floor(west * 5), math.floor(east * 5) + 1)}
+        return await self._areas(cells)
+
+    async def _areas(self, cells: set[tuple[int, int]]) -> list[dict[str, Any]]:
         areas: list[dict[str, Any]] = []
         seen = set()
         todo = sorted(cells)
@@ -636,7 +647,7 @@ class Notices:
                 if mark not in seen:
                     seen.add(mark)
                     areas.append(area)
-        return limits_on_route(points, areas, speed_kn)
+        return areas
 
     def status(self) -> dict[str, Any]:
         return {"nautical": self.nautical.status(), "weather": self.weather.status(),

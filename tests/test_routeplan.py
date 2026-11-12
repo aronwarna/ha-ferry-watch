@@ -98,6 +98,23 @@ out.viaRemovedStops = s4;
 const s5 = [A, V.concat(2)], l5 = [{ fw: true, path: [] }];
 P.removeStop(s5, l5, 0);
 out.viaEnd = s5;
+// Automatic legs (planned over open water): kept automatic when a stop moves, goes, or a
+// via point is put on them, and saved as 2.
+const s6 = [A, B, C], l6 = [];
+P.addStop(s6.slice(0, 0), l6, A, "auto");
+const sa = [], la = [];
+P.addStop(sa, la, A, "auto"); out.autoAdd = P.addStop(sa, la, B, "auto"); P.addStop(sa, la, C, false);
+out.autoLeg = copy(la[0]);
+la[0].path = [T1];
+out.autoKinds = P.sections(sa).map(([a, b]) => P.sectionKind(la, a, b));
+out.autoSaved = P.toSaved(sa, la);
+out.autoBack = P.fromSaved(out.autoSaved.points, out.autoSaved.plan).legs.map((l) => [l.fw, Boolean(l.auto), l.path.length]);
+out.autoMoved = P.moveStop(sa, la, 0, [60.001, 24.001]);
+out.autoMovedLeg = copy(la[0]);
+out.autoVia = P.insertVia(sa, la, 0, V);
+out.autoViaLegs = la.map((l) => Boolean(l.auto));
+out.autoSet = P.setSection(sa, la, 0, 3, "auto");
+out.autoSetLegs = la.map((l) => Boolean(l.auto));
 console.log(JSON.stringify(out));
 """
 
@@ -152,3 +169,11 @@ def test_route_plan():
     assert out["toViaFw"] == [False, True, True, False, False]
     assert out["viaRemoved"] == [0] and out["viaRemovedStops"] == [A, C]
     assert out["viaEnd"] == [V]
+    # Automatic legs.
+    assert out["autoAdd"] == [0] and out["autoLeg"] == {"fw": True, "auto": True, "path": []}
+    assert out["autoKinds"] == ["auto", "line"]
+    assert out["autoSaved"]["plan"] == {"wp": [0, 2, 3], "fw": [2, 0]}
+    assert out["autoBack"] == [[True, True, 1], [False, False, 0]]
+    assert out["autoMoved"] == [0] and out["autoMovedLeg"] == {"fw": True, "auto": True, "path": []}
+    assert out["autoVia"] == [0, 1] and out["autoViaLegs"] == [True, True, False]
+    assert out["autoSet"] == [0] and out["autoSetLegs"] == [True]

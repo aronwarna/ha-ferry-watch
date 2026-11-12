@@ -215,8 +215,10 @@
     <div class="route-mode">
       <div id="route-modes" class="segmented route-modes" role="group" aria-label="New legs">
         <button type="button" data-mode="line" aria-pressed="true">Straight</button>
-        <button type="button" data-mode="fw" aria-pressed="false">Along fairways</button>
+        <button type="button" data-mode="fw" aria-pressed="false">Fairways</button>
+        <button type="button" data-mode="auto" aria-pressed="false">Automatic</button>
       </div>
+      <select id="route-boat" class="rw-boat small" aria-label="Boat" title="The boat: sets the depth it needs, its speed and its wind, gust and wave limits"></select>
       <label id="route-draught-box" class="route-draught small" title="The boat's draught: fairways shallower than this plus 0.3 m are left out" hidden>Draught <input id="route-draught" type="number" inputmode="decimal" min="0" max="15" step="0.1" aria-label="Draught in metres"> m</label>
     </div>
     <div id="route-find" class="route-find" hidden>
@@ -228,6 +230,13 @@
       <p id="route-hint" class="small muted route-hint" role="status"></p>
       <button type="button" id="route-pick-cancel" class="route-pick-cancel" hidden>Cancel</button>
     </div>
+    <div id="route-sail" class="route-sail" hidden>
+      <div id="sail-styles" class="segmented route-modes" role="group" aria-label="Sailing route">
+        <button type="button" data-style="fast" aria-pressed="true">Fastest</button>
+        <button type="button" data-style="comfort" aria-pressed="false">Comfortable</button>
+      </div>
+      <p id="sail-sum" class="small muted" role="status"></p>
+    </div>
     <div id="route-wx" class="route-wx" hidden>
       <div class="rw-head">
         <button type="button" id="rw-toggle" class="rw-toggle" aria-expanded="true" aria-controls="rw-body">
@@ -235,11 +244,6 @@
           <strong><span class="rw-long">Boating weather</span><span class="rw-short">Weather</span></strong>
           <span id="rw-sum" class="rw-sum small muted"></span>
         </button>
-        <select id="route-boat" class="rw-boat small" aria-label="Boat size for the weather limits" title="Boat size: sets the wind, gust and wave limits">
-          <option value="small">Small open boat</option>
-          <option value="medium">Small boat</option>
-          <option value="large">Cabin boat</option>
-        </select>
       </div>
       <div id="rw-body" class="rw-body">
         <div id="rw-strip" class="rw-strip" role="group" aria-label="Setting off hour by hour: good, okay or bad"></div>
@@ -247,6 +251,10 @@
       </div>
     </div>
     <div id="route-limits" class="route-limits" role="status" hidden></div>
+    <details id="route-numbers" class="route-numbers small">
+      <summary>Boat and planning numbers</summary>
+      <div id="route-numbers-body"></div>
+    </details>
     <div class="route-actions">
       <button type="button" id="route-undo" class="icon-button" aria-label="Undo" title="Undo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
