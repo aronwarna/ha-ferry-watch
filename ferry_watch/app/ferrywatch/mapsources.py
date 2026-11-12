@@ -153,8 +153,45 @@ SOURCES: list[dict[str, Any]] = [
         "attribution": "Seabed © GTK (CC BY 4.0)",
         "box": (59.3, 19.0, 66.0, 30.5), "min_zoom": 8, "max_zoom": 16, "opacity": 0.6,
     },
+    {
+        # NASA's satellite picture of the whole Earth, new each day (VIIRS, ~375 m): sea ice,
+        # algae blooms, snow and clouds as they were today. "{date}" is today's (UTC) after the
+        # afternoon pass over Finland, else yesterday's.
+        "id": "gibs-today", "name": "NASA GIBS", "kind": "xyz", "group": "overlay",
+        "title": "Satellite today (NASA)", "info": "Yesterday's or today's satellite picture (VIIRS, about 375 m): "
+                                                  "ice, algae blooms, snow and clouds as they really were.",
+        "templates": [
+            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/"
+            "{date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg",
+            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/"
+            "{date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg",
+        ],
+        "daily": True, "max_age": 3 * 86400,
+        "attribution": "Satellite © NASA EOSDIS GIBS",
+        "box": (53.0, 9.0, 71.0, 33.0), "min_zoom": 3, "max_zoom": 9, "opacity": 0.9,
+    },
+    {
+        # EMODnet's map of where ships go (AIS hours per km² a month, all ship types), the
+        # newest year the service has. Layer names are read from its list.
+        "id": "emodnet-density", "name": "EMODnet Human Activities", "kind": "wms", "group": "overlay",
+        "url": "https://ows.emodnet-humanactivities.eu/wms",
+        "attribution": "Vessel density © EMODnet Human Activities (CC BY 4.0)",
+        "box": (53.0, 9.0, 66.0, 31.0), "min_zoom": 3, "max_zoom": 12, "discover_only": True,
+        "rules": [
+            {"match": r"(?i)(vessel.?density|vesseldensity|_st_all_avg).*all|all.*(vessel.?density|_avg)",
+             "group": "overlay", "title_too": True, "label": "Ship traffic density", "latest_only": True,
+             "opacity": 0.8, "info": "Where ships go: EMODnet's yearly map of AIS hours per km² (all ship types). "
+                                     "Fairways and ferry lanes stand out."},
+        ],
+    },
 ]
 # fmt: on
+
+
+def daily_date(now: float | None = None) -> str:
+    """The day whose daily satellite picture to show: today's (UTC) once the early
+    afternoon passes over the Baltic are in (13 UTC), else yesterday's."""
+    return time.strftime("%Y-%m-%d", time.gmtime((now if now is not None else time.time()) - 13 * 3600))
 
 
 def mercator_bbox(z: int, x: int, y: int) -> tuple[float, float, float, float]:
@@ -229,7 +266,7 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
             # Prefer the plain name, then larger cm per pixel (two groups in the photo rule).
             cm = m.group(2) if group == "photo" and m.re.groups >= 2 and m.group(2) else None
             rank = (0 if cm is None else 1, -(int(cm) if cm else 0))
-            key = (group, year, label if group == "map" else "")
+            key = (group, year, label if group != "photo" else "")
             if key in picked and picked[key][0] <= rank:
                 break
             box = entry.get("box") or source["box"]
@@ -239,9 +276,18 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
                 "label": label, "title": title or _pretty(name), "layer": name,
                 "format": rule.get("format", "image/png"), "box": [round(v, 4) for v in box],
                 "min_zoom": source.get("min_zoom", 8), "max_zoom": source.get("max_zoom", 18),
-                "attribution": source["attribution"],
+                "attribution": source["attribution"], "info": rule.get("info", ""),
+                "opacity": rule.get("opacity", 1),
             })
             break
+    # Rules that want only the newest year (e.g. yearly traffic maps) keep one layer.
+    for rule in source["rules"]:
+        if rule.get("latest_only"):
+            same = [k for k in picked if k[0] == rule["group"] and k[2] == (rule.get("label") or "")]
+            newest = max(same, key=lambda k: k[1] or 0, default=None)
+            for k in same:
+                if k != newest:
+                    del picked[k]
     return [v for _, v in sorted(picked.values(), key=lambda p: (p[1]["group"], p[1]["year"] or 0, p[1]["label"]))]
 
 
@@ -301,7 +347,7 @@ class MapSources:
         self.fake = fake
         self.cache = TileCache(directory / "tiles", session, CACHE_BYTES)
         for s in SOURCES:
-            self.cache.max_ages[s["id"]] = TILE_MAX_AGE
+            self.cache.max_ages[s["id"]] = s.get("max_age", TILE_MAX_AGE)
         self.found: dict[str, list[dict]] = self.store.kv_get("mapsources_found", {}) or {}
         self.checked: dict[str, dict] = {}
         self._layers: dict[str, dict] = {}
@@ -324,7 +370,12 @@ class MapSources:
                     "z_shown": s.get("z_shown", s.get("min_zoom", 0)), "opacity": s.get("opacity", 1),
                     "attribution": s["attribution"],
                 }
+                if s.get("daily"):
+                    layers[s["id"]]["daily"] = True
         self._layers = layers
+
+    def row(self, layer_id: str) -> dict | None:
+        return self._layers.get(layer_id)
 
     def listing(self) -> dict:
         key = bool(self.store.kv_get("mml_api_key", ""))
@@ -333,7 +384,7 @@ class MapSources:
             src = next(s for s in SOURCES if s["id"] == row["source"])
             if src.get("needs_key") and not key and not self.fake:
                 continue
-            rows.append(row)
+            rows.append({**row, "daily": daily_date()} if row.get("daily") else row)
         return {"layers": rows, "sources": self.sources()}
 
     def sources(self) -> list[dict]:
@@ -422,7 +473,8 @@ class MapSources:
             return [f"{src['url']}?bbox={bbox}&bboxSR=3857&imageSR=3857&size=256,256&format=png32"
                     f"&transparent=true&f=image"]
         key = self.store.kv_get("mml_api_key", "")
-        return [t.format(z=z, x=x, y=y, key=key) for t in src["templates"] if key or "{key}" not in t]
+        date = daily_date()
+        return [t.format(z=z, x=x, y=y, key=key, date=date) for t in src["templates"] if key or "{key}" not in t]
 
     async def tile(self, layer_id: str, z: int, x: int, y: int) -> Path | None:
         row = self._layers.get(layer_id)
@@ -438,6 +490,8 @@ class MapSources:
         for i, url in enumerate(self.tile_urls(row, z, x, y)):
             # Each template has its own folder: Kapsi's copy never stands in for the Land Survey's.
             folder = f"{row['source']}/{row['id']}" + (f"-{i}" if i else "")
+            if row.get("daily"):
+                folder += f"/{daily_date()}"  # a day's picture never stands in for another day's
             path = await self.cache.get(folder, z, x, y, url)
             if path:
                 return path

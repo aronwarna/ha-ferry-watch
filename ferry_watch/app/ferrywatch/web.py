@@ -585,7 +585,9 @@ class Web:
         path = await self.fw.maps.tile(layer, z, x, y)
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
-        return web.FileResponse(path, headers={"Cache-Control": "max-age=2592000", "Content-Type": _image_type(path)})
+        daily = (self.fw.maps.row(layer) or {}).get("daily")
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=21600" if daily else "max-age=2592000",
+                                               "Content-Type": _image_type(path)})
 
     async def buildings_tile(self, request: web.Request) -> web.Response:
         try:

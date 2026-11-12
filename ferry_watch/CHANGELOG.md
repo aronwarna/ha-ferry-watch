@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.62.0
+
+- **Satellite today (NASA)**: a switch in Layers › On every map lays NASA's daily satellite picture
+  (VIIRS, about 375 m, today's after the afternoon pass, else yesterday's) over any map: sea ice,
+  algae blooms, snow and clouds as they really were. Kept 3 days.
+- **Ship traffic density (EMODnet)**: where ships go, from EMODnet's yearly AIS map (all ship types,
+  the newest year the service has; its layer name is read from the service's list each day).
+- The map catalogue can now hold daily pictures ({date} in a template) and keep only a service's
+  newest year of a layer.
+
 ## 0.61.0
 
 - **Where am I**: a locate button (bottom right) centres the map on you: this device's GPS when the

@@ -280,7 +280,8 @@
       store.set(`fw-mo-${row.id}`, on ? "1" : "0");
       let layer = overlayLayers.get(row.id);
       if (on && !layer) {
-        layer = L.tileLayer(`api/maptile/${encodeURIComponent(row.id)}/{z}/{x}/{y}.png`, {
+        // A daily picture's tiles are asked for by date, so yesterday's never come from the browser's cache.
+        layer = L.tileLayer(`api/maptile/${encodeURIComponent(row.id)}/{z}/{x}/{y}.png${row.daily ? `?d=${row.daily}` : ""}`, {
           pane: OVERLAY_PANE, minZoom: row.z_shown ?? row.min_zoom, maxZoom: 20,
           minNativeZoom: row.min_zoom, maxNativeZoom: row.max_zoom, bounds: boxBounds(row.box),
           opacity: row.opacity ?? 1, attribution: row.attribution,
@@ -392,7 +393,7 @@
     // --- Layers rows ------------------------------------------------------------------
     function rows() {
       const out = catalogue.filter((r) => r.group === "overlay").map((r) => ({
-        title: r.title, color: r.id.startsWith("property") ? "#dc2626" : "#a16207", checked: Boolean(overlayOn.get(r.id)),
+        title: r.id === r.source ? r.title : `${r.label}${r.year ? ` (${r.year})` : ""}`, color: r.id.startsWith("property") ? "#dc2626" : "#a16207", checked: Boolean(overlayOn.get(r.id)),
         note: `${r.info || ""} ${failingNote(r.source)}`.trim(),
         onChange: async (on) => { setOverlay(r, on); },
       }));

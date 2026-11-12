@@ -98,3 +98,17 @@ def test_buildings_compact():
     assert rows[1][2] is None and abs(rows[1][0] - 60.1) < 0.06
     assert len(rows) == 2
     assert buildings.covers(9325, 4740) and not buildings.covers(9200, 4800)
+
+
+def test_daily_and_latest_only():
+    assert mapsources.daily_date(86400 * 10 + 12 * 3600) == "1970-01-10"
+    assert mapsources.daily_date(86400 * 10 + 14 * 3600) == "1970-01-11"
+    src = next(s for s in mapsources.SOURCES if s["id"] == "emodnet-density")
+    rows = mapsources.layers_from_names(src, [
+        {"name": "emodnet:2022_st_All_avg", "title": "Vessel density 2022"},
+        {"name": "emodnet:2023_st_All_avg", "title": "Vessel density 2023"},
+        {"name": "emodnet:2023_st_01_avg", "title": "Vessel density 2023 fishing"},
+    ])
+    assert [(r["year"], r["label"], r["group"]) for r in rows] == [(2023, "Ship traffic density", "overlay")]
+    gibs = next(s for s in mapsources.SOURCES if s["id"] == "gibs-today")
+    assert all("{date}" in t for t in gibs["templates"])

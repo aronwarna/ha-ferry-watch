@@ -25,6 +25,9 @@ FAKE_LISTS = {
                 ("paituli:mml_senaatin_kartasto", "Senaatin kartasto 1870-1907"),
                 ("paituli:mml_pitajankartta_1935", "Pitäjänkartta 1935"),
                 ("paituli:corine", "Corine land cover")],
+    "emodnet-density": [("emodnet:2022_st_All_avg", "Vessel density 2022 all ship types"),
+                        ("emodnet:2023_st_All_avg", "Vessel density 2023 all ship types"),
+                        ("emodnet:2023_st_01_avg", "Vessel density 2023 fishing")],
 }
 
 
