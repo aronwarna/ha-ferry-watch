@@ -374,7 +374,11 @@ works out the quickest way through water deep enough.
 - Rocks and shoals are given room as well: the first 100 m off water of uncertain
   depth counts a quarter longer too.
 - Marked fairways deep enough for the boat are always open, so a narrow sound with a
-  fairway stays passable, and count 15 % shorter. Once the route is on a fairway it
+  fairway stays passable, and count shorter than open water: a quarter shorter for
+  Buster M, a fifth for the cabin boat, 15 % for the sailboat. The **green small-craft
+  routes** (the chart's green band) count shorter still, 40 % for Buster M, 35 % for
+  Buster XL and 30 % for the cabin boat, so a small boat follows them even when
+  that is a good deal further. A sheltered fairway beats an open one. Once the route is on a fairway it
   stays on it: it doesn't cut the fairway's bends or run beside it, and its turning
   points lie on the fairway's own line.
 - **Shelter.** For the open boats and the cabin boat, open water counts longer than

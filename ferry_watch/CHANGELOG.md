@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.1
+
+- Automatic routes for the small boats now **prefer marked fairways much more**, and the
+  green small-craft routes on the chart most of all: a Buster follows the green route even
+  when that is a good deal further than a line of its own. Sheltered fairways win over
+  open ones. The panel says how much of the route is along fairways and green routes.
+
 ## 0.54.0
 
 - Automatic routes for the open boats and the cabin boat now **keep to the shelter of the
