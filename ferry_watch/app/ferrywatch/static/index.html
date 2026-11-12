@@ -355,6 +355,12 @@
           </label>
           <p class="small muted note">Long press the drawn chart where it looks wrong: what the chart has there (tiles at zoom 8 to 12 and the depth areas) is saved to Home Assistant's Media folder, under ferry_watch › chart-samples, with a download link. Send the file in so it can be fixed.</p>
         </div>
+        <div class="row-buttons">
+          <button type="button" id="diag-copy">Copy diagnostics</button>
+        </div>
+        <p class="small muted note">A text report of the version, memory, every data source and the latest warnings, to paste to whoever is helping. No keys or passwords are in it.</p>
+        <p class="small" id="diag-result" role="status"></p>
+        <textarea id="diag-text" class="diag-text" readonly hidden aria-label="Diagnostics"></textarea>
       </section>
       <section class="group">
         <h3>Data sources</h3>
@@ -436,6 +442,7 @@
     </div>
   </dialog>
 
+  <script src="static/prefs.js"></script>
   <script src="static/vendor/leaflet/leaflet.js"></script>
   <script src="static/vendor/geoman/leaflet-geoman.min.js"></script>
   <script src="static/vchart.js"></script>
@@ -450,10 +457,10 @@
   <script src="static/fields.js"></script>
   <script src="static/icechart.js"></script>
   <script src="static/algae.js"></script>
-  <script src="static/sky-data.js"></script>
   <script src="static/sky.js"></script>
   <script src="static/reserves.js"></script>
   <script src="static/logbook.js"></script>
   <script src="static/app.js"></script>
+  <script src="static/panel-extras.js"></script>
 </body>
 </html>

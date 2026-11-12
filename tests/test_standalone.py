@@ -143,3 +143,18 @@ def test_home_assistant_is_used_when_it_answers(tmp_path, monkeypatch):
 def test_down_home_assistant_and_no_ntfy_sends_nothing(tmp_path, monkeypatch):
     fw, n, posts = _fw(tmp_path, monkeypatch, DownHA(), ntfy=None)
     assert asyncio.run(n._alert(_passage())) == (False, "Home Assistant not answering")
+
+
+def test_diagnostics_leave_out_secrets_and_whats_new():
+    from ferrywatch import diagnostics
+    text = diagnostics.redact("GET https://x/y?api-key=abc123&z=1 failed; token: hunter22 my-ntfy-topic",
+                              ["my-ntfy-topic", None])
+    assert "abc123" not in text and "hunter22" not in text and "my-ntfy-topic" not in text and "z=1" in text
+    report = diagnostics.report({"memory_mb": 61, "ha_connected": True, "feed": {"connected": True}},
+                                [{"id": "wind", "error": "HTTP 400", "times": [1, 2]}, {"id": "radar", "times": []}])
+    assert "- wind:" in report and "HTTP 400" in report and "- radar: " in report
+    log = "# Changelog\n\n## 0.3.0\n\n- three\n  more\n\n## 0.2.0\n\n- two\n\n## 0.1.0\n\n- one\n"
+    assert [s["version"] for s in diagnostics.whats_new(log, "0.3.0", "0.1.0")] == ["0.3.0", "0.2.0"]
+    assert [s["version"] for s in diagnostics.whats_new(log, "0.3.0")] == ["0.3.0"]
+    assert diagnostics.whats_new(log, "0.3.0", "0.3.0") == []
+    assert diagnostics.whats_new(log, "0.3.0", "0.2.0")[0]["lines"] == ["- three", "  more"]

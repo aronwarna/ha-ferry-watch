@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from . import __version__, config, dayscore, satellite, stats
+from . import __version__, config, dayscore, diagnostics, satellite, stats
 from .airhistory import PERIODS
 from .charts import in_finnish_waters
 from .config import DEV
@@ -45,6 +45,8 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+STATIC_TYPES = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml",
+                ".json": "application/json"}
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
 # A passage replay shows its whole trip, port to port, but no more than this either side.
@@ -99,6 +101,7 @@ async def ingress_only(request: web.Request, handler):
     return await handler(request)
 
 
+PREF_MAX_KEYS, PREF_MAX_LEN = 200, 2000
 ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
 MAX_ROUTES = 100
 MAX_ROUTE_POINTS = 500
@@ -204,6 +207,10 @@ class Web:
         r.add_get("/ship/{mmsi}", self.index)
         r.add_get("/api/state", self.state)
         r.add_get("/api/health", self.health)
+        r.add_get("/api/prefs", self.prefs)
+        r.add_post("/api/prefs", self.set_prefs)
+        r.add_get("/api/diagnostics", self.diagnostics)
+        r.add_get("/api/changelog", self.changelog)
         r.add_get("/api/tails", self.tails)
         r.add_get("/api/track/{mmsi}", self.track)
         r.add_get("/api/photo/{mmsi}", self.photo)
@@ -263,7 +270,8 @@ class Web:
         r.add_get("/api/logbook/{trip_id}", self.logbook_trip)
         r.add_post("/api/logbook/{trip_id}", self.logbook_edit)
         r.add_delete("/api/logbook/{trip_id}", self.logbook_delete)
-        r.add_static("/static/", STATIC, append_version=False)
+        r.add_get("/static/{path:.+}", self.static_file)
+        self._static_gz: dict[str, tuple[int, bytes]] = {}  # path -> (mtime ns, gzipped body)
         if DEV:
             # Every chart symbol drawn by vchart.js, for checking against Traficom's key.
             r.add_get("/dev/symbols", self.dev_symbols)
@@ -277,11 +285,13 @@ class Web:
         html = (STATIC / "index.html").read_text()
         # A version on the panel's own files makes phones load the new ones after an update
         # instead of what they cached.
-        for name in ("static/vchart.js", "static/navmath.js", "static/routeplan.js", "static/app.js", "static/app.css",
-                     "static/extra.css", "static/playback.js", "static/history.js", "static/weather-stats.js", "static/stats-more.js",
-                     "static/overlays.js", "static/wind.js", "static/fields.js", "static/algae.js", "static/icechart.js", "static/sky-data.js",
-                     "static/sky.js", "static/reserves.js", "static/logbook.js"):
-            html = html.replace(f'"{name}"', f'"{name}?v={__version__}"')
+        # (Every script and stylesheet, the map library's included: with the version on, the
+        # browser may keep the file for good, see static_file.)
+        html = re.sub(r'(src|href)="(static/[^"?]+\.(?:js|css))"', rf'\1="\2?v={__version__}"', html)
+        # What is switched on, kept on the NAS so the phone and the desktop agree
+        # (static/prefs.js puts it in place before the other scripts read it).
+        prefs = json.dumps(self.fw.store.kv_get("prefs", {})).replace("<", "\\u003c")
+        html = html.replace("<head>", f"<head>\n  <script>window.FW_PREFS = {prefs};</script>", 1)
         # Ingress serves the panel under a per-session prefix; a <base> keeps relative
         # URLs working on deep links like /ship/<mmsi>.
         prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
@@ -289,6 +299,72 @@ class Web:
         if base:
             html = html.replace("<head>", f'<head>\n  <base href="{base}">', 1)
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    async def static_file(self, request: web.Request) -> web.StreamResponse:
+        """The panel's own files. Scripts and styles go out gzipped (1.3 MB becomes 0.4), and
+        one asked for with its version (?v=) is kept by the browser for good: the next
+        version has another address. The gzipped copies are made once and kept (~0.4 MB)."""
+        rel = request.match_info["path"]
+        path = (STATIC / rel).resolve()
+        if STATIC.resolve() not in path.parents or not path.is_file():
+            raise web.HTTPNotFound()
+        headers = {"Cache-Control": "public, max-age=31536000, immutable" if "v" in request.query else "no-cache"}
+        kind = STATIC_TYPES.get(path.suffix)
+        if not kind or "gzip" not in request.headers.get("Accept-Encoding", ""):
+            return web.FileResponse(path, headers=headers)
+        mtime = path.stat().st_mtime_ns
+        etag = f'"{mtime:x}"'
+        headers.update({"ETag": etag, "Vary": "Accept-Encoding"})
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        kept = self._static_gz.get(rel)
+        if not kept or kept[0] != mtime:
+            kept = (mtime, await asyncio.to_thread(lambda: gzip.compress(path.read_bytes(), 6)))
+            self._static_gz[rel] = kept
+        return web.Response(body=kept[1], content_type=kind, charset="utf-8",
+                            headers={**headers, "Content-Encoding": "gzip"})
+
+    async def prefs(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.store.kv_get("prefs", {}), headers={"Cache-Control": "no-store"})
+
+    async def set_prefs(self, request: web.Request) -> web.Response:
+        """Changed preferences {key: text, or null to forget it}; only the panel's own fw- keys."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(text="Expected an object")
+        prefs = dict(self.fw.store.kv_get("prefs", {}))
+        for key, value in body.items():
+            if not isinstance(key, str) or not key.startswith("fw-") or len(key) > 64:
+                raise web.HTTPBadRequest(text="Not a preference")
+            if value is None:
+                prefs.pop(key, None)
+            elif isinstance(value, str) and len(value) <= PREF_MAX_LEN:
+                prefs[key] = value
+            else:
+                raise web.HTTPBadRequest(text="Preferences are short texts")
+        if len(prefs) > PREF_MAX_KEYS:
+            raise web.HTTPBadRequest(text="Too many preferences")
+        self.fw.store.kv_set("prefs", prefs)
+        return web.json_response({"ok": True})
+
+    async def diagnostics(self, request: web.Request) -> web.Response:
+        fw = self.fw
+        listing = await fw.overlays.listing(set()) if fw.overlays else []
+        secrets = [config.HA_TOKEN, config.PASSWORD, config.NTFY_URL, fw.store.kv_get("mml_api_key")]
+        text = diagnostics.report(await fw.state(), listing, secrets)
+        return web.Response(text=text, headers={"Cache-Control": "no-store"})
+
+    async def changelog(self, request: web.Request) -> web.Response:
+        """What changed up to this version since the one the panel last saw (?since=)."""
+        for path in (Path(__file__).parents[1] / "CHANGELOG.md", Path(__file__).parents[2] / "CHANGELOG.md"):
+            if path.is_file():
+                text = await asyncio.to_thread(path.read_text)
+                break
+        else:
+            text = ""
+        since = request.query.get("since") or None
+        return web.json_response({"version": __version__, "sections": diagnostics.whats_new(text, __version__, since)},
+                                 headers={"Cache-Control": "no-store"})
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "version": __version__})
@@ -612,7 +688,16 @@ class Web:
         )
 
     async def stats(self, request: web.Request) -> web.Response:
-        return web.json_response(stats.payload(self.fw.store))
+        # Every passage there is, so it goes out gzipped (about a sixth of the size), and not
+        # at all when the panel already has this very answer.
+        body = json.dumps(stats.payload(self.fw.store)).encode()
+        etag = f'"{hashlib.sha1(body).hexdigest()[:20]}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        resp = web.Response(body=body, content_type="application/json", headers=headers)
+        resp.enable_compression()
+        return resp
 
     async def set_fleet(self, request: web.Request) -> web.Response:
         fleet_id = request.match_info["fleet_id"]

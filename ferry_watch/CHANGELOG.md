@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.49.0
+
+- The panel opens faster: its own files are sent compressed (about 0.4 MB instead of 1.3)
+  and kept by the browser until the next update, so a second open fetches none of them.
+  Stats is sent compressed too, and the star catalogue only when the sky map is opened.
+- **What's new**: after an update, a small card lists what changed since the version this
+  browser last saw.
+- Settings is shorter: each box folds, and only Alerts starts open. Which ones are open is
+  remembered.
+- What is switched on (layers, weather layers, Stats choices, boat size and speed for the
+  route tool) is now kept on the NAS, so the phone and the desktop agree. The map type,
+  the open tab and unsaved routes stay with each device.
+- Settings › Troubleshooting › **Copy diagnostics**: a text report of the version, memory,
+  every data source and the latest warnings, to paste when something looks wrong. Keys
+  and passwords are left out.
+- Alerts in Settings name your phone as Home Assistant does instead of showing only its
+  entity id, and the first areas lose the "(from old setup)" in their names.
+- Stats says "Loading the passages…" instead of opening blank, and offers to try again if
+  they can't be loaded.
+- The "Tonight" sky note no longer covers the open menu.
+
 ## 0.48.0
 
 - Ferry Watch can now also run as its own container, outside Home Assistant, so tracking

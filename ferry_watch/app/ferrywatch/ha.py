@@ -108,6 +108,14 @@ class HAClient:
         fix = _fix(state)
         return (fix["lat"], fix["lon"], time.time() - fix["ts"]) if fix else None
 
+    async def friendly_name(self, entity: str) -> str | None:
+        """The name Home Assistant shows for an entity ("Galaxy S22"), for Settings."""
+        try:
+            state = await self.get_state(entity)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return None
+        return ((state or {}).get("attributes") or {}).get("friendly_name")
+
     async def phone_state(self, entity: str) -> dict[str, Any] | None:
         """The phone's last reported position for the map ({lat, lon, ts, accuracy}), without
         asking it for a new one. Quiet on errors: the panel asks every minute."""

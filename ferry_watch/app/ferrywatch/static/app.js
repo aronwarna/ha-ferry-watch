@@ -1752,6 +1752,36 @@
   const menuModal = () => menu.open && menu.matches(":modal");
   const tabScroll = new Map();
 
+  // Stats while its numbers are on the way (the first time), and when they don't come.
+  function openStats(pane) {
+    let status = pane.querySelector(".pane-status");
+    if (!status) {
+      status = document.createElement("div");
+      status.className = "pane-status";
+      pane.prepend(status);
+    }
+    const first = !statsData;
+    pane.classList.toggle("pane-loading", first);
+    status.hidden = !first;
+    status.textContent = "Loading the passages…";
+    loadStats().then(() => {
+      status.hidden = true;
+      pane.classList.remove("pane-loading");
+      pane.scrollTop = tabScroll.get("stats") || 0;
+    }).catch((err) => {
+      console.error(err);
+      if (statsData) return; // the earlier numbers stay up
+      status.hidden = false;
+      status.textContent = "Couldn't load the stats. ";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "small";
+      retry.textContent = "Try again";
+      retry.addEventListener("click", () => openStats(pane));
+      status.append(retry);
+    });
+  }
+
   function setTab(name) {
     const current = menu.querySelector("[data-pane]:not([hidden])");
     if (current) tabScroll.set(current.dataset.pane, current.scrollTop);
@@ -1764,7 +1794,7 @@
     const pane = menu.querySelector(`[data-pane="${name}"]`);
     pane.scrollTop = tabScroll.get(name) || 0;
     store.set("fw-tab", name);
-    if (name === "stats") loadStats().then(() => { pane.scrollTop = tabScroll.get(name) || 0; }).catch(console.error);
+    if (name === "stats") openStats(pane);
     if (name === "layers") renderLayers();
     if (name === "settings") renderSettings();
     if (name === "logbook") logbook?.load();
@@ -1785,13 +1815,14 @@
       document.body.classList.add("menu-open");
       menu.show();
     } else {
+      document.body.classList.add("menu-sheet");
       menu.showModal();
     }
     setTab(tab || (["stats", "logbook", "layers", "settings"].includes(saved) ? saved : "ships"));
     menu.focus(); // not the first tab, which would show a focus ring
   }
   menu.addEventListener("close", () => {
-    document.body.classList.remove("menu-open", "menu-wide");
+    document.body.classList.remove("menu-open", "menu-wide", "menu-sheet");
     menu.style.transform = "";
   });
   $("ships-button").addEventListener("click", () => {
@@ -2118,6 +2149,15 @@
 
   // Alerts in one box: where they go, when they're held back, the areas, which ships alert,
   // the last one sent, and the add-on options (changed in Home Assistant).
+  // "notify.mobile_app_samsung_galaxy_s22" reads "Samsung Galaxy S22 (companion app)".
+  function serviceName(service) {
+    if (!service) return "–";
+    const m = /^notify\.mobile_app_(.+)$/.exec(service);
+    if (!m) return service;
+    const words = m[1].split("_").map((w) => (/\d/.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)));
+    return `${words.join(" ")} (companion app)`;
+  }
+
   function renderAlertBox() {
     const st = lastState;
     if (!st) return;
@@ -2139,10 +2179,10 @@
     const last = st.last_notification;
     const lastShip = last && ships.get(last.mmsi)?.info.name;
     const facts = [
-      ["Sent to", (st.ha_connected ? a.notify_service || "–" : a.ntfy ? "ntfy" : "–")
+      ["Sent to", (st.ha_connected ? serviceName(a.notify_service) : a.ntfy ? "ntfy" : "–")
         + (st.ha_connected && a.ntfy ? ", or ntfy when Home Assistant doesn't answer" : "")],
       ["Only in my area", a.require_phone_area === false ? "No: alerts go out wherever you are" : `Yes: ${where}`],
-      ["Phone position", a.phone_entity || "–"],
+      ["Phone position", a.phone_name ? `${a.phone_name} (${a.phone_entity})` : a.phone_entity || "–"],
       ["Feed problems", a.notify_feed_problems === false ? "Not alerted" : "Alerted when ship data stops coming"],
       ["Last alert", last ? `${lastShip ? `${shortName(lastShip)}, ` : ""}${fmtWhen(last.ts)}` : "None yet"],
     ];

@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from . import __version__, memory
+from . import __version__, diagnostics, memory
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .airhistory import AircraftHistory
@@ -71,6 +71,7 @@ class FerryWatch:
         self.store = Store(DATA_DIR / "ferrywatch.db")
         self._seed_ships()
         self._seed_zones()
+        self._rename_old_zones()
         self.tracker = Tracker(self.store)
         self.tracker.load()
         self.fleets = FleetManager(self.store)
@@ -108,6 +109,7 @@ class FerryWatch:
         self.weather: SeaWeather | None = None
         self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
         self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
+        self.phone_name: str | None = None  # its name in Home Assistant, for Settings
         self._wakers: list[asyncio.Event] = []
         self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
         self._keep_task: asyncio.Task | None = None
@@ -129,6 +131,15 @@ class FerryWatch:
         for zone in DEFAULT_ZONES:
             self.store.add_zone(zone["name"], zone["role"], zone["shape"], zone["points"])
         self.store.kv_set("zones_seeded", True)
+
+    def _rename_old_zones(self) -> None:
+        """The first areas were named "... (from old setup)"; once, drop that ending."""
+        if self.store.kv_get("zones_renamed"):
+            return
+        for zone in self.store.zones():
+            if zone["name"].endswith(" (from old setup)"):
+                self.store.update_zone(zone["id"], zone["name"][:-len(" (from old setup)")], zone["points"])
+        self.store.kv_set("zones_renamed", True)
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -418,6 +429,8 @@ class FerryWatch:
     async def _phone_tick(self) -> None:
         if not self.ha or not self.options.phone_entity:
             return
+        if self.phone_name is None:  # once; "" when Home Assistant has none
+            self.phone_name = await self.ha.friendly_name(self.options.phone_entity) or ""
         fix = await self.ha.phone_state(self.options.phone_entity)
         phone = {**fix, "max_age": self.options.phone_max_age_minutes * 60} if fix else None
         if phone != self.phone:
@@ -579,7 +592,7 @@ class FerryWatch:
             "require_phone_area": o.require_phone_area, "notify_feed_problems": o.notify_feed_problems,
             "phone_max_age_minutes": o.phone_max_age_minutes,
             "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
-            "standalone": config.STANDALONE, "ntfy": bool(config.NTFY_URL),
+            "standalone": config.STANDALONE, "ntfy": bool(config.NTFY_URL), "phone_name": self.phone_name or None,
         }
 
     def _register_weather_layers(self) -> None:
@@ -716,6 +729,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger().addHandler(diagnostics.RING)  # the latest warnings, for Copy diagnostics
     fw = FerryWatch(options)
     await fw.start()
     stop = asyncio.Event()

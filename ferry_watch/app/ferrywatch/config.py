@@ -51,12 +51,12 @@ DEFAULT_SHIPS = [
 # works out of the box. Points are [lat, lon]. Replace them in the area editor.
 DEFAULT_ZONES = [
     {
-        "name": "Inner route (from old setup)", "role": "inner", "shape": "polygon",
+        "name": "Inner route", "role": "inner", "shape": "polygon",
         "points": [[60.095422, 24.923673], [59.869197, 24.303396], [59.796673, 23.608556],
                    [60.123167, 24.434314], [60.104759, 24.918643]],
     },
     {
-        "name": "My area (from old setup)", "role": "phone", "shape": "polygon",
+        "name": "My area", "role": "phone", "shape": "polygon",
         "points": [[60.1700215, 24.9587688], [60.1598556, 24.8765052], [60.1699175, 24.8186078],
                    [60.1455416, 24.6693898], [60.1305485, 24.4288562], [60.0799264, 24.1265156],
                    [60.0430448, 23.8854389], [59.8100256, 23.5815561], [59.8322057, 24.4000159],
