@@ -201,7 +201,7 @@
       loading = fetch(`api/overlays?times=${encodeURIComponent(on.join(","))}`)
         .then((res) => (res.ok ? res.json() : Promise.reject(new Error(res.statusText))))
         .then((data) => {
-          const live = t != null && t === startTime(barTimes(), now()); // showing the latest
+          const live = t != null && t === startAt(barTimes()); // showing the latest
           skew = data.now - Date.now() / 1000;
           const ids = new Set(data.overlays.map((ov) => ov.id));
           for (const [id, e] of entries) {
@@ -211,7 +211,7 @@
           const times = barTimes();
           if (times.length && (t == null || live || !times.includes(t))) {
             // Showing the latest keeps showing the latest as new frames come in.
-            t = t == null || live ? startTime(times, now()) : times[indexAt(times, t)];
+            t = t == null || live ? startAt(times) : times[indexAt(times, t)];
           }
           render();
           // The menu is drawn again only when what it shows changed (not under a dragged slider).
@@ -262,6 +262,10 @@
         };
         const url = `api/overlay/${ov.id}/${ft}/{z}/{x}/{y}.png`;
         layer = (ov.sea ? seaTiles(url, opts, ov) : L.tileLayer(url, opts)).addTo(map);
+        // Quick frames (the radar) melt into each other over the whole step instead of
+        // jumping: the old one fades out as the new one fades in.
+        const box = layer.getContainer?.();
+        if (box && (ov.frame_ms || 500) <= 600) box.style.transition = `opacity ${Math.round((ov.frame_ms || 500) * 0.95)}ms linear`;
         if (ov.kind === "local") {
           // A tile drawn here may wait for something (the ice chart for the chart's water):
           // asked for again a few times, a little later each time.
@@ -485,6 +489,14 @@
       return box;
     }
 
+    // Where the bar starts: the time nearest now, but for the radar its newest real frame,
+    // not the first forecast one a few minutes after it.
+    function startAt(times) {
+      const s = startTime(times, now());
+      const real = Math.max(0, ...active().map((e) => e.ov.forecast_from || 0));
+      return real && s > real && now() - real < 1800 && times.includes(real) ? real : s;
+    }
+
     function nextTime(times) {
       const i = indexAt(times, t);
       return times.length > 1 ? times[(i + 1) % times.length] : null;
@@ -516,7 +528,9 @@
       range.style.setProperty("--p", `${(i / (times.length - 1)) * 100}%`);
       const label = timeLabel(t, now(), active().every((e) => (e.ov.valid_for || 0) >= 86400));
       clockEl.textContent = label.clock;
-      relEl.textContent = label.rel;
+      const forecast = !label.daily && active().some((e) => e.ov.forecast_from && t > e.ov.forecast_from);
+      relEl.textContent = forecast ? `${label.rel} · forecast` : label.rel;
+      bar.classList.toggle("is-forecast", forecast);
       renderDays(times);
       bar.querySelector('[data-step="-1"]').disabled = i === 0;
       bar.querySelector('[data-step="1"]').disabled = i === times.length - 1;

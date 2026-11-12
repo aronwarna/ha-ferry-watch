@@ -101,6 +101,11 @@ class Overlay:
     pickable: bool = False
     info: Callable[[float], dict[str, Any]] | None = None
     sea: bool = False  # tiles cut to the drawn chart's water by the panel (as the sea layers)
+    # Tiles overlays that carry on past their source's newest frame with pictures made here
+    # (the radar's extrapolation): `future(ts, z, x, y)` gives the path of such a tile, and
+    # `future_from()` the newest real frame's time (None while there is no forecast).
+    future: Callable[[int, int, int, int], Awaitable[Path | None]] | None = None
+    future_from: Callable[[], int | None] | None = None
     sparse: bool = False  # points: a time sends only the points with a value then
 
     def tile_url(self, ts: int, z: int, x: int, y: int) -> str:
@@ -316,6 +321,7 @@ class Overlays:
                 "group": o.group, "icon": o.icon, "static": o.static, "has_value": o.value is not None,
                 "pickable": o.pickable, "info": info,
                 "sea": o.sea,
+                "forecast_from": o.future_from() if o.future_from and times is not None else None,
             })
         return out
 
@@ -350,6 +356,12 @@ class Overlays:
             return None
         if o.kind == "local":
             return await self._local_tile(o, ts, z, x, y)
+        if o.future and o.future_from and (o.future_from() or ts) < ts:
+            try:
+                return await o.future(ts, z, x, y)
+            except Exception as err:  # noqa: BLE001 - the forecast frames are an extra
+                _LOGGER.debug("%s: no forecast tile: %s", o.id, err)
+                return None
         path = await self.cache.get(f"{o.id}/{ts}", z, x, y, o.tile_url(ts, z, x, y))
         self._note(o)
         self._maybe_prune()

@@ -280,7 +280,7 @@ def test_endpoints(tmp_path, monkeypatch):
             assert all(o["times"] is None for o in listing["overlays"]) and listing["now"] > 0
             listing = await (await client.get("/api/overlays?times=rain-radar,wind")).json()
             wind, rain = (next(o for o in listing["overlays"] if o["id"] == i) for i in ("wind", "rain-radar"))
-            assert len(rain["times"]) == 12 and len(wind["times"]) == 49 and rain["frame_ms"] == 500
+            assert len(rain["times"]) == 12 + 24 and rain["forecast_from"] == rain["times"][11] and len(wind["times"]) == 49 and rain["frame_ms"] == 500
             assert wind["check"] is None  # no station readings to compare with
             r = await client.get(f"/api/overlay/rain-radar/{rain['times'][-1]}/8/145/74.png")
             assert r.status == 200 and r.headers["Content-Type"] == "image/png"
