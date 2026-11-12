@@ -1340,3 +1340,4 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 .sr-text { display: flex; flex-direction: column; min-width: 0; }
 .sr-empty { padding: 8px; }
 .fw-toast { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 2000; padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: calc(100vw - 32px); }
+.link-like { color: var(--accent, #2563eb); cursor: pointer; text-decoration: underline; }

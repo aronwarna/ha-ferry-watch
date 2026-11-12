@@ -30,3 +30,14 @@ def test_depth_at_without_block(tmp_path: Path):
         def _path(self, bx, by):
             return tmp_path / f"{bx}_{by}.blk"
     assert here.depth_at(FakeChart(), 59.95, 24.4) is None
+
+
+def test_gpx_waypoints():
+    text = """<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1">
+    <wpt lat="60.1" lon="24.5"><name>Hauki</name><sym>Fishing Hot Spot Facility</sym><desc>deep</desc></wpt>
+    <wpt lat="60.2" lon="24.6"><name>Yö</name><sym>Anchor</sym></wpt>
+    <wpt lat="60.3" lon="24.7"><name>X</name><sym>Flag, Blue</sym></wpt></gpx>"""
+    rows = pins.gpx_waypoints(text)
+    assert [r["kind"] for r in rows] == ["fish", "anchor", "pin"] and rows[0]["note"] == "deep"
+    with pytest.raises(ValueError):
+        pins.gpx_waypoints('<!DOCTYPE x [<!ENTITY a "b">]><gpx/>')

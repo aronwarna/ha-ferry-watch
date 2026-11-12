@@ -6293,6 +6293,7 @@
     }
     const target = shipFromUrl();
     if (target && ships.has(target)) focusShip(target);
+    else if (here.fromHash()) { /* a place link */ }
     else if (!focusFromNotification() && !viewRestored) fitAllShips();
     connectSocket();
     if (trafficOn) pollTraffic();

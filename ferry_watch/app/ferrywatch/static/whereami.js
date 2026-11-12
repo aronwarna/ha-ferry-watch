@@ -170,9 +170,15 @@
       box.innerHTML = `${head}<div class="here-facts small muted">Looking it up…</div>
         <div class="here-actions"><button type="button" class="chip-btn here-pin">Save as pin</button>
         <button type="button" class="chip-btn here-copy2">Copy</button>
+        <button type="button" class="chip-btn here-link" title="A link that opens the app here">Link</button>
         <a class="chip-btn" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${lat.toFixed(6)},${lon.toFixed(6)}">Google Maps</a></div>`;
       box.querySelector(".here-copy").addEventListener("click", () => copy(seaCoords(lat, lon)));
       box.querySelector(".here-copy2").addEventListener("click", () => copy(`${lat.toFixed(6)}, ${lon.toFixed(6)}`));
+      box.querySelector(".here-link").addEventListener("click", () => {
+        const url = `${location.origin}${location.pathname}${location.search}#at=${lat.toFixed(5)},${lon.toFixed(5)},${map.getZoom()}`;
+        if (navigator.share && matchMedia("(pointer: coarse)").matches) navigator.share({ title: title || "Place", url }).catch(() => {});
+        else copy(url);
+      });
       box.querySelector(".here-pin").addEventListener("click", () => editPin({ lat, lon, kind: "pin", name: title || "" }));
       herePopup = L.popup({ className: "aid-popup here-popup", maxWidth: 320, offset: [0, -4] }).setLatLng(latlng).setContent(box).openOn(map);
       try {
@@ -359,16 +365,40 @@
     function rows() {
       const a = document.createElement("div");
       a.className = "small";
-      a.innerHTML = pins.length ? `<a href="api/pins.gpx" download>Download all as GPX</a> (for the plotter)` : "";
+      a.innerHTML = `${pins.length ? '<a href="api/pins.gpx" download>Download all as GPX</a> (for the plotter) · ' : ""}`
+        + '<label class="link-like">Add waypoints from a GPX file<input type="file" accept=".gpx,application/gpx+xml" hidden></label>';
+      a.querySelector("input").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const res = await fetch("api/pins/import", { method: "POST", body: await file.text() });
+          if (!res.ok) throw new Error(await res.text());
+          const out = await res.json();
+          toast(`${out.added} pins added${out.skipped ? `, ${out.skipped} already there or not usable` : ""}`);
+          if (!pinsOn) setPins(true);
+          await loadPins();
+        } catch (err) { toast(`Couldn't read it: ${err.message || err}`); }
+      });
       return [{
         title: "My pins", color: "#2563eb", checked: pinsOn, count: pins.length ? String(pins.length) : "",
         note: "Your own marks: long-press the map (right-click on a computer), then Save as pin. Kept on the NAS, so the phone and the computer share them.",
-        extra: pins.length ? a : null,
+        extra: a,
         onChange: async (on) => setPins(on),
       }];
     }
 
-    return { rows, whatsHere, myFix, get found() { return found; } };
+    // A link with #at=lat,lon,zoom opens the app there with What's here open.
+    function fromHash() {
+      const at = new URLSearchParams(location.hash.slice(1)).get("at");
+      const m = at && at.match(/^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)(?:,(\d+))?$/);
+      if (!m) return false;
+      const ll = L.latLng(Number(m[1]), Number(m[2]));
+      map.setView(ll, m[3] ? Number(m[3]) : 13);
+      setTimeout(() => whatsHere(ll), 300);
+      return true;
+    }
+
+    return { rows, whatsHere, myFix, fromHash, get found() { return found; } };
   }
 
   window.FerryHere = { create, seaCoords };

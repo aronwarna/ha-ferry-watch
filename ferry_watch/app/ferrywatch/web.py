@@ -292,6 +292,7 @@ class Web:
         r.add_post("/api/pins", self.save_pin)
         r.add_delete("/api/pins/{pin_id}", self.delete_pin)
         r.add_get("/api/pins.gpx", self.pins_gpx)
+        r.add_post("/api/pins/import", self.import_pins)
         r.add_get("/api/places", self.places)
         r.add_get("/api/maptile/{layer}/{z}/{x}/{y}", self.map_tile)
         r.add_get("/api/buildings/{x}/{y}", self.buildings_tile)
@@ -560,6 +561,36 @@ class Web:
         from .pins import pins_gpx
         return web.Response(text=pins_gpx(self.fw.store.kv_get("pins", []) or []), content_type="application/gpx+xml",
                             headers={"Content-Disposition": 'attachment; filename="ferry-watch-pins.gpx"'})
+
+    async def import_pins(self, request: web.Request) -> web.Response:
+        """Waypoints from a GPX file (the plotter's, or another app's) become pins; the same
+        place and name twice is taken once."""
+        from .pins import MAX_PINS, clean_pin, gpx_waypoints
+        raw = await request.content.read(5 * 1024 * 1024 + 1)
+        if len(raw) > 5 * 1024 * 1024:
+            raise web.HTTPRequestEntityTooLarge(max_size=5 * 1024 * 1024, actual_size=len(raw))
+        try:
+            found = gpx_waypoints(raw.decode("utf-8", "replace"))
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        rows = list(self.fw.store.kv_get("pins", []) or [])
+        seen = {(round(p["lat"], 5), round(p["lon"], 5), p.get("name", "")) for p in rows}
+        added = skipped = 0
+        for body in found:
+            try:
+                pin = clean_pin(body)
+            except ValueError:
+                skipped += 1
+                continue
+            key = (round(pin["lat"], 5), round(pin["lon"], 5), pin["name"])
+            if key in seen or len(rows) >= MAX_PINS:
+                skipped += 1
+                continue
+            seen.add(key)
+            rows.append(pin)
+            added += 1
+        self.fw.store.kv_set("pins", rows)
+        return web.json_response({"added": added, "skipped": skipped})
 
     async def places(self, request: web.Request) -> web.Response:
         from .pins import parse_coords

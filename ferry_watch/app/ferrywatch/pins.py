@@ -54,6 +54,33 @@ def pins_gpx(pins: list[dict[str, Any]]) -> str:
     return "\n".join(out) + "\n"
 
 
+GARMIN_SYMBOLS = {"fish": "fish", "anchor": "anchor", "danger": "danger", "hazard": "danger", "swim": "swim",
+                  "camp": "camp", "home": "home", "residence": "home", "scenic": "photo", "photo": "photo"}
+
+
+def gpx_waypoints(text: str) -> list[dict[str, Any]]:
+    """Waypoints (<wpt>) of a GPX file as pin bodies; a Garmin symbol name picks the kind.
+    Entities are refused (no DOCTYPE), so a hostile file can't blow up."""
+    import xml.etree.ElementTree as ET
+
+    if "<!DOCTYPE" in text[:2000].upper() or "<!ENTITY" in text.upper():
+        raise ValueError("not a plain GPX file")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as err:
+        raise ValueError(f"not a GPX file ({err})") from None
+    out = []
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] != "wpt":
+            continue
+        kids = {c.tag.rsplit("}", 1)[-1]: (c.text or "").strip() for c in el}
+        sym = kids.get("sym", "").lower()
+        kind = next((k for word, k in GARMIN_SYMBOLS.items() if word in sym), sym if sym in KINDS else "pin")
+        out.append({"lat": el.get("lat"), "lon": el.get("lon"), "name": kids.get("name", ""),
+                    "note": kids.get("desc") or kids.get("cmt", ""), "kind": kind})
+    return out
+
+
 def parse_coords(q: str) -> tuple[float, float] | None:
     """60.1234 24.5678, 60°07.4'N 24°34.1'E, 60 07.4 N 24 34.1 E -> (lat, lon)."""
     nums = re.findall(r"-?\d+(?:[.,]\d+)?", q)

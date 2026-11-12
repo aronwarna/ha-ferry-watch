@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.63.0
+
+- **Place links**: What's here has a Link button (share sheet on the phone, copy on a computer):
+  the link opens the app at that place with What's here open (`#at=lat,lon,zoom`).
+- **Pins from GPX**: Layers › My pins › "Add waypoints from a GPX file" takes the plotter's
+  waypoints (or another app's); Garmin symbols pick the kind (fishing, anchor, danger, …), and a
+  place already pinned with the same name isn't added twice.
+- Map key lists this device's GPS dot and your pins.
+
 ## 0.62.0
 
 - **Satellite today (NASA)**: a switch in Layers › On every map lays NASA's daily satellite picture
