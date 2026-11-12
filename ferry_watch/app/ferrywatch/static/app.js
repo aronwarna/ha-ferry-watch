@@ -2122,10 +2122,12 @@
     const st = lastState;
     if (!st) return;
     const a = st.alerts || {};
+    const canNotify = st.can_notify ?? st.ha_connected;
     $("notify-status").textContent = st.ha_connected
       ? "A phone alert when one of your ships takes the inner route."
+      : canNotify ? "A phone alert through ntfy when one of your ships takes the inner route. Home Assistant isn't set up, so where your phone is can't be checked."
       : "Not connected to Home Assistant, so no alerts can be sent.";
-    $("notify-test").disabled = !st.ha_connected;
+    $("notify-test").disabled = !canNotify;
     const zones = st.zones || [];
     const areas = zones.filter((z) => z.role === "phone" && z.shape !== "line");
     const ph = phoneFix();
@@ -2137,7 +2139,8 @@
     const last = st.last_notification;
     const lastShip = last && ships.get(last.mmsi)?.info.name;
     const facts = [
-      ["Sent to", a.notify_service || "–"],
+      ["Sent to", (st.ha_connected ? a.notify_service || "–" : a.ntfy ? "ntfy" : "–")
+        + (st.ha_connected && a.ntfy ? ", or ntfy when Home Assistant doesn't answer" : "")],
       ["Only in my area", a.require_phone_area === false ? "No: alerts go out wherever you are" : `Yes: ${where}`],
       ["Phone position", a.phone_entity || "–"],
       ["Feed problems", a.notify_feed_problems === false ? "Not alerted" : "Alerted when ship data stops coming"],
@@ -2153,7 +2156,8 @@
     }));
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
-    dd.innerHTML = `<a href="${esc(a.config_url || "/hassio/dashboard")}" target="_top">Change these in Home Assistant</a> <span class="muted">(the app's Configuration tab)</span>`;
+    if (a.standalone) dd.innerHTML = `<span class="muted">Change these in the container's settings (its FW_… environment values), then restart it.</span>`;
+    else dd.innerHTML = `<a href="${esc(a.config_url || "/hassio/dashboard")}" target="_top">Change these in Home Assistant</a> <span class="muted">(the app's Configuration tab)</span>`;
     dl.append(dt, dd);
 
     const list = $("alert-areas");

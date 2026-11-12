@@ -602,6 +602,61 @@ item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
 (and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 512 MB (the zoomed-out ones, about 10 MB for all of Finland, are kept apart and served as they are). Weather layers are only fetched for the layers switched on while the panel is open. The weather model behind the forecast layers is 21 requests to FMI at most every 3 hours, and the marine forecast 3 to Open-Meteo; each is kept on disk as one small file per hour (about 33 kB each, 1.6 MB a run) and only the hours being shown or worked on are read, so neither is ever in memory whole. The sunset scores are worked out on the NAS from it after each new run (a second or two), one sunset or sunrise at a time. Lightning is one request every 5 minutes and the aurora two every 15 while they're on. The light pollution atlas is downloaded once (about 1 MB) and read from its 8.6 MB file without loading it; its tiles are drawn on the NAS and kept in the weather tile cache. Weather layer tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. Sunset spots and the star map are worked out in the browser; the terrain tiles for the spots come through the NAS and share the chart tile cache (about 100 kB each, only where you zoom in with that layer on). While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
 
+## Running without Home Assistant
+
+Ferry Watch can also run as its own Docker container, straight on the NAS. It then
+starts with Docker and keeps tracking, counting passages and drawing the chart whether
+or not Home Assistant is running. Home Assistant becomes optional: with its address and
+an access token, the container still sends alerts through the companion app, reads your
+phone's position for the "only in my area" rule and publishes the ship entities.
+
+What is different from the add-on:
+
+- **Opening it.** At `http://<the NAS's address>:8099`, on your home network or over
+  Tailscale. There is no Home Assistant login in front of it, so keep the port off the
+  internet; `FW_PASSWORD` adds a password (the browser asks once and remembers).
+  To keep it in the Home Assistant sidebar, add a **Webpage** dashboard with that address.
+- **Settings.** The add-on's Configuration tab becomes values in `compose.yaml`, one for
+  each option in the table above with `FW_` in front, in capitals: `FW_NOTIFY_SERVICE`,
+  `FW_PHONE_ENTITY`, `FW_RETENTION_DAYS`, `FW_REQUIRE_PHONE_AREA` and so on.
+- **Updates.** No Update button: `git pull`, then `docker compose up -d --build`.
+- **Backups.** Home Assistant no longer backs it up. Everything is in the `data` folder
+  next to `compose.yaml`; `ferrywatch.db`, `logbook.db` and `photos` are the parts worth
+  keeping, the rest is downloaded again by itself.
+
+| Value | What it is |
+| --- | --- |
+| `FW_HA_URL` | Home Assistant's address, like `http://192.168.1.30:8123`. Leave out to run with no Home Assistant at all. |
+| `FW_HA_TOKEN` | A long-lived access token: in Home Assistant, your profile → Security → Long-lived access tokens. |
+| `FW_PUBLIC_URL` | Where your phone reaches the panel, like `http://192.168.1.20:8099` or its Tailscale address. A tap on an alert opens it, and the alert's map picture is loaded from it. Without it alerts come with no picture. |
+| `FW_NTFY_URL` | An [ntfy](https://ntfy.sh) topic address, like `https://ntfy.sh/a-long-name-nobody-can-guess`, as a second way for alerts (below). |
+| `FW_PASSWORD` | A password for the panel. |
+
+To set it up, on the NAS (with Docker and git):
+
+1. `git clone -b phase-4-fleets https://github.com/aronwarna/ha-ferry-watch` and go into
+   the folder.
+2. Put the secret values in a file called `.env` next to `compose.yaml`, one per line,
+   like `FW_HA_TOKEN=...` and `FW_PUBLIC_URL=http://192.168.1.20:8099`. Check the other
+   values in `compose.yaml` (Home Assistant's address, the notify service).
+3. `docker compose up -d --build`, then open `http://<the NAS's address>:8099`.
+
+To bring the add-on's tracks, stats, areas and settings over, stop the container and
+copy the add-on's data folder into `data`: at least `ferrywatch.db` (with any
+`ferrywatch.db-wal` beside it), `logbook.db` and the `photos` folder. The add-on's data
+is not reachable from Home Assistant's file editor; the simplest way is a Home Assistant
+backup of the Ferry Watch app only, downloaded and unpacked (its `data` folder is
+inside). While both run, switch alerts off in one of them (leave `FW_HA_TOKEN` and
+`FW_NTFY_URL` out of the container), or every passage alerts twice.
+
+### Alerts when Home Assistant is down (ntfy)
+
+With `FW_NTFY_URL` set, and the ntfy app on your phone subscribed to the same topic, an
+inner-route alert that Home Assistant can't take goes out through ntfy instead. Only
+Home Assistant knows where your phone is, so these alerts are not held back by your
+area. Anyone who knows the topic name can read what is sent to it, so pick a long one.
+Feed warnings use the same way. Stats shows which way each alert went.
+
 ## If a ship never shows up
 
 If a ship has been re-flagged, its MMSI changes. For the four default ships the

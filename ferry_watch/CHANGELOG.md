@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.48.0
+
+- Ferry Watch can now also run as its own container, outside Home Assistant, so tracking
+  and stats carry on when the Home Assistant VM is down. Nothing changes for the app
+  inside Home Assistant: this is a second way to run it, set up by hand (see "Running
+  without Home Assistant" in the documentation).
+- As its own container it reaches Home Assistant over the network for phone alerts, your
+  phone's position and the ship entities, and can ask for a password.
+- New, in both: a second way for alerts, through ntfy. When it is set up and Home
+  Assistant doesn't answer, the alert goes out through ntfy instead (without checking
+  where your phone is, which only Home Assistant knows). As an add-on this is off.
+
 ## 0.47.0
 
 - New **Ice chart** layer (Weather › On top): FMI's daily ice chart drawn on the map in

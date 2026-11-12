@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import base64
 import gzip
+import hashlib
+import hmac
 import json
 import logging
 import math
@@ -49,10 +52,49 @@ REPLAY_MAX_SPAN = 18 * 3600
 FLEET_PUSH_SECONDS = 5
 
 
+AUTH_COOKIE = "fw_auth"
+# Loaded by the phone's notification, which can't log in; and the container's health check.
+OPEN_PATHS = ("/api/notify/picture/", "/api/health")
+PICTURE_NAME = re.compile(r"passage-[A-Za-z0-9_-]+\.png")
+
+
+def _cookie_value(password: str) -> str:
+    return hmac.new(password.encode(), b"ferry-watch-panel", hashlib.sha256).hexdigest()
+
+
+def _logged_in(request: web.Request, password: str) -> bool:
+    """The password, from the browser's own login box (HTTP Basic, any user name) or from
+    the cookie set after it, which the live connection (a websocket) carries too."""
+    if hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _cookie_value(password)):
+        return True
+    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        given = base64.b64decode(value).decode().partition(":")[2]
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return hmac.compare_digest(given.encode(), password.encode())
+
+
 @web.middleware
 async def ingress_only(request: web.Request, handler):
+    if DEV:
+        return await handler(request)
+    if config.STANDALONE:
+        # A plain container: whoever reaches the port gets the panel, so it belongs on a
+        # private network (the LAN, Tailscale). FW_PASSWORD adds a password on top.
+        password = config.PASSWORD
+        if not password or request.path.startswith(OPEN_PATHS):
+            return await handler(request)
+        if not _logged_in(request, password):
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Ferry Watch"'})
+        resp = await handler(request)
+        if AUTH_COOKIE not in request.cookies and not resp.prepared:
+            resp.set_cookie(AUTH_COOKIE, _cookie_value(password), max_age=365 * 86400, httponly=True, samesite="Lax")
+        return resp
     # Only the Supervisor's ingress proxy may reach the panel (it handles HA login).
-    if not DEV and request.remote not in (INGRESS_PROXY, "127.0.0.1", "::1"):
+    if request.remote not in (INGRESS_PROXY, "127.0.0.1", "::1"):
         raise web.HTTPForbidden()
     return await handler(request)
 
@@ -161,6 +203,7 @@ class Web:
         r.add_get("/", self.index)
         r.add_get("/ship/{mmsi}", self.index)
         r.add_get("/api/state", self.state)
+        r.add_get("/api/health", self.health)
         r.add_get("/api/tails", self.tails)
         r.add_get("/api/track/{mmsi}", self.track)
         r.add_get("/api/photo/{mmsi}", self.photo)
@@ -179,6 +222,7 @@ class Web:
         r.add_get("/api/passages.csv", self.passages_csv)
         r.add_get("/api/stats", self.stats)
         r.add_post("/api/notify/test", self.test_notification)
+        r.add_get("/api/notify/picture/{name}", self.notify_picture)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
@@ -245,6 +289,9 @@ class Web:
         if base:
             html = html.replace("<head>", f'<head>\n  <base href="{base}">', 1)
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    async def health(self, request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "version": __version__})
 
     async def state(self, request: web.Request) -> web.Response:
         return web.json_response(await self.fw.state())
@@ -929,6 +976,14 @@ class Web:
         resp = web.json_response(self.fw.reserves.in_view(south, west, north, east))
         resp.enable_compression()  # outlines: a national park can be a few hundred kB
         return resp
+
+    async def notify_picture(self, request: web.Request) -> web.StreamResponse:
+        """A notification's map picture, standalone (as an add-on Home Assistant serves it)."""
+        name = request.match_info["name"]
+        path = config.MEDIA_DIR / name
+        if not config.STANDALONE or not PICTURE_NAME.fullmatch(name) or not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/png"})
 
     async def test_notification(self, request: web.Request) -> web.Response:
         try:

@@ -35,12 +35,22 @@ def _parse_ts(value: str | None) -> float | None:
 
 
 class HAClient:
-    """Thin client for the Core API through the Supervisor proxy."""
+    """Thin client for the Core API: through the Supervisor proxy as an add-on, or straight
+    to Home Assistant with a long-lived token when standalone (config.HA_API)."""
 
     def __init__(self, session: aiohttp.ClientSession, token: str):
         self.session = session
         self.headers = {"Authorization": f"Bearer {token}"}
         self.timeout = aiohttp.ClientTimeout(total=20)
+
+    async def reachable(self) -> bool:
+        """Whether Home Assistant answers at all just now (a few seconds at most)."""
+        try:
+            async with self.session.get(f"{config.HA_API}/", headers=self.headers,
+                                        timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                return resp.status < 500
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
 
     async def get_state(self, entity: str) -> dict[str, Any] | None:
         async with self.session.get(f"{config.HA_API}/states/{entity}", headers=self.headers,

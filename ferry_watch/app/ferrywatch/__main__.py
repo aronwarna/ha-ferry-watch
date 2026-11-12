@@ -22,6 +22,7 @@ from .autoroute import AutoRouter
 from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
 from .faults import Faults
 from .fleets import FleetManager, FleetMatcher
+from . import config
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
 from .geo import sun_info
@@ -217,8 +218,8 @@ class FerryWatch:
             from .simulate import FakeHA
             self.ha = FakeHA()
             self.next_sensor = NextPassageSensor(self.ha)
-        elif SUPERVISOR_TOKEN and not DEV:
-            self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
+        elif config.HA_TOKEN and not DEV:
+            self.ha = HAClient(self.session, config.HA_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
             self.tasks.append(asyncio.create_task(self.notifier.get_panel_url()))  # for Settings' link
@@ -227,6 +228,13 @@ class FerryWatch:
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
                 self.tasks.append(asyncio.create_task(self.publisher.run()))
+
+        elif config.NTFY_URL and not DEV:  # no Home Assistant: feed warnings still go out, through ntfy
+            self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
+        if config.STANDALONE:
+            _LOGGER.info("Standalone: Home Assistant %s, ntfy %s, panel %s",
+                         config.HA_URL if self.ha else "not set up", "set" if config.NTFY_URL else "not set",
+                         "asks for the password" if config.PASSWORD else "open to anyone who reaches this port")
 
         runner = web.AppRunner(self.web.app, access_log=None)
         await runner.setup()
@@ -537,6 +545,7 @@ class FerryWatch:
             "zones": self.store.zones(),
             "last_notification": self.store.kv_get("last_notification"),
             "ha_connected": self.ha is not None,
+            "can_notify": self.ha is not None or bool(config.NTFY_URL),
             "version": __version__,
             "now": time.time(),
             "ships": ships,
@@ -570,6 +579,7 @@ class FerryWatch:
             "require_phone_area": o.require_phone_area, "notify_feed_problems": o.notify_feed_problems,
             "phone_max_age_minutes": o.phone_max_age_minutes,
             "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
+            "standalone": config.STANDALONE, "ntfy": bool(config.NTFY_URL),
         }
 
     def _register_weather_layers(self) -> None:
