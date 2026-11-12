@@ -58,6 +58,7 @@ NEAR_SHORE_M = 100  # nearer the shore than this counts as longer...
 NEAR_SHORE_COST = 1.25
 MARGINAL_COST = 3.0  # ...and so does water of uncertain depth
 FAIRWAY_COST = 0.85  # a marked fairway counts shorter: once on one, the route stays on it
+FAIRWAY_BEND_CELLS = 3.5  # ...and onto the fairway's own turn when one is this near
 FAIRWAY_SNAP_CELLS = 1.5  # a turning point on a fairway cell is moved onto the fairway's own line this near
 # Shelter: open water counts longer for a small boat, the more the more wind there is.
 SHELTER_PX_M = 250  # the land picture the shelter is read from, metres across a dot
@@ -80,7 +81,7 @@ BLOCK_WAIT = 8
 WIND_GRID = (6, 5)  # forecast points across the area (columns, rows) for weather routing
 SAIL_WEIGHT = 1.1  # the search may be this much off the best, for speed
 # Cell flags.
-NAV, MARGINAL, FAIRWAY, NEAR, NARROW = 1, 2, 4, 8, 16
+NAV, MARGINAL, FAIRWAY, NEAR, NARROW, TRUNK = 1, 2, 4, 8, 16, 32  # TRUNK: the green small-craft route
 BORDER = 2  # closed cells round the grid, so the search needs no edge checks
 
 # 16 directions: (rows down, columns right, cells passed through first)
@@ -110,6 +111,7 @@ class Grid:
         self.limit = b""
         self.land: Image.Image | None = None  # the share of land and shoals around, coarse (see finish)
         self.fw_lines: dict[tuple[int, int], array] = {}  # fairway lines by 16-cell tile: r0, c0, r1, c1...
+        self.fw_bends: dict[tuple[int, int], list[tuple[float, float]]] = {}  # where fairways turn
         self.built = 0.0
         self.missing = 0
         self.coarse = 0  # blocks with only the base map's coastline
@@ -234,6 +236,20 @@ def render_block(layers: dict[str, Any], w: int, h: int, need: float, draught: f
         co = fline.co
         pts = [(co[2 * v] * sx, co[2 * v + 1] * sy) for v in range(fline.vo[i], fline.vo[i + 1])]
         if len(pts) >= 2:
+            fdraw.line(pts, fill=128, width=1)
+            lines.append(pts)
+    # The small-craft trunk routes (the chart's green band): 255 in the fairway picture.
+    route = layers.get("route")
+    for i in range(route.n if route is not None else 0):
+        props = route.props[route.pi[i]]
+        if not props or _num(props[0]) != 4:
+            continue
+        deep = _num(props[2]) if len(props) > 2 else None
+        if deep is not None and deep < draught + DRAUGHT_MARGIN:
+            continue
+        co = route.co
+        pts = [(co[2 * v] * sx, co[2 * v + 1] * sy) for v in range(route.vo[i], route.vo[i + 1])]
+        if len(pts) >= 2:
             fdraw.line(pts, fill=255, width=1)
             lines.append(pts)
     return img, fw, lines
@@ -259,6 +275,8 @@ def render_base(bx: int, by: int, w: int, h: int) -> Image.Image:
 def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, Any]] | None = None) -> None:
     """The grid's flags from the depth classes and the fairway mask, and its speed limits."""
     cell = grid.cell_m
+    trunk = fw.point(lambda v: 255 if v == 255 else 0)
+    fw = fw.point(lambda v: 255 if v else 0)
     nav = cls.point(lambda v: 255 if v else 0)
     marginal = cls.point(lambda v: 255 if v == 1 else 0)
     shore = round(SHORE_CLEAR_M / cell)
@@ -279,7 +297,7 @@ def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, 
     small = land.reduce(f) if f > 1 else land
     grid.land = small.filter(ImageFilter.GaussianBlur(SHELTER_RADIUS_M / (cell * f)))
     for mask, bit in ((marginal, MARGINAL), (fw, FAIRWAY), (ImageChops.invert(open_water), NEAR),
-                      (ImageChops.invert(wide), NARROW)):
+                      (ImageChops.invert(wide), NARROW), (trunk, TRUNK)):
         flags = ImageChops.add(flags, ImageChops.darker(mask, nav).point(lambda v, bit=bit: bit if v else 0))
     # The closed border.
     framed = Image.new("L", flags.size, 0)
@@ -322,6 +340,10 @@ def add_fairway_lines(grid: Grid, lines: list[list[tuple[float, float]]], left: 
     """Keeps a block's fairway lines (in its own cells) for moving turning points onto them."""
     store = grid.fw_lines
     for pts in lines:
+        for (x0, y0), (x1, y1), (x2, y2) in zip(pts, pts[1:], pts[2:]):  # where the fairway itself turns
+            turn = abs((math.degrees(math.atan2(y2 - y1, x2 - x1) - math.atan2(y1 - y0, x1 - x0)) + 180) % 360 - 180)
+            if turn >= 5:
+                grid.fw_bends.setdefault((int(top + y1) >> 4, int(left + x1) >> 4), []).append((top + y1, left + x1))
         for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
             n = max(1, math.ceil(max(abs(x1 - x0), abs(y1 - y0)) / 12))  # pieces of at most 12 cells
             for i in range(n):
@@ -336,8 +358,18 @@ def add_fairway_lines(grid: Grid, lines: list[list[tuple[float, float]]], left: 
 
 def on_fairway(grid: Grid, r: int, c: int) -> tuple[float, float] | None:
     """The point of a fairway's own line nearest a cell's middle, within FAIRWAY_SNAP_CELLS."""
-    best, at = FAIRWAY_SNAP_CELLS**2, None
-    pr, pc = r + 0.5, c + 0.5  # the lines are in cell edges' numbers: a cell's middle is half a cell on
+    pr, pc = r + 0.5, c + 0.5
+    # A turn of the route by a turn of the fairway is that turn.
+    best, at = FAIRWAY_BEND_CELLS**2, None
+    for tr in range((r >> 4) - 1, (r >> 4) + 2):
+        for tc in range((c >> 4) - 1, (c >> 4) + 2):
+            for qr, qc in grid.fw_bends.get((tr, tc), ()):
+                d = (qr - pr) ** 2 + (qc - pc) ** 2
+                if d < best:
+                    best, at = d, (qr - 0.5, qc - 0.5)
+    if at is not None:
+        return at
+    best, at = FAIRWAY_SNAP_CELLS**2, None  # the lines are in cell edges' numbers: a cell's middle is half a cell on
     for tr in range((r >> 4) - 1, (r >> 4) + 2):
         for tc in range((c >> 4) - 1, (c >> 4) + 2):
             seg = grid.fw_lines.get((tr, tc))
@@ -375,16 +407,22 @@ def nearest_open(grid: Grid, r: int, c: int) -> tuple[int, int] | None:
     return (best[1], best[2]) if best else None
 
 
-def _cost_table() -> list[float]:
+def _cost_table(fairway: float = FAIRWAY_COST, trunk: float | None = None) -> list[float]:
+    """How much longer (or shorter) a cell counts by its flags. `fairway` and `trunk` are the
+    boat's own: a small boat counts fairways, and most of all the green small-craft routes,
+    much shorter than open water."""
+    trunk = fairway if trunk is None else trunk
     out = []
-    for f in range(32):
+    for f in range(64):
         m = 1.0
         if f & MARGINAL:
             m *= MARGINAL_COST
         if f & NEAR and not f & FAIRWAY:
             m *= NEAR_SHORE_COST
-        if f & FAIRWAY:
-            m *= FAIRWAY_COST
+        if f & TRUNK:
+            m *= trunk
+        elif f & FAIRWAY:
+            m *= fairway
         out.append(m)
     return out
 
@@ -394,10 +432,11 @@ def exposure_table(weight: float) -> list[float]:
 
 
 def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed_kn: float,
-                 expo: bytes | None = None, weight: float = 0.0) -> dict[str, Any] | None:
+                 expo: bytes | None = None, weight: float = 0.0,
+                 fairway: tuple[float, float] = (FAIRWAY_COST, FAIRWAY_COST)) -> dict[str, Any] | None:
     """The quickest way for a motor boat: {"cells": [(r, c)...], "seconds", "cost": per cell}."""
     flags, limit, w = grid.flags, grid.limit, grid.w
-    mult = _cost_table()
+    mult = _cost_table(*fairway)
     v = max(0.5, speed_kn) * KN
     has_limits = any(limit) if limit else False
     lim_v = [v] + [min(v, kn * KN) for kn in range(1, 256)]
@@ -415,7 +454,7 @@ def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed
     g = array("d", [inf]) * len(flags)
     t = array("d", [0.0]) * len(flags)
     prev = array("i", [-1]) * len(flags)
-    hk = cell / v * FAIRWAY_COST
+    hk = cell / v * min(mult)
     g[s] = 0.0
     heap = [(math.hypot(start[0] - er, start[1] - ec) * hk, 0.0, s)]
     push, pop, hypot = heapq.heappush, heapq.heappop, math.hypot
@@ -447,7 +486,7 @@ def search_power(grid: Grid, start: tuple[int, int], end: tuple[int, int], speed
         cells.append(prev[cells[-1]])
     cells.reverse()
     return {"cells": [(i // w, i % w) for i in cells], "seconds": t[e], "g": [g[i] for i in cells],
-            "t": [t[i] for i in cells], "expo": expo, "weight": weight}
+            "t": [t[i] for i in cells], "expo": expo, "weight": weight, "fairway": fairway}
 
 
 @lru_cache(maxsize=1)
@@ -624,23 +663,29 @@ def _line_cost(grid: Grid, a: tuple[int, int], b: tuple[int, int], speed_ms: flo
     cells = _line_cells(a, b)
     total = 0.0
     for r, c in cells:
-        f = flags[r * w + c]
+        i = r * w + c
+        f = flags[i]
         if not f:
             return math.inf
-        lv = limit[r * w + c]
-        m = mult[f] * ex[expo[r * w + c]] if expo else mult[f]
+        if not f & FAIRWAY:
+            # A straight line and the fairway's drawn line differ by a cell here and there:
+            # beside a fairway cell counts as on it.
+            f |= (flags[i - 1] | flags[i + 1] | flags[i - w] | flags[i + w]) & (FAIRWAY | TRUNK)
+        lv = limit[i]
+        m = mult[f] * ex[expo[i]] if expo else mult[f]
         total += m / (min(speed_ms, lv * KN) if lv else speed_ms)
     return total / len(cells) * math.hypot(b[0] - a[0], b[1] - a[1]) * grid.cell_m
 
 
 def straighten(grid: Grid, cells: list[tuple[int, int]], g: list[float], speed_ms: float,
-               expo: bytes | None = None, weight: float = 0.0) -> list[int]:
+               expo: bytes | None = None, weight: float = 0.0,
+               fairway: tuple[float, float] = (FAIRWAY_COST, FAIRWAY_COST)) -> list[int]:
     """Indices of the cells kept when every stretch that a straight line does as well is
     replaced by that line: the grid's eight directions leave a staircase otherwise. Then
     turning points the route does as well without are taken out, so no small kinks stay.
     A stretch along a fairway is only replaced by a line that is on the fairway too: the
     route doesn't cut a fairway's bends or run beside it."""
-    mult = _cost_table()
+    mult = _cost_table(*fairway)
     ex = exposure_table(weight) if expo and weight > 0 else None
     if ex is None:
         expo = None
@@ -654,7 +699,8 @@ def straighten(grid: Grid, cells: list[tuple[int, int]], g: list[float], speed_m
         had = on_fw[j + 1] - on_fw[i]
         if had > 3:
             line = _line_cells(cells[i], cells[j])
-            if sum(1 for r, c in line if flags[r * w + c] & FAIRWAY) < FAIRWAY_KEEP * had - 2:
+            if sum(1 for r, c in line if (flags[r * w + c] | flags[r * w + c - 1] | flags[r * w + c + 1]
+                                          | flags[(r - 1) * w + c] | flags[(r + 1) * w + c]) & FAIRWAY) < FAIRWAY_KEEP * had - 2:
                 return math.inf
         return _line_cost(grid, cells[i], cells[j], speed_ms, mult, expo, ex)
 
@@ -750,21 +796,26 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
     at = []
     for n, i in enumerate(idx):
         r, c = cells[i]
-        snapped = on_fairway(grid, r, c) if 0 < n < len(idx) - 1 and flags[r * w + c] & FAIRWAY else None
+        near_fw = (flags[r * w + c] | flags[r * w + c - 1] | flags[r * w + c + 1] | flags[(r - 1) * w + c]
+                   | flags[(r + 1) * w + c]) & FAIRWAY
+        snapped = on_fairway(grid, r, c) if 0 < n < len(idx) - 1 and near_fw else None
         at.append(snapped or (r, c))
     points = [[round(v, 6) for v in grid.latlon(*p)] for p in at]
     hows = []
     sums: dict[str, float] = {}
-    shallow = fairway = exposed = 0.0
+    shallow = fairway = exposed = trunk = 0.0
     expo = found.get("expo") if found.get("weight") else None
     for a, b in zip(idx, idx[1:]):
         on = _line_cells(cells[a], cells[b])
-        fl = [flags[r * w + c] for r, c in on]
+        # Beside a fairway cell counts as on it (the line and the fairway's drawn cells differ by one).
+        fl = [flags[r * w + c] | ((flags[r * w + c - 1] | flags[r * w + c + 1] | flags[(r - 1) * w + c]
+                                   | flags[(r + 1) * w + c]) & (FAIRWAY | TRUNK)) for r, c in on]
         metres = math.hypot(cells[b][0] - cells[a][0], cells[b][1] - cells[a][1]) * grid.cell_m
         marginal = sum(1 for f in fl if f & MARGINAL) / len(fl)
         on_fw = sum(1 for f in fl if f & FAIRWAY) / len(fl)
         shallow += metres * marginal
         fairway += metres * on_fw
+        trunk += metres * sum(1 for f in fl if f & TRUNK) / len(fl)
         if expo:
             exposed += metres * sum(1 for r, c in on if expo[r * w + c] >= 255 * EXPOSED_FROM) / len(on)
         if sail:
@@ -794,7 +845,7 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
     names = {"o": "open", "f": "fairway", "s": "sail", "b": "beat", "g": "gybe", "m": "motor"}
     return {"points": points, "hows": "".join(hows), "metres": round(metres), "seconds": round(found["seconds"]),
             "nm": {names[k]: round(v / NM, 1) for k, v in sums.items()},
-            "shallow_nm": round(shallow / NM, 1), "fairway_nm": round(fairway / NM, 1),
+            "shallow_nm": round(shallow / NM, 1), "fairway_nm": round(fairway / NM, 1), "trunk_nm": round(trunk / NM, 1),
             "exposed_nm": round(exposed / NM, 1) if expo else None,
             "snap_m": [round(d0), round(d1)]}
 
@@ -840,7 +891,7 @@ class SmartRouter:
         """A block's cells (in a worker thread): (classes, fairways) or None with no chart data."""
         chart = self.vchart
         layers: dict[str, Any] = {}
-        for part, only in (("", ("depth", "sounding")), ("fw", ("fline",)), ("mml", ("rock", "rockarea", "wreck")),
+        for part, only in (("", ("depth", "sounding")), ("fw", ("fline", "route")), ("mml", ("rock", "rockarea", "wreck")),
                            ("trk", ("trock",)), ("fx", ("xdepth",))):
             path = chart._path(bx, by, part)
             if not path.exists():
@@ -945,7 +996,8 @@ class SmartRouter:
             else:
                 shelter = await self._shelter(grid, boat, depart)
                 expo = await in_thread(exposure, grid, shelter.get("wind_from")) if shelter["weight"] > 0 else None
-                found = await in_thread(search_power, grid, a, b, speed_kn, expo, shelter["weight"])
+                found = await in_thread(search_power, grid, a, b, speed_kn, expo, shelter["weight"],
+                                        tuple(boat.get("fairway") or (FAIRWAY_COST, FAIRWAY_COST)))
                 out = None
                 if found:
                     idx = await in_thread(self._shape_power, grid, found, speed_kn)
@@ -1003,7 +1055,8 @@ class SmartRouter:
     @staticmethod
     def _shape_power(grid: Grid, found: dict[str, Any], speed_kn: float) -> list[int]:
         cells = found["cells"]
-        idx = straighten(grid, cells, found["g"], max(0.5, speed_kn) * KN, found.get("expo"), found.get("weight") or 0)
+        idx = straighten(grid, cells, found["g"], max(0.5, speed_kn) * KN, found.get("expo"), found.get("weight") or 0,
+                         found.get("fairway") or (FAIRWAY_COST, FAIRWAY_COST))
         tol = 0.4
         while len(idx) > MAX_POINTS and tol < 6:
             sub = [cells[i] for i in idx]

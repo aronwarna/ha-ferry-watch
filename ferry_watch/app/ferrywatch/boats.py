@@ -21,30 +21,32 @@ KN = 1852 / 3600  # m/s in a knot
 # Weather limits: (okay from, bad from); visibility the other way round (km: okay below, bad below).
 # shelter: how much longer open water counts than water among islands when the wind is at the
 # boat's "okay" limit (0.7: 1.7 times as long), for the Automatic route. 0: the boat doesn't mind.
+# fairway: how long a mile counts on a marked fairway, and on a small-craft trunk route (the
+# chart's green band), against a mile of open water: small boats keep to them.
 BOATS: dict[str, dict[str, Any]] = {
     "buster_m": {
         "title": "Buster M", "kind": "power", "about": "4.9 m open aluminium boat, 30-40 hp",
         "length": 4.86, "beam": 1.85, "draught": 0.5, "cruise_kn": 20, "top_kn": 26,
         "keel_margin": 0.5, "wind": (5, 8), "gust": (9, 13), "wave": (0.3, 0.6), "rain": (0.5, 2.5), "vis": (4, 1),
-        "shelter": 0.7,
+        "shelter": 0.7, "fairway": (0.75, 0.6),
     },
     "buster_xl": {
         "title": "Buster XL", "kind": "power", "about": "6.1 m open aluminium boat, 80-115 hp",
         "length": 6.05, "beam": 2.20, "draught": 0.6, "cruise_kn": 26, "top_kn": 36,
         "keel_margin": 0.5, "wind": (7, 11), "gust": (11, 16), "wave": (0.5, 1.0), "rain": (0.5, 3), "vis": (4, 1),
-        "shelter": 0.45,
+        "shelter": 0.45, "fairway": (0.78, 0.65),
     },
     "cabin8": {
         "title": "Cabin boat 8 m", "kind": "power", "about": "8 m aluminium cabin boat (Ockelbo B25, Viggo C8.1 class)",
         "length": 8.0, "beam": 2.7, "draught": 0.8, "cruise_kn": 25, "top_kn": 38,
         "keel_margin": 0.5, "wind": (9, 14), "gust": (14, 20), "wave": (0.8, 1.6), "rain": (1, 5), "vis": (3, 0.8),
-        "shelter": 0.25,
+        "shelter": 0.25, "fairway": (0.8, 0.7),
     },
     "sail35": {
         "title": "Sailboat 35 ft", "kind": "sail", "about": "10.7 m cruising sailboat, fin keel 1.9 m",
         "length": 10.7, "beam": 3.5, "draught": 1.9, "cruise_kn": 6, "top_kn": 8,
         "keel_margin": 0.6, "wind": (10, 15), "gust": (15, 21), "wave": (1.2, 2.2), "rain": (1, 5), "vis": (3, 0.8),
-        "shelter": 0.0,
+        "shelter": 0.0, "fairway": (0.85, 0.85),
     },
 }
 DEFAULT_BOAT = "buster_xl"
@@ -177,7 +179,7 @@ def listing() -> dict[str, Any]:
     return {
         "default": DEFAULT_BOAT,
         "boats": {k: {**{f: v[f] for f in ("title", "kind", "about", "length", "beam", "draught", "cruise_kn", "top_kn",
-                                             "keel_margin", "wind", "gust", "wave", "rain", "vis", "shelter")},
+                                             "keel_margin", "wind", "gust", "wave", "rain", "vis", "shelter", "fairway")},
                       "depth": round(needs_depth(v), 1)} for k, v in BOATS.items()},
         "sail": {**SAIL, "angles": POLAR_ANGLES, "polar": {str(k): v for k, v in POLAR.items()}},
     }

@@ -61,7 +61,7 @@ def test_block_cells_from_chart_layers():
     px = cls.load()
     assert px[10, 10] == 2 and px[25, 25] == 1 and px[60, 20] == 1 and px[50, 95] == 0
     assert px[75, 40] == 0  # the shallow sounding closes its cell
-    assert 255 in (fw.load()[50, 89], fw.load()[50, 90])
+    assert 128 in (fw.load()[50, 89], fw.load()[50, 90])  # 128: a fairway, 255: a green small-craft route
     # The sailing boat: the 0-3 m band is closed, and the 2.0 m fairway is too shallow.
     cls, fw, lines = S.render_block(layers, 100, 100, 2.5, 1.9, 100.0)
     assert cls.load()[60, 20] == 0 and cls.load()[10, 10] == 2 and not fw.getbbox()
@@ -268,3 +268,22 @@ def test_shelter_weight_follows_the_wind():
     assert calm["weight"] == round(0.7 * 0.35, 2) and calm["wind_from"] is None
     assert asyncio.run(S.SmartRouter(None, FakeWeather(0, 5, fail=True))._shelter(grid, buster, None))["weight"] == 0.7
     assert asyncio.run(router._shelter(grid, S.boats.boat("sail35")[1], None))["weight"] == 0
+
+
+def test_small_boat_takes_the_green_boat_route():
+    from PIL import ImageDraw
+    grid = S.Grid(1164, 594, 1164, 594, 80.0)
+    grid.w, grid.h = 240 + 2 * S.BORDER, 120 + 2 * S.BORDER
+    cls = Image.new("L", (grid.w, grid.h), 2)
+    fw = Image.new("L", (grid.w, grid.h), 0)
+    line = [(10, 60), (50, 10), (190, 10), (230, 60)]  # a small-craft route a fifth longer than straight
+    ImageDraw.Draw(fw).line(line, fill=255, width=1)
+    S.finish(grid, cls, fw)
+    a, b = (60, 10), (60, 230)
+    on = lambda found: sum(1 for r, c in found["cells"] if grid.flags[r * grid.w + c] & S.TRUNK) / len(found["cells"])  # noqa: E731
+    assert on(S.search_power(grid, a, b, 20)) < 0.2  # counted as any fairway: straight across
+    found = S.search_power(grid, a, b, 20, fairway=tuple(S.boats.boat("buster_m")[1]["fairway"]))
+    assert on(found) > 0.9
+    idx = S.SmartRouter._shape_power(grid, found, 20)
+    out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
+    assert out["trunk_nm"] > 0.9 * out["metres"] / 1852 and len(idx) <= 6
