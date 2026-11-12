@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.55.0
+
+- Automatic routes now list the **places to check yourself**, as the big chart plotter apps
+  do: every stretch that passes close to the shore or a shoal, or over water where the chart
+  only gives a depth range. Each has a small orange sign on the map and a row in the route
+  panel with the reason; tap either to go there.
+- New **Room from shore** choice for Automatic routes: Close (50 m), Normal (100 m) or Wide
+  (200 m). It sets how far the route keeps from the shore and from shoals.
+- New **Reverse** button in the route tool: the same route the other way. Automatic legs are
+  planned again, because wind and shelter differ on the way back.
+- The route tool looks tidier. What a route is made of is shown as short labels (boat and
+  depth needed, miles on fairways and green boat routes, miles of open water, the wind it
+  was planned for) instead of a long paragraph, and warnings sit in their own box.
+- The route on the map is cleaner: one solid line with a white edge, a white middle line only
+  on fairways, smaller turning dots that grow under the pointer, fewer of them, rounder
+  distance labels, and a lighter weather band under the line.
+
 ## 0.54.1
 
 - Automatic routes for the small boats now **prefer marked fairways much more**, and the
