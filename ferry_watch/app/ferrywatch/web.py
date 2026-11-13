@@ -296,6 +296,7 @@ class Web:
         r.add_get("/api/places", self.places)
         r.add_get("/api/maptile/{layer}/{z}/{x}/{y}", self.map_tile)
         r.add_get("/api/buildings/{x}/{y}", self.buildings_tile)
+        r.add_get("/api/parcels/{x}/{y}", self.parcels_tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_get("/api/vchart-water/{z}/{x}/{y}", self.vchart_water)
         r.add_get("/api/overlays", self.overlays)
@@ -620,6 +621,17 @@ class Web:
         daily = (self.fw.maps.row(layer) or {}).get("daily")
         return web.FileResponse(path, headers={"Cache-Control": "max-age=21600" if daily else "max-age=2592000",
                                                "Content-Type": _image_type(path)})
+
+    async def parcels_tile(self, request: web.Request) -> web.Response:
+        try:
+            x, y = int(request.match_info["x"]), int(request.match_info["y"])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        body = await self.fw.parcels.tile(x, y)
+        if body is None:  # failed or outside Finland: the panel falls back to the picture tiles
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})
+        return web.Response(body=body, content_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Cache-Control": "max-age=86400"})
 
     async def buildings_tile(self, request: web.Request) -> web.Response:
         try:

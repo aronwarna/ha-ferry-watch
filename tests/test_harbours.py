@@ -86,7 +86,7 @@ def test_download_on_demand_stored_and_refreshed_monthly(tmp_path, monkeypatch, 
         h2.updated = time.time() - 31 * 86400
         h2.in_view(59, 19, 66, 30)
         await h2._task
-        assert h2.error == "blocked" and len(h2.in_view(59, 19, 66, 30)["harbours"]) == 4
+        assert h2.error == "it couldn't be read" and len(h2.in_view(59, 19, 66, 30)["harbours"]) == 4
         assert h2._task.done() and len(calls) == 2  # no retry within the hour
         # Rows are let go when nobody has asked for a while.
         monkeypatch.setattr(harbours_mod, "IDLE", 0)

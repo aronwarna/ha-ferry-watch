@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.66.0
+
+- **Then & now reaches the whole country.** Two satellite archives now fill every place the
+  cities' own photo flights don't cover: Esri's imagery archive (one release per year since 2014,
+  down to house level) and Sentinel-2 cloud-free yearly pictures (2018 on, 10 m). The cities'
+  sharper photos lie on top where they exist.
+- More photo flights: the Helsinki region's joint flights (also Kirkkonummi with Porkkala, Kerava,
+  Tuusula, Nurmijärvi, Sipoo; 2015 on), Turku (2005 on, older if the service lists them), Tampere
+  (1946, 1966 … if its service lists them), Oulu, the Land Survey's older orthophotos where
+  Paituli draws them, and Estonia's orthophotos since 1993 with its old maps back to the 1800s.
+  Each service's layers are read from its own list once a day; Settings shows what was found.
+
+- **Property ids** are now written by the app from the Land Survey's id points: sharp at every
+  zoom, one size, never cut off or piled up, from zoom 15; tap one to copy it. (The old picture
+  tiles only stand in if the id points can't be had.) Property boundaries are a little lighter.
+- **Building ages for all of Finland**: outside the capital region the dots come from the
+  national building register (Ryhti); the capital region keeps HSY's register with addresses.
+- **Satellite today (NASA)** did nothing when the one satellite it asked had no picture. It now
+  tries five satellites (NOAA-20, NOAA-21, Suomi NPP, Terra, Aqua), today's picture and then
+  yesterday's. Best zoomed out; in midwinter the sun is too low for a picture this far north.
+- **OpenStreetMap layers** (harbours, places ashore, nature reserves): when the main server is
+  busy, three other servers are tried, twice round; a first download that fails is tried again
+  in five minutes; Layers shows a short plain message instead of the server's error text.
+
 ## 0.65.0
 
 - **Places to go ashore**: a switch in Layers › On every map shows lean-to shelters, campfire

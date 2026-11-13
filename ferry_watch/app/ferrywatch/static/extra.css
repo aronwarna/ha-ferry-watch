@@ -1418,3 +1418,5 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
   /* Clear of the ship list along the bottom. */
   .route-panel { max-height: calc(100vh - var(--top) - var(--topbar-h) - 150px); }
 }
+.parcel-id span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font: 600 11.5px/1 system-ui, sans-serif; color: #7f1d1d; padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,.82); box-shadow: 0 0 0 1px rgba(127,29,29,.25); cursor: pointer; font-variant-numeric: tabular-nums; }
+.parcel-id span:hover { background: #fff; box-shadow: 0 0 0 1.5px #b91c1c; }

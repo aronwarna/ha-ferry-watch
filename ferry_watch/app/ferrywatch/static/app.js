@@ -6227,7 +6227,7 @@
       const f = (v) => v.toFixed(4);
       const data = await api(`api/harbours?bbox=${f(box.getWest())},${f(box.getSouth())},${f(box.getEast())},${f(box.getNorth())}`);
       harbourNote = data.pending ? "Downloading the harbours from OpenStreetMap…"
-        : data.error && !data.harbours.length ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+        : data.error && !data.harbours.length ? `Couldn't get them from OpenStreetMap just now: ${data.error}. Trying again by itself.` : "";
       if (data.pending) harbourTimer = setTimeout(loadHarbours, 5000);
       else harbourBox = box;
       if (harboursOn) drawHarbours(data.harbours);

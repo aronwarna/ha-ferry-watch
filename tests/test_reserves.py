@@ -96,7 +96,7 @@ def test_failure_is_reported_and_not_retried_at_once(tmp_path):
         res.in_view(59.96, 24.0, 59.98, 24.1)
         await res._task
         out = res.in_view(59.96, 24.0, 59.98, 24.1)
-        assert out["error"] == "HTTP 504: busy" and not out["pending"]
+        assert out["error"] == "its servers are busy" and not out["pending"]
         assert len(calls) == 1
 
     asyncio.run(run())
