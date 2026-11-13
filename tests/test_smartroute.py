@@ -298,7 +298,7 @@ def test_places_to_check_and_room_from_shore():
     idx = S.SmartRouter._shape_power(grid, found, 20)
     out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
     near = [c for c in out["checks"] if c["kind"] == "near"]
-    assert len(near) == 1 and near[0]["m"] >= 80  # the gap, said once, with where it is
+    assert len(near) == 1 and near[0]["m"] >= 150  # the gap, said once, with where it is
     lat, lon = grid.latlon(30 + S.BORDER, 40 + S.BORDER)
     assert distance_m(near[0]["lat"], near[0]["lon"], lat, lon) < 150
     # In open water there is nothing to check.
