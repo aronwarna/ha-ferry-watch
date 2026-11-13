@@ -233,7 +233,7 @@ class FerryWatch:
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
-        self.here = Here(self.session, self.vchart, fake=os.environ.get("FW_SIMULATE") == "1")
+        self.here = Here(self.session, self.vchart, fake=os.environ.get("FW_SIMULATE") == "1", harbours=self.harbours)
         self.places = Places(self.session, fake=os.environ.get("FW_SIMULATE") == "1")
         self.autoroute = AutoRouter(self.vchart)
         self.smartroute = SmartRouter(self.vchart, self.dayscore, self.notices)

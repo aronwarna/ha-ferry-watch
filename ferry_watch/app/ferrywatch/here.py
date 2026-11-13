@@ -95,8 +95,9 @@ def depth_at(vchart: Any, lat: float, lon: float) -> dict[str, Any] | None:
 
 
 class Here:
-    def __init__(self, session: aiohttp.ClientSession, vchart: Any, fake: bool = False):
+    def __init__(self, session: aiohttp.ClientSession, vchart: Any, fake: bool = False, harbours: Any = None):
         self.session = session
+        self.harbours = harbours
         self.vchart = vchart
         self.fake = fake
         self._wx: dict[tuple, tuple[float, dict]] = {}
@@ -190,7 +191,12 @@ class Here:
     async def at(self, lat: float, lon: float) -> dict[str, Any]:
         depth = await asyncio.to_thread(depth_at, self.vchart, lat, lon) if self.vchart else None
         wx, bed = await asyncio.gather(self.weather(lat, lon), self.seabed(lat, lon) if not (depth or {}).get("land") else _none())
-        return {"lat": lat, "lon": lon, "depth": depth, "weather": wx, "seabed": bed}
+        try:
+            near = self.harbours.nearest(lat, lon) if self.harbours else []
+        except Exception as err:  # noqa: BLE001 - nice to have, never in the way
+            _LOGGER.debug("Nearest harbours: %s", err)
+            near = []
+        return {"lat": lat, "lon": lon, "depth": depth, "weather": wx, "seabed": bed, "harbours": near}
 
 
 async def _none() -> None:

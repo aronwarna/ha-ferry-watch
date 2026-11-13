@@ -1341,3 +1341,7 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 .sr-empty { padding: 8px; }
 .fw-toast { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 2000; padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: calc(100vw - 32px); }
 .link-like { color: var(--accent, #2563eb); cursor: pointer; text-decoration: underline; }
+.here-near { margin-top: 8px; line-height: 1.6; } .here-near > span { display: block; font-size: 11px; } .here-near i { font-style: normal; font-size: 12px; } .here-near .link-btn { cursor: pointer; color: var(--accent, #2563eb); font-weight: 500; }
+
+.search-close { width: 34px; height: 34px; }
+@media (max-width: 560px) { .here-popup .leaflet-popup-content { margin: 10px 12px; } .here-hours span:nth-child(n+6) { display: none; } }

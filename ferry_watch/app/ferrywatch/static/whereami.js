@@ -22,6 +22,8 @@
     sauna: ["Sauna", "#b45309", "♨"], swim: ["Swimming", "#0ea5e9", "≈"], camp: ["Campfire, shore", "#15803d", "▲"],
     danger: ["Danger", "#dc2626", "!"], photo: ["View, photo", "#7c3aed", "★"], home: ["Home", "#0f766e", "⌂"],
   };
+  // Room for the top bar and the conditions pill above, the ship cards below.
+  const PAD = { autoPanPaddingTopLeft: [12, 130], autoPanPaddingBottomRight: [12, 110] };
   const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
   function dm(v, pos, neg) {
@@ -180,10 +182,15 @@
         else copy(url);
       });
       box.querySelector(".here-pin").addEventListener("click", () => editPin({ lat, lon, kind: "pin", name: title || "" }));
-      herePopup = L.popup({ className: "aid-popup here-popup", maxWidth: 320, offset: [0, -4] }).setLatLng(latlng).setContent(box).openOn(map);
+      herePopup = L.popup({ className: "aid-popup here-popup", maxWidth: 320, offset: [0, -4], ...PAD }).setLatLng(latlng).setContent(box).openOn(map);
       try {
         const res = await api(`api/here?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`);
         box.querySelector(".here-facts").outerHTML = factsHtml(res);
+        box.querySelectorAll(".here-near button").forEach((b) => b.addEventListener("click", () => {
+          const ll = L.latLng(Number(b.dataset.lat), Number(b.dataset.lon));
+          map.setView(ll, Math.max(map.getZoom(), 14));
+          whatsHere(ll, b.dataset.name);
+        }));
       } catch (err) {
         box.querySelector(".here-facts").textContent = "Couldn't look it up just now.";
       }
@@ -211,6 +218,12 @@
           return `<span><b>${esc(t)}</b><svg viewBox="-6 -6 12 12" style="transform:rotate(${(h.dir || 0) + 180}deg)"><path d="M0 -5 L3 4 L0 2 L-3 4 Z"/></svg>${fmt(h.wind)}<i>${fmt(h.gust)}</i></span>`;
         }).join("")}</div>`;
       }
+      let near = "";
+      if (res.harbours?.length) {
+        near = `<div class="here-near"><span class="muted">Nearest harbours</span>${res.harbours.map((h) =>
+          `<div><button type="button" class="link-btn" data-lat="${h.lat}" data-lon="${h.lon}" data-name="${esc(h.name)}">${esc(h.name)}</button> <i class="muted">${(h.m / 1852).toFixed(1)} NM</i></div>`).join("")}</div>`;
+      }
+      hours += near;
       if (!rows.length && !hours) return '<div class="here-facts small muted">Nothing more known here.</div>';
       return `<div class="here-facts small"><dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${hours}</div>`;
     }
@@ -256,7 +269,7 @@
         map.closePopup();
         await loadPins();
       });
-      L.popup({ className: "aid-popup here-popup", maxWidth: 300, offset: [0, -28] }).setLatLng([p.lat, p.lon]).setContent(box).openOn(map);
+      L.popup({ className: "aid-popup here-popup", maxWidth: 300, offset: [0, -28], ...PAD }).setLatLng([p.lat, p.lon]).setContent(box).openOn(map);
     }
     function editPin(p) {
       const box = document.createElement("form");
@@ -278,7 +291,7 @@
         } catch (err) { toast(`Couldn't save: ${err.message || err}`); }
       });
       box.querySelector(".pin-cancel").addEventListener("click", () => map.closePopup());
-      L.popup({ className: "aid-popup here-popup", maxWidth: 300, offset: [0, -4] }).setLatLng([p.lat, p.lon]).setContent(box).openOn(map);
+      L.popup({ className: "aid-popup here-popup", maxWidth: 300, offset: [0, -4], ...PAD }).setLatLng([p.lat, p.lon]).setContent(box).openOn(map);
       setTimeout(() => box.querySelector("input")?.focus(), 50);
     }
     async function loadPins() {
@@ -298,8 +311,8 @@
     sheet.className = "search-sheet panel";
     sheet.hidden = true;
     sheet.innerHTML = `<div class="search-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg>
-      <input type="search" placeholder="Island, bay, harbour, pin or 60.12 24.45" autocomplete="off" enterkeyhint="search" aria-label="Find a place">
-      <button type="button" class="icon-button search-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <input type="text" inputmode="search" placeholder="Island, bay, harbour, pin or 60.12 24.45" autocomplete="off" enterkeyhint="search" aria-label="Find a place">
+      <button type="button" class="icon-button plain search-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
       <ul class="search-results"></ul>`;
     document.body.append(sheet);
     L.DomEvent.disableClickPropagation(sheet);

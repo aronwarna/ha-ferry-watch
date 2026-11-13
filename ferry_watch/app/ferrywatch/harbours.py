@@ -236,6 +236,21 @@ class Harbours:
         found.sort(key=lambda f: f[:2])
         return {"harbours": [f[2] for f in found[:limit]], "pending": bool(self._task and not self._task.done())}
 
+    def nearest(self, lat: float, lon: float, limit: int = 3, within_m: float = 20000) -> list[dict[str, Any]]:
+        """The nearest named harbours to a place, as the crow flies: [{name, kind, lat, lon, m}]."""
+        self._ready()
+        kx = math.cos(math.radians(lat))
+        near = []
+        for r in self.rows:
+            if not r[3]:
+                continue
+            d2 = (r[1] - lat) ** 2 + ((r[2] - lon) * kx) ** 2
+            if d2 < (within_m / 111000) ** 2:
+                near.append((d2, r))
+        near.sort(key=lambda n: n[0])
+        return [{"name": r[3], "kind": r[4], "lat": r[1], "lon": r[2], "m": round(distance_m(lat, lon, r[1], r[2]))}
+                for _, r in near[:limit]]
+
     def in_view(self, south: float, west: float, north: float, east: float) -> dict[str, Any]:
         """Harbours inside a box, and whether a download is under way."""
         self._ready()

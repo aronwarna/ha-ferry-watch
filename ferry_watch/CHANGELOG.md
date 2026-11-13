@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.64.0
+
+- **What's here** lists the three nearest harbours (tap one to go there) and stays clear of the
+  top bar and ship cards on a phone; five forecast hours on a phone, six on a computer.
+- Find a place: one close button (no second clear cross on phones).
+
 ## 0.63.0
 
 - **Place links**: What's here has a Link button (share sheet on the phone, copy on a computer):
