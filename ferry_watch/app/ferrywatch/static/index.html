@@ -226,9 +226,29 @@
       <ul id="route-find-results" class="route-find-results" aria-label="Harbours"></ul>
     </div>
     <ol id="route-points" class="route-points" aria-label="Points and legs"></ol>
+    <label id="route-room-box" class="route-room small" title="How far Automatic routes keep from the shore and from shoals" hidden>Room from shore
+      <select id="route-room" aria-label="Room from shore">
+        <option value="close">Close (50 m)</option>
+        <option value="normal">Normal (100 m)</option>
+        <option value="wide">Wide (200 m)</option>
+      </select>
+    </label>
+    <div id="route-facts" class="route-facts" aria-label="About this route" hidden></div>
+    <ul id="route-notes" class="route-notes" aria-label="Check on this route" hidden></ul>
+    <details id="route-checks" class="route-checks" hidden>
+      <summary><span id="route-checks-sum"></span></summary>
+      <ul id="route-checks-list"></ul>
+    </details>
     <div class="route-hint-row">
       <p id="route-hint" class="small muted route-hint" role="status"></p>
       <button type="button" id="route-pick-cancel" class="route-pick-cancel" hidden>Cancel</button>
+    </div>
+    <div id="route-power" class="route-sail" hidden>
+      <div id="power-styles" class="segmented route-modes" role="group" aria-label="Kind of route">
+        <button type="button" data-style="shelter" aria-pressed="true">Sheltered</button>
+        <button type="button" data-style="direct" aria-pressed="false">Direct</button>
+      </div>
+      <p id="power-sum" class="small muted" role="status"></p>
     </div>
     <div id="route-sail" class="route-sail" hidden>
       <div id="sail-styles" class="segmented route-modes" role="group" aria-label="Sailing route">
@@ -261,6 +281,9 @@
       </button>
       <button type="button" id="route-clear" class="icon-button" aria-label="Clear the route" title="Clear">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13"/></svg>
+      </button>
+      <button type="button" id="route-reverse" class="icon-button" aria-label="Reverse the route" title="Reverse: go the other way">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v15M7 4L3.5 7.5M7 4l3.5 3.5M17 20V5M17 20l-3.5-3.5M17 20l3.5-3.5"/></svg>
       </button>
       <button type="button" id="route-find-button" class="icon-button" aria-expanded="false" aria-label="Find a harbour by name" title="Find a harbour by name">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>

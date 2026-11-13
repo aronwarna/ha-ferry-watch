@@ -1106,7 +1106,8 @@ class Web:
 
     async def smartroute(self, request: web.Request) -> web.Response:
         """A route over open water for a boat (see smartroute.py): {from, to: [lat, lon], boat,
-        draught (m), speed (kn), depart (unix time), style ("fast" or "comfort", sailing)}."""
+        draught (m), speed (kn), depart (unix time), style ("fast" or "comfort", sailing),
+        room ("close", "normal" or "wide": how far the shore is kept)}."""
         try:
             body = await request.json()
         except ValueError:
@@ -1128,7 +1129,8 @@ class Web:
 
         out = await self.fw.smartroute.route(tuple(ends[0]), tuple(ends[1]), str(body.get("boat") or ""),
                                              number("draught", 0, 15), number("speed", 0.5, 60),
-                                             number("depart", 0, 4e9), str(body.get("style") or "fast"))
+                                             number("depart", 0, 4e9), str(body.get("style") or "fast"),
+                                             str(body.get("room") or "normal"))
         return web.json_response(out, headers={"Cache-Control": "no-store"})
 
     async def boats(self, request: web.Request) -> web.Response:

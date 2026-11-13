@@ -4094,8 +4094,8 @@
   const ROUTE_COLOR = "#c026d3";
   const ROUTE_ERROR = "#dc2626";
   const ROUTE_MAX_POINTS = 500;
-  const HANDLE_MIN_PX = 56; // a piece this long on screen gets a hollow dot to pull it by
-  const TURN_GAP_PX = 16; // fairway turns closer than this on screen to the last dot shown aren't given one
+  const HANDLE_MIN_PX = 84; // a piece this long on screen gets a hollow dot to pull it by
+  const TURN_GAP_PX = 26; // fairway turns closer than this on screen to the last dot shown aren't given one
   const SNAP_PX = 24; // a dot dragged this near a fairway snaps onto it
   const FAIRWAY_MIN_Z = 11; // the fairways to snap to are fetched from this zoom
   // drag: the dot being dragged { base: the plan before, op, stop: its index now, snap }
@@ -4103,6 +4103,8 @@
   let routeMode = ["fw", "auto"].includes(store.get("fw-route-mode")) ? store.get("fw-route-mode") : "line"; // for new legs
   const newLegMode = () => (routeMode === "auto" ? "auto" : routeMode === "fw");
   let sailStyle = store.get("fw-sail-style") === "comfort" ? "comfort" : "fast";
+  let powerStyle = store.get("fw-power-style") === "direct" ? "direct" : "shelter";
+  let routeRoom = ["close", "normal", "wide"].includes(store.get("fw-route-room")) ? store.get("fw-route-room") : "normal";
   let routeSpeed = Number(store.get("fw-route-speed")) || 25;
   let routeDraught = Number(store.get("fw-route-draught")) || 1.5;
   let routeLayer = null; // { group, casing, legs, labels, handles, turns, markers, pick }
@@ -4241,7 +4243,7 @@
       res = leg.auto
         ? await api("api/smartroute", { method: "POST", body: {
           from: [a[0], a[1]], to: [b[0], b[1]], boat: routeBoat, draught: routeDraught, speed: routeSpeed,
-          depart: departFor(i), style: sailStyle } })
+          depart: departFor(i), style: isSail() ? sailStyle : powerStyle, room: routeRoom } })
         : await api(`api/autoroute?from=${a[0]},${a[1]}&to=${b[0]},${b[1]}&draught=${routeDraught}${on ? `&on=${on}` : ""}`);
     } catch (err) {
       res = { error: String(err.message || err) };
@@ -4262,7 +4264,7 @@
       if (leg.auto) {
         leg.info = { hows: res.hows || "", nm: res.nm || {}, seconds: res.seconds, shallow: res.shallow_nm || 0, style: res.style || null,
           alt: res.alt || null, depart: res.depart || null, sail: isSail() && res.style !== "motor", cell: res.cell_m,
-          shelter: res.shelter || null, exposed: res.exposed_nm, trunk: res.trunk_nm || 0, fairway: res.fairway_nm || 0 };
+          shelter: res.shelter || null, exposed: res.exposed_nm, trunk: res.trunk_nm || 0, fairway: res.fairway_nm || 0, checks: res.checks || [], near: res.near_m || 100, metres: res.metres };
       }
       leg.note = [...(res.warnings || []), res.downloading && !leg.auto ? "Some chart areas are still downloading: tap the leg and plan it again in a minute for a better way." : ""]
         .filter(Boolean).join(" ");
@@ -4499,12 +4501,13 @@
       const group = L.layerGroup();
       routeLayer = {
         group,
-        casing: L.polyline([], { color: "#fff", weight: 7, opacity: 0.85, interactive: false }).addTo(group),
+        casing: L.polyline([], { color: "#fff", weight: 8, opacity: 0.95, lineJoin: "round", lineCap: "round", interactive: false }).addTo(group),
         legs: L.layerGroup().addTo(group),
         labels: L.layerGroup().addTo(group),
         handles: L.layerGroup().addTo(group),
         turns: L.layerGroup().addTo(group),
         markers: L.layerGroup().addTo(group),
+        checks: L.layerGroup().addTo(group),
         pick: L.layerGroup().addTo(group),
       };
     }
@@ -4530,9 +4533,38 @@
       if (m.iconKey !== key) { m.iconKey = key; m.setIcon(icon); m.setZIndexOffset(key === "bend" ? 1900 : 2000); }
     });
     drawDots();
+    drawChecks();
     drawPick();
     renderRoutePanel();
     saveDraft();
+  }
+
+  // The places an automatic route says to check yourself (close to the shore or a shoal,
+  // or over water of uncertain depth): a small sign on the map and a row in the panel.
+  function routeChecks() {
+    const out = [];
+    route.legs.forEach((leg) => {
+      if (!leg.auto || legPending(leg) || leg.error) return;
+      for (const c of leg.info?.checks || []) {
+        out.push({ ...c, text: c.kind === "depth"
+          ? `Depth uncertain for ${`${c.m} m`}: the chart only gives a range that may be too shallow`
+          : `Within ${leg.info.near} m of the shore or a shoal for ${c.m} m` });
+      }
+    });
+    return out;
+  }
+  function showCheck(c) {
+    map.setView([c.lat, c.lon], Math.max(map.getZoom(), 14));
+    L.popup({ className: "check-popup", offset: [0, -6] }).setLatLng([c.lat, c.lon])
+      .setContent(`<b>Check this place</b><br>${esc(c.text)}.`).openOn(map);
+  }
+  function drawChecks() {
+    routeLayer.checks.clearLayers();
+    for (const c of routeChecks()) {
+      L.marker([c.lat, c.lon], { keyboard: false, zIndexOffset: 1200, bubblingMouseEvents: false, title: c.text,
+        icon: L.divIcon({ className: `route-check ${c.kind}`, html: "<span>!</span>", iconSize: [18, 18], iconAnchor: [9, 22] }) })
+        .addTo(routeLayer.checks).on("click", (e) => { L.DomEvent.stop(e); showCheck(c); });
+    }
   }
 
   // Each leg: straight, along the fairways (a white line down its middle), still being
@@ -4554,7 +4586,7 @@
         drawAutoLeg(group, pts, leg.info.hows);
         if (leg.info.alt && !route.dragging) drawAltLeg(group, leg, i);
       } else {
-        L.polyline(pts, { color: ROUTE_COLOR, weight: leg.fw ? 4.5 : 3.5, opacity: 1, interactive: false }).addTo(group);
+        L.polyline(pts, { color: ROUTE_COLOR, weight: leg.fw ? 4 : 3.5, opacity: 1, lineJoin: "round", lineCap: "round", interactive: false }).addTo(group);
         if (leg.fw) L.polyline(pts, { color: "#fff", weight: 1.3, opacity: 0.95, interactive: false }).addTo(group);
       }
       if (!route.dragging) {
@@ -4568,17 +4600,18 @@
   // per piece): o open water (white dots down the middle), f along a fairway (a white line),
   // s sailing (dots), b beating (white dashes), g gybing downwind (short dashes), m under
   // engine (plain). A capital letter is water of uncertain depth: amber and dashed.
-  const AUTO_MID = { o: "1 7", s: "1 7", b: "8 6", g: "3 6", f: null };
+  const AUTO_MID = { b: "8 6", g: "3 6", f: null };
   function drawAutoLeg(group, pts, hows) {
     let a = 0;
     for (let k = 1; k <= hows.length; k++) {
       if (k < hows.length && hows[k] === hows[a]) continue;
       const run = pts.slice(a, k + 1), c = hows[a], low = c.toLowerCase();
       if (c !== low) {
-        L.polyline(run, { color: "#b45309", weight: 4.5, dashArray: "7 6", lineCap: "butt", interactive: false }).addTo(group);
+        L.polyline(run, { color: "#b45309", weight: 4, dashArray: "7 6", lineCap: "butt", interactive: false }).addTo(group);
       } else {
-        L.polyline(run, { color: ROUTE_COLOR, weight: 4.5, interactive: false }).addTo(group);
-        if (low !== "m") L.polyline(run, { color: "#fff", weight: low === "f" ? 1.3 : 1.7, opacity: 0.95, dashArray: AUTO_MID[low] ?? null, lineCap: "round", interactive: false }).addTo(group);
+        L.polyline(run, { color: ROUTE_COLOR, weight: 4, lineJoin: "round", lineCap: "round", interactive: false }).addTo(group);
+        // Plain over open water and under sail or engine; a fairway has its white middle line.
+        if (low === "f" || low === "b" || low === "g") L.polyline(run, { color: "#fff", weight: low === "f" ? 1.3 : 1.7, opacity: 0.95, dashArray: AUTO_MID[low] ?? null, lineCap: "round", interactive: false }).addTo(group);
       }
       a = k;
     }
@@ -4594,7 +4627,7 @@
     const pick = (e) => { L.DomEvent.stop(e); setSailStyle(alt.style); };
     L.polyline(pts, { color: "#000", opacity: 0, weight: 20, interactive: true, bubblingMouseEvents: false }).addTo(group).on("click", pick);
     const diff = Math.round((alt.seconds - leg.info.seconds) / 60);
-    const text = `${alt.style === "comfort" ? "Comfortable" : "Fastest"} ${diff >= 0 ? "+" : "−"}${NavM.duration(Math.abs(diff) * 60)}`;
+    const text = `${{ comfort: "Comfortable", fast: "Fastest", shelter: "Sheltered", direct: "Direct" }[alt.style] || "Other"} ${diff >= 0 ? "+" : "−"}${NavM.duration(Math.abs(diff) * 60)}`;
     if (screenLength(pts) > 140) {
       L.marker(halfwayAt(pts, 0.5), { keyboard: false, bubblingMouseEvents: false,
         icon: L.divIcon({ className: "leg-label alt", html: `<span>${esc(text)}</span>`, iconSize: null }) }).addTo(group).on("click", pick);
@@ -4602,9 +4635,13 @@
   }
 
   function setSailStyle(style) {
-    if (style !== "fast" && style !== "comfort") return;
-    sailStyle = style;
-    store.set("fw-sail-style", style);
+    if (style === "shelter" || style === "direct") {
+      powerStyle = style;
+      store.set("fw-power-style", style);
+    } else if (style === "fast" || style === "comfort") {
+      sailStyle = style;
+      store.set("fw-sail-style", style);
+    } else return;
     planLegs(route.legs.map((l, i) => (l.auto ? i : -1)).filter((i) => i >= 0));
   }
 
@@ -4650,7 +4687,7 @@
       const along = halfwayAt(pts, 0.5 + Math.min(0.25, 60 / len));
       const bad = route.legs.slice(a, b).some((l) => l.fw && l.error);
       L.marker(along, {
-        interactive: false, keyboard: false,
+        interactive: false, keyboard: false, zIndexOffset: 1500, // over the dots, which it doesn't take taps from
         icon: L.divIcon({ className: "leg-label", html: `<span${bad ? ' class="error"' : ""}>${esc(sectionLabel(a, b, pts))}</span>`, iconSize: null }),
       }).addTo(routeLayer.labels);
     }
@@ -4856,17 +4893,30 @@
   }
 
   // An automatic leg in words: for whom, and how it is travelled.
-  // A small boat is kept in the shelter of the islands: for which wind, and what stays open.
-  function shelterText(legs) {
+  // What an automatic route is made of, as short facts for the panel: [text, tone, title].
+  function autoFacts(legs) {
+    const sum = (f) => legs.reduce((n, l) => n + (f(l.info || {}) || 0), 0);
+    const out = [];
+    const b = boatInfo();
+    if (b) out.push([`${b.title} · needs ${(routeDraught + (b.keel_margin || 0)).toFixed(1)} m`, "", "The water depth the route is planned for: the draught and the room under the keel"]);
+    const fw = sum((x) => x.fairway), trunk = sum((x) => x.trunk), shallow = sum((x) => x.shallow);
+    if (fw >= 0.1) out.push([`Fairways ${fw.toFixed(1)} NM`, "", "Along marked fairways"]);
+    if (trunk >= 0.1) out.push([`Green routes ${trunk.toFixed(1)} NM`, "good", "Of that, on the chart's green small-craft routes"]);
     const sh = legs.map((l) => l.info?.shelter).find((x) => x && x.weight > 0);
-    if (!sh) return "";
-    const exposed = legs.reduce((n, l) => n + (l.info?.exposed || 0), 0);
-    const wind = sh.wind_ms != null
-      ? `for the wind forecast at ${clock(sh.at)} (${Math.round(sh.wind_ms)} m/s${sh.wind_from != null ? ` from ${compass(sh.wind_from)}` : ""})`
-      : "from all sides (no wind forecast)";
-    const fw = legs.reduce((n, l) => n + (l.info?.fairway || 0), 0), trunk = legs.reduce((n, l) => n + (l.info?.trunk || 0), 0);
-    const along = fw >= 0.1 ? ` ${fw.toFixed(1)} NM is along fairways${trunk >= 0.1 ? ` (${trunk.toFixed(1)} on the green boat routes)` : ""}.` : "";
-    return `It prefers marked fairways, the green boat routes most, and keeps to the shelter of islands where that isn't much further, ${wind}: ${exposed >= 0.1 ? `${exposed.toFixed(1)} NM lies open` : "none of it lies open"}.${along} Pick another hour below to plan for that hour's wind.`;
+    if (sh) {
+      const exposed = sum((x) => x.exposed);
+      out.push([exposed >= 0.1 ? `Open water ${exposed.toFixed(1)} NM` : "All in shelter", exposed >= 0.1 ? "" : "good",
+        "How much of the route lies open to the wind. The route keeps to the shelter of islands where that isn't much further."]);
+      out.push([sh.wind_ms != null ? `Wind ${Math.round(sh.wind_ms)} m/s${sh.wind_from != null ? ` ${compass(sh.wind_from)}` : ""} at ${clock(sh.at)}` : "No wind forecast",
+        "", sh.wind_ms != null ? "The forecast the shelter was planned for. Pick another hour under Boating weather to plan for that hour's wind."
+          : "Planned for shelter from all sides"]);
+    }
+    const total = sum((x) => x.metres) / 1852;
+    if (b?.fuel_lnm && !isSail() && total >= 0.5) {
+      out.push([`Fuel about ${Math.max(1, Math.round(total * b.fuel_lnm))} l`, "", `A rough guess at cruising speed: ${b.fuel_lnm} litres a nautical mile for ${b.title}. Your engine and load decide.`]);
+    }
+    if (shallow >= 0.1) out.push([`Uncertain depth ${shallow.toFixed(1)} NM`, "warn", "Water the chart only gives as a depth range that may be too shallow: the amber dashed stretches"]);
+    return out;
   }
 
   function autoLegText(legs) {
@@ -4903,12 +4953,11 @@
           : "Tap the map to add points. Drag a point to move it, tap it to remove it." };
     }
     if (legs.some((l) => l.auto)) {
-      return { text: [`Planned for ${boatInfo()?.title || "the boat"} from the chart's depths, planning only: check it on the chart.`, shelterText(legs), ...notes,
-        "Drag a dot to change the way, or tap the line for more."].filter(Boolean).join(" ") };
+      return { text: "Planning only: check the route on the chart. Drag a dot to change the way, or tap the line for more.",
+        facts: autoFacts(legs.filter((l) => l.auto)), notes };
     }
     if (legs.some((l) => l.fw)) {
-      return { text: [`Fairway legs for ${routeDraught} m draught, planning only: check them on the chart.`, ...notes,
-        "Drag a dot on the line onto another fairway to go that way, or off the fairways to go straight there; or tap the line for “Straight from here to…”."].join(" ") };
+      return { text: `Fairway legs for ${routeDraught} m draught, planning only: check them on the chart. Drag a dot onto another fairway to go that way, or off the fairways to go straight there.`, notes };
     }
     return null;
   }
@@ -4923,6 +4972,33 @@
     setText($("route-hint"), hint?.text || "");
     $("route-hint").hidden = !hint;
     $("route-hint").classList.toggle("error", Boolean(hint?.error));
+    const facts = hint?.facts || [];
+    $("route-facts").replaceChildren(...facts.map(([text, tone, title]) => {
+      const chip = document.createElement("span");
+      chip.className = `route-fact${tone ? ` ${tone}` : ""}`;
+      chip.textContent = text;
+      if (title) chip.title = title;
+      return chip;
+    }));
+    $("route-facts").hidden = !facts.length;
+    const checks = route.pick ? [] : routeChecks();
+    $("route-checks").hidden = !checks.length;
+    setText($("route-checks-sum"), `${checks.length} ${checks.length === 1 ? "place" : "places"} to check yourself`);
+    $("route-checks-list").replaceChildren(...checks.map((c) => {
+      const li = document.createElement("li");
+      li.className = c.kind;
+      li.tabIndex = 0;
+      li.textContent = c.text;
+      li.addEventListener("click", () => showCheck(c));
+      li.addEventListener("keydown", (e) => { if (e.key === "Enter") showCheck(c); });
+      return li;
+    }));
+    $("route-room-box").hidden = !(routeMode === "auto" || route.legs.some((l) => l.auto));
+    $("route-room").value = routeRoom;
+    $("route-reverse").disabled = stops.length < 2 || route.legs.some(legPending);
+    const notes = hint?.notes || [];
+    $("route-notes").replaceChildren(...notes.map((text) => { const li = document.createElement("li"); li.textContent = text; return li; }));
+    $("route-notes").hidden = !notes.length;
     $("route-pick-cancel").hidden = !route.pick;
 
     const numbers = stopNumbers();
@@ -5047,7 +5123,25 @@
   }
 
   // The sailing choice: fastest or comfortable, and what the planned legs are made of.
+  // A motor boat's two routes: the sheltered one along fairways, and the direct one.
+  function renderPower() {
+    const legs = route.legs.filter((l) => l.auto && l.info && !l.info.sail);
+    const show = route.on && !isSail() && boatInfo()?.shelter > 0 && route.legs.some((l) => l.auto);
+    $("route-power").hidden = !show;
+    if (!show) return;
+    for (const b of $("power-styles").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.style === powerStyle));
+    const alts = legs.filter((l) => l.info.alt);
+    if (!legs.length) { setText($("power-sum"), ""); return; }
+    if (!alts.length) { setText($("power-sum"), "Sheltered and direct are the same route here."); return; }
+    const nm = (m) => m / 1852;
+    const dNm = alts.reduce((n, l) => n + nm(l.info.alt.metres - l.info.metres), 0);
+    const open = alts.reduce((n, l) => n + (l.info.alt.exposed_nm || 0), 0);
+    const other = powerStyle === "shelter" ? "direct" : "sheltered";
+    setText($("power-sum"), `The ${other} route (dashed purple) is ${Math.abs(dNm).toFixed(1)} NM ${dNm < 0 ? "shorter" : "longer"}, with ${open.toFixed(1)} NM of open water. Tap it to take it.`);
+  }
+
   function renderSail() {
+    renderPower();
     const legs = route.legs.filter((l) => l.auto && l.info?.sail);
     const show = route.on && isSail() && route.legs.some((l) => l.auto);
     $("route-sail").hidden = !show;
@@ -5253,7 +5347,7 @@
       const to = k < levels.length ? (d.samples[k - 1][2] + d.samples[k][2]) / 2 : d.samples[levels.length - 1][2];
       const a = at(from), b = at(to);
       const line = [a.p, ...pts.slice(a.i + 1, b.i + 1), b.p];
-      L.polyline(line, { pane: "routeWx", color: RW_COLORS[levels[start]], weight: 15, opacity: 0.5, lineCap: "butt", interactive: false }).addTo(rw.layer);
+      L.polyline(line, { pane: "routeWx", color: RW_COLORS[levels[start]], weight: 14, opacity: levels[start] ? 0.38 : 0.22, lineCap: "butt", lineJoin: "round", interactive: false }).addTo(rw.layer);
       start = k;
     }
     if (h.score) {
@@ -5288,6 +5382,7 @@
     renderRoutePanel();
   });
   for (const b of $("sail-styles").querySelectorAll("button")) b.addEventListener("click", () => setSailStyle(b.dataset.style));
+  for (const b of $("power-styles").querySelectorAll("button")) b.addEventListener("click", () => setSailStyle(b.dataset.style));
   renderBoats();
   api("api/boats").then((got) => {
     if (!got?.boats) return;
@@ -5429,6 +5524,25 @@
   $("route-button").addEventListener("click", () => setRouteMode(!route.on));
   $("route-close").addEventListener("click", () => setRouteMode(false));
   $("route-undo").addEventListener("click", () => { route.pick = null; undoRoute(); });
+  // The other way: the stops and legs turned round; automatic legs are planned again (the
+  // wind and the shelter are not the same on the way back).
+  $("route-reverse").addEventListener("click", () => {
+    if (route.stops.length < 2) return;
+    pushUndo();
+    route.pick = null;
+    route.stops.reverse();
+    route.legs.reverse();
+    for (const leg of route.legs) leg.path = (leg.path || []).slice().reverse();
+    Plan.fixEnds?.(route.stops);
+    const again = route.legs.map((l, i) => (l.auto ? i : -1)).filter((i) => i >= 0);
+    if (again.length) planLegs(again); else drawRoute();
+  });
+  $("route-room").addEventListener("change", (e) => {
+    routeRoom = e.target.value;
+    store.set("fw-route-room", routeRoom);
+    const again = route.legs.map((l, i) => (l.auto ? i : -1)).filter((i) => i >= 0);
+    if (again.length) planLegs(again); else renderRoutePanel();
+  });
   $("route-pick-cancel").addEventListener("click", cancelPick);
   $("route-clear").addEventListener("click", clearRoute);
   $("route-save").addEventListener("click", saveRoute);

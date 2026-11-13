@@ -399,6 +399,34 @@ works out the quickest way through water deep enough.
 - The start and the end may be up to 2.5 km from open water (a berth in a shallow
   bay); the route says so when it is more than 300 m.
 
+**Sheltered or Direct.** For the motor boats the planner works out both the
+sheltered route (islands, fairways, green routes, as described above) and the
+direct one (no shelter counted, fairways only 15 % shorter). When they differ, the
+one not chosen is drawn dashed in purple with its time difference; the panel says
+how much shorter it is and how many miles of it lie open. Tap the dashed line or
+the Sheltered / Direct buttons to switch. The choice is remembered.
+
+**Fuel.** The label "Fuel about N l" multiplies the route's length by a typical
+consumption at cruising speed: 0.5 l/NM for Buster M, 0.8 for Buster XL, 1.4 for
+the cabin boat. It is a rough guess; your engine, load and the sea decide.
+
+**Places to check.** The route lists every stretch that passes within the shore
+room of the shore or a shoal for 80 m or more, or over water of uncertain depth.
+Each has an orange sign on the map and a row under "places to check yourself" in
+the panel; tap one to go there and read why. On a marked fairway nothing is
+listed for being near the shore.
+
+**Room from shore** sets how far the route keeps off: Close (50 m counted longer,
+15 m closed), Normal (100 m, 30 m) or Wide (200 m, 60 m). Wide can close narrow
+sounds that have no marked fairway.
+
+**Reverse** (the two arrows by the bin) turns the route round. Automatic legs are
+planned again for the way back.
+
+The panel shows what the route is made of as short labels: the boat and the depth
+it needs, miles along fairways and on the green small-craft routes, miles of open
+water, and the wind it was planned for. Hover a label on a computer for what it means.
+
 The leg can be changed like a fairway leg: drag a dot, add stops, or tap the line
 for the menu (**Automatic, over open water** is there for any leg, as is **Plan it
 again**). Only chart areas already downloaded count; missing ones are fetched and
