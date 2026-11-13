@@ -52,7 +52,9 @@ STATIC_TYPES = {".js": "text/javascript", ".css": "text/css", ".html": "text/htm
 INGRESS_PROXY = "172.30.32.2"
 TAIL_MAX_MINUTES = 24 * 60
 # A passage replay shows its whole trip, port to port, but no more than this either side.
-REPLAY_MAX_SPAN = 18 * 3600
+REPLAY_MAX_SPAN = 20 * 3600
+# Stops shorter than this (a call at Mariehamn on the way) don't end the trip.
+REPLAY_MIN_PORT_STOP = 60 * 60
 FLEET_PUSH_SECONDS = 5
 
 
@@ -467,7 +469,8 @@ class Web:
                 around = int(request.query["around"])
             except ValueError:
                 raise web.HTTPBadRequest(text="Invalid time") from None
-            since, until = self.fw.store.voyage_around(mmsi, around, STOP_SPEED, REPLAY_MAX_SPAN)
+            since, until = self.fw.store.voyage_around(mmsi, around, STOP_SPEED, REPLAY_MAX_SPAN,
+                                                        REPLAY_MIN_PORT_STOP)
             points = self.fw.store.track(mmsi, since, until, speed=True)
             return web.json_response({"mmsi": mmsi, "since": since, "until": until, "points": points})
         if until is not None:

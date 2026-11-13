@@ -2427,8 +2427,9 @@
   }
 
   // --- passage replay -------------------------------------------------------------
-  // The whole trip a recorded passage was part of (port to port, the server caps it),
-  // with a dot every 10 minutes. The map opens on the hour either side of the passage.
+  // The whole trip a recorded passage was part of, Stockholm to Helsinki or back (the
+  // Åland call on the way doesn't split it), drawn like a ship's voyage: coloured by
+  // speed, tap anywhere for the time. The map opens on the hour either side of the passage.
 
   const REPLAY_FOCUS = 3600;
   let replayLayer = null;
@@ -2454,16 +2455,7 @@
     const pts = data.points.map((q) => [q[0], q[1]]);
     replayLayer = L.layerGroup().addTo(map);
     if (pts.length > 1) {
-      L.polyline(pts, { color: "#fff", weight: 8, opacity: 0.8, interactive: false }).addTo(replayLayer);
-      L.polyline(pts, { color, weight: 4, opacity: 1, interactive: false }).addTo(replayLayer);
-      let next = 0;
-      for (const [lat, lon, ts] of data.points) {
-        if (ts < next) continue;
-        next = ts - (ts % 600) + 600;
-        L.circleMarker([lat, lon], { radius: 4, color: "#fff", weight: 1.5, fillColor: color, fillOpacity: 1 })
-          .bindTooltip(clock(ts), { direction: "top" })
-          .addTo(replayLayer);
-      }
+      speedTrack(data.points).addTo(replayLayer);
       const first = data.points[0], last = data.points[data.points.length - 1];
       L.tooltip({ permanent: true, direction: "left", className: "replay-time" })
         .setLatLng([first[0], first[1]]).setContent(clock(first[2])).addTo(replayLayer);
@@ -2483,7 +2475,7 @@
     $("replay-when").textContent = p.sog ? `${when} · ${p.sog.toFixed(0)} kn` : when;
     const keepDays = lastState?.retention_days ?? 60;
     $("replay-note").textContent = data.points.length > 1
-      ? "The whole trip, port to port. Dots every 10 minutes; tap one for the time."
+      ? "The whole trip, port to port, coloured by speed. Tap the line for the time there."
       : now() - p.ts > keepDays * 86400
         ? `The track isn't stored any more (positions are kept for ${keepDays} days).`
         : "No track was stored for this passage.";
