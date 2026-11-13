@@ -287,3 +287,51 @@ def test_small_boat_takes_the_green_boat_route():
     idx = S.SmartRouter._shape_power(grid, found, 20)
     out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
     assert out["trunk_nm"] > 0.9 * out["metres"] / 1852 and len(idx) <= 6
+
+
+def test_places_to_check_and_room_from_shore():
+    # A gap between two islands 5 cells (200 m) wide: the only way through.
+    walls = [(38, 0, 42, 28), (38, 33, 42, 60)]
+    grid = open_grid(walls=walls)
+    a, b = (30 + S.BORDER, 5 + S.BORDER), (30 + S.BORDER, 75 + S.BORDER)
+    found = S.search_power(grid, a, b, 20)
+    idx = S.SmartRouter._shape_power(grid, found, 20)
+    out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
+    near = [c for c in out["checks"] if c["kind"] == "near"]
+    assert len(near) == 1 and near[0]["m"] >= 80  # the gap, said once, with where it is
+    lat, lon = grid.latlon(30 + S.BORDER, 40 + S.BORDER)
+    assert distance_m(near[0]["lat"], near[0]["lon"], lat, lon) < 150
+    # In open water there is nothing to check.
+    clear = open_grid()
+    found = S.search_power(clear, a, b, 20)
+    out = S.describe(clear, found["cells"], [0, len(found["cells"]) - 1], found, False, clear.latlon(*a), clear.latlon(*b))
+    assert out["checks"] == []
+    # Wide room closes more water round the shore than close room.
+    cls = Image.new("L", (grid.w, grid.h), 2)
+    for x0, y0, x1, y1 in walls:
+        cls.paste(0, (x0 + S.BORDER, y0 + S.BORDER, x1 + S.BORDER, y1 + S.BORDER))
+    counts = {}
+    for name, room in S.SHORE_ROOM.items():
+        g = open_grid()
+        S.finish(g, cls, Image.new("L", (g.w, g.h), 0), None, room)
+        counts[name] = (sum(1 for f in g.flags if f), sum(1 for f in g.flags if f & S.NEAR))
+    assert counts["close"][0] >= counts["normal"][0] > counts["wide"][0]
+    assert counts["close"][1] < counts["normal"][1] < counts["wide"][1]
+
+
+def test_motor_boat_gets_the_direct_route_beside_the_sheltered_one(tmp_path):
+    class Chart:  # no chart on disk: the grid is given
+        pass
+    router = S.SmartRouter(Chart(), FakeWeather(180, 12))
+    grid = island_coast()
+
+    async def fixed(*args, **kwargs):
+        return grid
+    router._grid = fixed
+    a, b = grid.latlon(64 + S.BORDER, 5 + S.BORDER), grid.latlon(64 + S.BORDER, 295 + S.BORDER)
+    out = asyncio.run(router.route(a, b, "buster_m"))
+    assert out["style"] == "shelter" and out["alt"]["style"] == "direct"
+    assert out["alt"]["metres"] < out["metres"] and out["alt"]["exposed_nm"] > out["exposed_nm"]
+    other = asyncio.run(router.route(a, b, "buster_m", style="direct"))
+    assert other["style"] == "direct" and other["alt"]["style"] == "shelter"
+    assert other["points"] == out["alt"]["points"]

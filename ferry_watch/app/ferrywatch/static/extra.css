@@ -1346,3 +1346,75 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 .search-close { width: 34px; height: 34px; }
 @media (max-width: 560px) { .here-popup .leaflet-popup-content { margin: 10px 12px; } .here-hours span:nth-child(n+6) { display: none; } }
 .ashore-icon span { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; color: #fff; font-size: 11px; font-weight: 700; border: 1.5px solid #fff; box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+/* --- Route tool, tidied (0.55) ----------------------------------------------------------- */
+.route-panel { gap: 8px; padding: 10px 10px 12px 12px; }
+#route-total { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.route-facts { display: flex; flex-wrap: wrap; gap: 5px; }
+.route-fact {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--route) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--route) 22%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.route-fact.good { background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.route-fact.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.route-notes {
+  margin: 0;
+  padding: 7px 10px 7px 26px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.route-notes li + li { margin-top: 3px; }
+.route-hint { font-size: 12px; line-height: 1.4; }
+/* The list of stops and legs: a rail down the side, the leg a quiet row between two stops. */
+.rp-leg { margin-left: 10px; padding: 3px 0 3px 18px; border-radius: 0 8px 8px 0; }
+.rp-leg:hover, .rp-leg:focus-visible { background: color-mix(in srgb, var(--route) 8%, transparent); }
+.rp-leg .leg-how { color: var(--muted); }
+.rp-row { min-height: 32px; }
+.rp-row .grow { font-variant-numeric: tabular-nums; }
+
+/* On the map: smaller, quieter dots that grow under the pointer; rounder labels. */
+.rp-icon .rp { width: 26px; height: 26px; border-width: 2.5px; font-size: 12px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); }
+.rp-bend { width: 9px; height: 9px; border-width: 1.5px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: width 0.12s, height 0.12s; }
+.rp-bend-icon:hover .rp-bend { width: 15px; height: 15px; }
+.rp-mid { width: 11px; height: 11px; border-width: 2px; opacity: 0.8; transition: width 0.12s, height 0.12s, opacity 0.12s; }
+.rp-mid-icon:hover .rp-mid { width: 17px; height: 17px; opacity: 1; }
+@media (pointer: coarse) {
+  .rp-bend { width: 11px; height: 11px; }
+  .rp-mid { width: 13px; height: 13px; opacity: 0.9; }
+}
+.leg-label span {
+  border-radius: 999px;
+  padding: 2px 9px;
+  border-color: color-mix(in srgb, var(--route, #c026d3) 30%, transparent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+}
+.route-room { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.route-room select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; }
+.route-checks { border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 12px; }
+.route-checks summary { cursor: pointer; padding: 6px 10px; font-weight: 600; }
+.route-checks ul { list-style: none; margin: 0; padding: 0 6px 6px; max-height: 150px; overflow-y: auto; }
+.route-checks li { position: relative; padding: 5px 6px 5px 22px; border-radius: 7px; cursor: pointer; line-height: 1.35; }
+.route-checks li:hover, .route-checks li:focus-visible { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.route-checks li::before { content: "!"; position: absolute; left: 4px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: #d97706; color: #fff; font: 700 10px/13px system-ui, sans-serif; text-align: center; }
+.route-checks li.depth::before { background: #b45309; }
+.route-check span {
+  display: block; width: 18px; height: 18px; border-radius: 50% 50% 50% 2px; transform: rotate(-45deg);
+  background: #d97706; border: 1.5px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  color: transparent; cursor: pointer; position: relative;
+}
+.route-check span::after { content: "!"; position: absolute; inset: 0; transform: rotate(45deg); color: #fff; font: 700 11px/15px system-ui, sans-serif; text-align: center; }
+.route-check.depth span { background: #b45309; }
+.route-dragging .route-check { visibility: hidden; }
+@media (min-width: 900px) {
+  /* Clear of the ship list along the bottom. */
+  .route-panel { max-height: calc(100vh - var(--top) - var(--topbar-h) - 150px); }
+}

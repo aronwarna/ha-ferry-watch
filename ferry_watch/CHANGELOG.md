@@ -68,6 +68,27 @@
 - All these layers come from one list on the NAS (mapsources.py), which reads each service's
   layer list once a day, so new years appear by themselves. Settings › Copy diagnostics lists
   what each service gave.
+## 0.55.0
+
+- Automatic routes now list the **places to check yourself**, as the big chart plotter apps
+  do: every stretch that passes close to the shore or a shoal, or over water where the chart
+  only gives a depth range. Each has a small orange sign on the map and a row in the route
+  panel with the reason; tap either to go there.
+- Motor boats get **two routes to choose from**, as the sailboat already did: the
+  **Sheltered** one (inside the islands, along fairways) and the **Direct** one. The other
+  is drawn dashed in purple with the time it saves or costs and its miles of open water;
+  tap it, or the Sheltered / Direct buttons, to take it.
+- A rough **fuel estimate** for the route (litres, from a typical figure for each boat).
+- New **Room from shore** choice for Automatic routes: Close (50 m), Normal (100 m) or Wide
+  (200 m). It sets how far the route keeps from the shore and from shoals.
+- New **Reverse** button in the route tool: the same route the other way. Automatic legs are
+  planned again, because wind and shelter differ on the way back.
+- The route tool looks tidier. What a route is made of is shown as short labels (boat and
+  depth needed, miles on fairways and green boat routes, miles of open water, the wind it
+  was planned for) instead of a long paragraph, and warnings sit in their own box.
+- The route on the map is cleaner: one solid line with a white edge, a white middle line only
+  on fairways, smaller turning dots that grow under the pointer, fewer of them, rounder
+  distance labels, and a lighter weather band under the line.
 
 ## 0.54.1
 

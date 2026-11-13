@@ -68,6 +68,9 @@ SHELTER_UPWIND_SHARE = 1.0
 SHELTER_LAND_SHARE = 0.10  # this much land around (or upwind): fully sheltered
 SHELTER_WIND = (0.35, 2.0)  # the boat's weight times wind / its "okay" wind, kept within these
 EXPOSED_FROM = 0.5  # of full exposure: counted as open water in the sums
+SHORE_ROOM = {"close": 0.5, "normal": 1.0, "wide": 2.0}  # the panel's "Room from shore": times the shore distances
+CHECK_MIN_M = 80  # a stretch near the shore or over uncertain depth this long is listed as a place to check
+CHECK_MAX = 12
 STRAIGHT_SLACK = 1.02  # a straight line may cost this much more than the way it replaces
 FAIRWAY_KEEP = 0.9  # a straight line keeps this much of the fairway the way it replaces ran on
 MERGE_M = 600  # two turning points this near are made one where that costs no more than DROP_SLACK
@@ -112,6 +115,7 @@ class Grid:
         self.land: Image.Image | None = None  # the share of land and shoals around, coarse (see finish)
         self.fw_lines: dict[tuple[int, int], array] = {}  # fairway lines by 16-cell tile: r0, c0, r1, c1...
         self.fw_bends: dict[tuple[int, int], list[tuple[float, float]]] = {}  # where fairways turn
+        self.room = 1.0
         self.built = 0.0
         self.missing = 0
         self.coarse = 0  # blocks with only the base map's coastline
@@ -272,19 +276,22 @@ def render_base(bx: int, by: int, w: int, h: int) -> Image.Image:
     return img
 
 
-def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, Any]] | None = None) -> None:
-    """The grid's flags from the depth classes and the fairway mask, and its speed limits."""
+def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, Any]] | None = None,
+           room: float = 1.0) -> None:
+    """The grid's flags from the depth classes and the fairway mask, and its speed limits.
+    `room` scales the distances kept from the shore and shoals (the panel's "Room from shore")."""
     cell = grid.cell_m
+    grid.room = room
     trunk = fw.point(lambda v: 255 if v == 255 else 0)
     fw = fw.point(lambda v: 255 if v else 0)
     nav = cls.point(lambda v: 255 if v else 0)
     marginal = cls.point(lambda v: 255 if v == 1 else 0)
-    shore = round(SHORE_CLEAR_M / cell)
+    shore = round(SHORE_CLEAR_M * room / cell)
     if shore:
         nav = nav.filter(ImageFilter.MinFilter(2 * shore + 1))
     nav = ImageChops.lighter(nav, fw)
     marginal = ImageChops.multiply(marginal, ImageChops.invert(fw))  # a fairway is deep enough
-    near = max(1, math.ceil(NEAR_SHORE_M / cell))
+    near = max(1, math.ceil(NEAR_SHORE_M * room / cell))
     # Near the shore, and as near water of uncertain depth: shoals are given room too.
     sure = ImageChops.multiply(nav, ImageChops.invert(marginal))
     open_water = sure.filter(ImageFilter.MinFilter(2 * near + 1))
@@ -804,6 +811,8 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
     hows = []
     sums: dict[str, float] = {}
     shallow = fairway = exposed = trunk = 0.0
+    runs: list[list[Any]] = []  # places to check: [kind, metres, cells]
+    gap = 99
     expo = found.get("expo") if found.get("weight") else None
     for a, b in zip(idx, idx[1:]):
         on = _line_cells(cells[a], cells[b])
@@ -816,6 +825,18 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
         shallow += metres * marginal
         fairway += metres * on_fw
         trunk += metres * sum(1 for f in fl if f & TRUNK) / len(fl)
+        step = metres / len(fl)
+        for cell, f in zip(on, fl):
+            kind = "depth" if f & MARGINAL else "near" if f & NEAR and not f & FAIRWAY else None
+            if kind is None:
+                gap += 1  # a gap of a cell or two doesn't end a stretch
+                continue
+            if runs and gap <= 2 and runs[-1][0] == kind:
+                runs[-1][1] += step
+                runs[-1][2].append(cell)
+            else:
+                runs.append([kind, step, [cell]])
+            gap = 0
         if expo:
             exposed += metres * sum(1 for r, c in on if expo[r * w + c] >= 255 * EXPOSED_FROM) / len(on)
         if sail:
@@ -843,11 +864,19 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
         points[-1] = last
     metres = sum(distance_m(*a, *b) for a, b in zip(points, points[1:]))
     names = {"o": "open", "f": "fairway", "s": "sail", "b": "beat", "g": "gybe", "m": "motor"}
+    checks = [r for r in runs if r[1] >= max(CHECK_MIN_M, 1.5 * grid.cell_m)]
+    if len(checks) > CHECK_MAX:  # the longest, still in the order they come
+        keep = set(map(id, sorted(checks, key=lambda r: -r[1])[:CHECK_MAX]))
+        checks = [r for r in checks if id(r) in keep]
+    places = []
+    for kind, m, on_cells in checks:
+        lat, lon = grid.latlon(*on_cells[len(on_cells) // 2])
+        places.append({"kind": kind, "m": round(m, -1), "lat": round(lat, 6), "lon": round(lon, 6)})
     return {"points": points, "hows": "".join(hows), "metres": round(metres), "seconds": round(found["seconds"]),
             "nm": {names[k]: round(v / NM, 1) for k, v in sums.items()},
             "shallow_nm": round(shallow / NM, 1), "fairway_nm": round(fairway / NM, 1), "trunk_nm": round(trunk / NM, 1),
             "exposed_nm": round(exposed / NM, 1) if expo else None,
-            "snap_m": [round(d0), round(d1)]}
+            "checks": places, "snap_m": [round(d0), round(d1)]}
 
 
 # --- the planner ---------------------------------------------------------------------------
@@ -915,8 +944,8 @@ class SmartRouter:
         return render_block(layers, w, h, need, draught, cell_m, sea)
 
     async def _grid(self, blocks: tuple[int, int, int, int], cell_m: float, need: float, draught: float,
-                    start: tuple[float, float], end: tuple[float, float]) -> Grid:
-        key = (blocks, cell_m, round(need, 1), round(draught, 1))
+                    start: tuple[float, float], end: tuple[float, float], room: float = 1.0) -> Grid:
+        key = (blocks, cell_m, round(need, 1), round(draught, 1), room)
         now = time.monotonic()
         for k in [k for k, g in self._grids.items() if now - g.built > CACHE_SECONDS]:
             del self._grids[k]
@@ -958,7 +987,7 @@ class SmartRouter:
                 grid.limits_known = True
             except Exception as err:  # noqa: BLE001 - planned without the speed limits then
                 _LOGGER.info("Route planning without speed limits: %s", err)
-        await in_thread(finish, grid, cls, fw, areas)
+        await in_thread(finish, grid, cls, fw, areas, room)
         grid.built = now
         self._grids[key] = grid
         while len(self._grids) > CACHE_KEEP:
@@ -967,8 +996,9 @@ class SmartRouter:
 
     async def route(self, start: tuple[float, float], end: tuple[float, float], boat_name: str | None = None,
                     draught: float | None = None, speed_kn: float | None = None, depart: float | None = None,
-                    style: str = "fast") -> dict[str, Any]:
+                    style: str = "fast", room: str = "normal") -> dict[str, Any]:
         name, boat = boats.boat(boat_name)
+        room = room if room in SHORE_ROOM else "normal"
         sail = boat["kind"] == "sail"
         draught = boat["draught"] if draught is None else draught
         need = draught + boat["keel_margin"]
@@ -979,8 +1009,8 @@ class SmartRouter:
         if count > MAX_BLOCKS or cell_m is None:
             return {"error": "Too far for automatic planning in one go: add a stop on the way."}
         async with self._lock:  # one grid in memory at a time
-            grid = await self._grid(blocks, cell_m, need, draught, start, end)
-            base = {"boat": name, "cell_m": cell_m, "blocks": count, "downloading": grid.missing,
+            grid = await self._grid(blocks, cell_m, need, draught, start, end, SHORE_ROOM[room])
+            base = {"boat": name, "room": room, "near_m": round(NEAR_SHORE_M * SHORE_ROOM[room]), "cell_m": cell_m, "blocks": count, "downloading": grid.missing,
                     "coarse": grid.coarse, "limits": grid.limits_known}
             a = nearest_open(grid, *grid.cell(*start))
             b = nearest_open(grid, *grid.cell(*end))
@@ -1003,6 +1033,25 @@ class SmartRouter:
                     idx = await in_thread(self._shape_power, grid, found, speed_kn)
                     out = describe(grid, found["cells"], idx, found, False, start, end)
                     out["shelter"] = shelter
+                    out["style"] = "shelter"
+                    # The other way to see beside it: the direct one, as any boat would be sent
+                    # (no shelter, fairways only a little shorter).
+                    plain = await in_thread(search_power, grid, a, b, speed_kn)
+                    direct = None
+                    if plain:
+                        plain["expo"], plain["weight"] = expo, 1e-9 if expo else 0.0  # for its open-water miles
+                        pidx = await in_thread(self._shape_power, grid, plain, speed_kn)
+                        direct = describe(grid, plain["cells"], pidx, plain, False, start, end)
+                        direct["shelter"] = {**shelter, "weight": 0.0} if expo else shelter
+                        direct["style"] = "direct"
+                    if direct and (abs(direct["metres"] - out["metres"]) > 0.02 * out["metres"]
+                                   or abs((direct.get("exposed_nm") or 0) - (out.get("exposed_nm") or 0)) >= 0.3):
+                        mine, other = (direct, out) if style == "direct" else (out, direct)
+                        mine["alt"] = {k: other.get(k) for k in ("points", "hows", "metres", "seconds", "nm", "style",
+                                                                 "exposed_nm", "fairway_nm")}
+                        out = mine
+                    else:
+                        out["alt"] = None
         if not out:
             why = (f"Chart data for {grid.missing} of the {count} areas along the way is still downloading. "
                    "Try again in a minute." if grid.missing else
@@ -1134,6 +1183,6 @@ def numbers() -> dict[str, Any]:
             "pad_min_m": PAD_MIN_M, "pad_share": PAD_SHARE, "pad_max_m": PAD_MAX_M,
             "marginal_share": MARGINAL_SHARE, "rock_clear_m": ROCK_CLEAR_M, "shore_clear_m": SHORE_CLEAR_M,
             "near_shore_m": NEAR_SHORE_M, "near_shore_cost": NEAR_SHORE_COST, "marginal_cost": MARGINAL_COST,
-            "fairway_cost": FAIRWAY_COST, "shelter_radius_m": SHELTER_RADIUS_M, "shelter_upwind_m": SHELTER_UPWIND_M,
+            "fairway_cost": FAIRWAY_COST, "shore_room": SHORE_ROOM, "check_min_m": CHECK_MIN_M, "shelter_radius_m": SHELTER_RADIUS_M, "shelter_upwind_m": SHELTER_UPWIND_M,
             "shelter_land_share": SHELTER_LAND_SHARE, "shelter_wind": SHELTER_WIND, "fairway_margin_m": DRAUGHT_MARGIN, "snap_max_m": SNAP_MAX_M,
             "wind_grid": WIND_GRID, "headings": 16}
