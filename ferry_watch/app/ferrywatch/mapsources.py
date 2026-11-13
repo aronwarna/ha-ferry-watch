@@ -220,11 +220,11 @@ SOURCES: list[dict[str, Any]] = [
             "https://tiles.kartat.kapsi.fi/kiinteistorajat/{z}/{x}/{y}.png",
         ],
         "attribution": "Property boundaries © Maanmittauslaitos (CC BY 4.0)",
-        "box": FINLAND_BOX, "min_zoom": 14, "max_zoom": 16, "z_shown": 14,
+        "box": FINLAND_BOX, "min_zoom": 14, "max_zoom": 16, "z_shown": 14, "opacity": 0.75,
     },
     {
         "id": "property-ids", "name": "Property ids", "kind": "xyz", "group": "overlay",
-        "title": "Property ids", "info": "Each property's register id (e.g. 257-411-1-23), from zoom 16.",
+        "title": "Property ids", "info": "Each property's register id (e.g. 257-411-1-23), from zoom 15. Tap one to copy it.",
         "templates": [
             "https://avoin-karttakuva.maanmittauslaitos.fi/avoin/wmts/1.0.0/kiinteistotunnukset/default/"
             "WGS84_Pseudo-Mercator/{z}/{y}/{x}.png?api-key={key}",
@@ -246,17 +246,20 @@ SOURCES: list[dict[str, Any]] = [
         # algae blooms, snow and clouds as they were today. "{date}" is today's (UTC) after the
         # afternoon pass over Finland, else yesterday's.
         "id": "gibs-today", "name": "NASA GIBS", "kind": "xyz", "group": "overlay",
-        "title": "Satellite today (NASA)", "info": "Yesterday's or today's satellite picture (VIIRS, about 375 m): "
-                                                  "ice, algae blooms, snow and clouds as they really were.",
+        "title": "Satellite today (NASA)", "info": "Yesterday's or today's satellite picture (about 375 m), best "
+                                                  "zoomed out: ice, algae blooms, snow and clouds as they really "
+                                                  "were. Dark or missing in midwinter, when the sun is too low.",
+        # Tried in order, each for today's picture and then the day before's: the first
+        # satellite that has one wins (satellites are retired and pictures arrive late).
         "templates": [
-            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/"
-            "{date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg",
-            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/"
-            "{date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg",
+            f"https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/{product}_CorrectedReflectance_TrueColor/default/"
+            f"{{{day}}}/GoogleMapsCompatible_Level9/{{z}}/{{y}}/{{x}}.jpg"
+            for day in ("date", "date1")
+            for product in ("VIIRS_NOAA20", "VIIRS_NOAA21", "VIIRS_SNPP", "MODIS_Terra", "MODIS_Aqua")
         ],
         "daily": True, "max_age": 3 * 86400,
         "attribution": "Satellite © NASA EOSDIS GIBS",
-        "box": (53.0, 9.0, 71.0, 33.0), "min_zoom": 3, "max_zoom": 9, "opacity": 0.9,
+        "box": (53.0, 9.0, 71.0, 33.0), "min_zoom": 3, "max_zoom": 9, "opacity": 1,
     },
     {
         # EMODnet's map of where ships go (AIS hours per km² a month, all ship types), the
@@ -622,8 +625,9 @@ class MapSources:
         if src["kind"] == "wayback":
             return [src["template"].format(release=row["release"], z=z, x=x, y=y)]
         key = self.store.kv_get("mml_api_key", "")
-        date = daily_date()
-        return [t.format(z=z, x=x, y=y, key=key, date=date) for t in src["templates"] if key or "{key}" not in t]
+        date, date1 = daily_date(), daily_date(time.time() - 86400)
+        return [t.format(z=z, x=x, y=y, key=key, date=date, date1=date1) for t in src["templates"]
+                if key or "{key}" not in t]
 
     async def tile(self, layer_id: str, z: int, x: int, y: int) -> Path | None:
         row = self._layers.get(layer_id)
@@ -641,11 +645,19 @@ class MapSources:
             folder = f"{row['source']}/{row['id']}" + (f"-{i}" if i else "")
             if row.get("daily"):
                 folder += f"/{daily_date()}"  # a day's picture never stands in for another day's
+                # "No picture yet" is only believed for an hour: the day's picture arrives late.
+                empty = self.cache.path(folder, z, x, y)
+                try:
+                    st = empty.stat()
+                    if not st.st_size and time.time() - st.st_mtime > 3600:
+                        empty.unlink()
+                except FileNotFoundError:
+                    pass
             path = await self.cache.get(folder, z, x, y, url)
             if path:
                 return path
-            if row["source"] not in self.cache.failing:
-                return None  # answered, just nothing here
+            if row["source"] not in self.cache.failing and not row.get("daily"):
+                return None  # answered, just nothing here (a daily picture: try the next satellite)
         return None
 
     def prune(self) -> int:

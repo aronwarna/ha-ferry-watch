@@ -31,6 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 OVERPASS = "https://overpass-api.de/api/interpreter"
 REFRESH = 30 * 86400
 RETRY = 3600
+FIRST_RETRY = 300  # nothing saved yet: try again sooner
 IDLE = 600  # s without a request before the rows are let go
 TIMEOUT = 180
 MAX_BYTES = 32 * 1024 * 1024
@@ -156,16 +157,8 @@ class Harbours:
         self._idle_timer: asyncio.TimerHandle | None = None
 
     async def _get(self, query: str) -> Any:
-        async with self.session.post(OVERPASS, data={"data": query}, headers={"User-Agent": USER_AGENT},
-                                     timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
-            resp.raise_for_status()
-            chunks, size = [], 0
-            async for chunk in resp.content.iter_chunked(65536):
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError("answer too big")
-                chunks.append(chunk)
-        return json.loads(b"".join(chunks))
+        from .overpass import fetch
+        return await fetch(self.session, query, timeout=TIMEOUT, max_bytes=MAX_BYTES)
 
     def _load(self) -> None:
         try:
@@ -199,9 +192,11 @@ class Harbours:
             self.rows, self.updated, self.error = [tuple(r) for r in rows], now, None
             _LOGGER.info("%s from OpenStreetMap: %s", self.WHAT.capitalize(), len(rows))
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
+            from .overpass import plain_error
             if self.error is None:
-                _LOGGER.warning("Could not download %s from OpenStreetMap (Overpass): %s", self.WHAT, err)
-            self.error = str(err) or type(err).__name__
+                _LOGGER.warning("Could not download %s from OpenStreetMap (Overpass): %s", self.WHAT,
+                                getattr(err, "detail", None) or err)
+            self.error = plain_error(err)
             self._failed = time.time()
 
     def _touch(self) -> None:
@@ -224,7 +219,7 @@ class Harbours:
             self._load()
         now = time.time()
         stale = now - self.updated > REFRESH
-        if stale and (self._task is None or self._task.done()) and now - self._failed > RETRY:
+        if stale and (self._task is None or self._task.done()) and now - self._failed > (RETRY if self.updated else FIRST_RETRY):
             self._task = asyncio.create_task(self._download())
 
     def search(self, query: str, lat: float, lon: float, limit: int = 8) -> dict[str, Any]:

@@ -281,9 +281,75 @@
     // --- overlays (Layers switches) --------------------------------------------------
     const overlayOn = new Map();
     const overlayLayers = new Map();
+    // Property ids are written by the panel from the Land Survey's id points (parcels.py):
+    // sharp at every zoom, one size, never cut at a tile edge. Only if those can't be had do
+    // the Land Survey's ready-made picture tiles stand in.
+    const PARCEL_Z = 15;
+    const PARCEL_MIN_Z = 15;
+    const parcelLayer = L.layerGroup();
+    const parcelTiles = new Map();
+    let parcelRow = null;
+    let parcelFallback = false;
+    let parcelSeq = 0;
+    async function loadParcels() {
+      if (!parcelRow || !overlayOn.get(parcelRow.id) || parcelFallback) return;
+      parcelLayer.clearLayers();
+      if (map.getZoom() < PARCEL_MIN_Z) return;
+      const my = ++parcelSeq;
+      const b = map.getBounds();
+      const nw = map.project(b.getNorthWest(), PARCEL_Z).divideBy(256).floor();
+      const se = map.project(b.getSouthEast(), PARCEL_Z).divideBy(256).floor();
+      const keys = [];
+      for (let x = nw.x; x <= se.x; x++) for (let y = nw.y; y <= se.y; y++) keys.push(`${x}/${y}`);
+      if (keys.length > 40) return;
+      let failed = 0;
+      await Promise.all(keys.map(async (k) => {
+        if (Array.isArray(parcelTiles.get(k))) return;
+        try {
+          const r = await fetch(`api/parcels/${k}`);
+          if (!r.ok) throw new Error(String(r.status));
+          parcelTiles.set(k, (await r.json()).rows || []);
+          if (parcelTiles.size > 200) parcelTiles.delete(parcelTiles.keys().next().value);
+        } catch { failed += 1; }
+      }));
+      if (my !== parcelSeq || !overlayOn.get(parcelRow.id)) return;
+      if (failed === keys.length && keys.length) {  // no id points to be had: the picture tiles
+        parcelFallback = true;
+        setOverlay(parcelRow, true);
+        return;
+      }
+      // Largest-first isn't known, so first come first served; a label never covers another.
+      const taken = [];
+      const z = map.getZoom();
+      const w = 112;
+      for (const k of keys) {
+        for (const [lat, lon, id] of parcelTiles.get(k) || []) {
+          const pt = map.latLngToContainerPoint([lat, lon]);
+          if (taken.some((t) => Math.abs(t.x - pt.x) < w && Math.abs(t.y - pt.y) < 24)) continue;
+          taken.push(pt);
+          const icon = L.divIcon({ className: "parcel-id", iconSize: [0, 0], html: `<span>${esc(id)}</span>` });
+          const m = L.marker([lat, lon], { icon, keyboard: false, pane: OVERLAY_PANE });
+          m.on("click", () => {
+            const box = document.createElement("div");
+            box.innerHTML = `<strong>${esc(id)}</strong><div class="muted small">Property id (kiinteistötunnus)</div>`
+              + `<div style="margin-top:6px"><button type="button" class="chip-btn">Copy</button></div>`;
+            box.querySelector("button").addEventListener("click", () => navigator.clipboard?.writeText(id).catch(() => {}));
+            L.popup({ className: "aid-popup", offset: [0, -6] }).setLatLng([lat, lon]).setContent(box).openOn(map);
+          });
+          parcelLayer.addLayer(m);
+        }
+      }
+    }
+    map.on("moveend", loadParcels);
+
     function setOverlay(row, on) {
       overlayOn.set(row.id, on);
       store.set(`fw-mo-${row.id}`, on ? "1" : "0");
+      if (row.id === "property-ids" && !parcelFallback) {
+        parcelRow = row;
+        if (on) { parcelLayer.addTo(map); loadParcels(); } else { map.removeLayer(parcelLayer); parcelLayer.clearLayers(); }
+        return;
+      }
       let layer = overlayLayers.get(row.id);
       if (on && !layer) {
         // A daily picture's tiles are asked for by date, so yesterday's never come from the browser's cache.
@@ -406,7 +472,7 @@
       out.push({
         title: "Building ages", color: "#d97706", checked: buildingsOn,
         count: buildingsOn && buildRows.length ? `${buildRows.length} in view` : "",
-        note: buildNote || `Every building in Helsinki, Espoo, Vantaa and Kauniainen as a dot coloured by the year it was finished, from zoom 13. Tap one for its year, use, floors and address. From HSY's building register. ${failingNote("buildings")}`.trim(),
+        note: buildNote || `Every building as a dot coloured by the year it was finished, from zoom 13. Tap one for its year, use and floors. The capital region from HSY's register (with addresses), the rest of Finland from the national building register (Ryhti). ${failingNote("buildings")}`.trim(),
         extra: buildingsOn ? ageLegend() : null,
         onChange: async (on) => { setBuildings(on); },
       });

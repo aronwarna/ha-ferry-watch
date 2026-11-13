@@ -175,7 +175,7 @@
           }
         }
         note = data.pending ? "Downloading the nature reserves here from OpenStreetMap…"
-          : data.error === "zoom in" ? "Zoom in to see them." : data.error ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+          : data.error === "zoom in" ? "Zoom in to see them." : data.error ? `Couldn't get them from OpenStreetMap just now: ${data.error}. Trying again by itself${data.reserves.length ? "; showing the saved ones" : ""}.` : "";
         if (data.pending) timer = setTimeout(load, 4000);
         else if (!data.error) box = pad;
       } catch (err) {

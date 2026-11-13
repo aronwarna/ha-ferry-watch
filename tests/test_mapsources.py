@@ -97,7 +97,8 @@ def test_buildings_compact():
     assert rows[0][:6] == [60.2, 24.9, 1972, "Rivitalot", 2, "Rantatie 5"]
     assert rows[1][2] is None and abs(rows[1][0] - 60.1) < 0.06
     assert len(rows) == 2
-    assert buildings.covers(9325, 4740) and not buildings.covers(9200, 4800)
+    assert buildings.covers(9325, 4740) and buildings.in_hsy(9325, 4740) and not buildings.in_hsy(9200, 4800)
+    assert not buildings.covers(8000, 6000)
 
 
 def test_daily_and_latest_only():
@@ -111,7 +112,7 @@ def test_daily_and_latest_only():
     ])
     assert [(r["year"], r["label"], r["group"]) for r in rows] == [(2023, "Ship traffic density", "overlay")]
     gibs = next(s for s in mapsources.SOURCES if s["id"] == "gibs-today")
-    assert all("{date}" in t for t in gibs["templates"])
+    assert all("{date" in t for t in gibs["templates"]) and len(gibs["templates"]) == 10
 
 
 def test_wider_photo_sources():

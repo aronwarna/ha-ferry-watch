@@ -396,7 +396,7 @@
       catch { return; }
       if (my !== ashoreSeq) return;
       ashoreNote = data.pending ? "Downloading them from OpenStreetMap…"
-        : data.error && !data.harbours.length ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+        : data.error && !data.harbours.length ? `Couldn't get them from OpenStreetMap just now: ${data.error}. Trying again by itself.` : "";
       ashoreLayer.clearLayers();
       ashoreCount = data.harbours.length;
       for (const [, lat, lon, name, kind, extras] of data.harbours) {
@@ -416,6 +416,7 @@
         ashoreLayer.addLayer(m);
       }
       if (data.pending) setTimeout(loadAshore, 10000);
+      else if (data.error && !data.harbours.length) setTimeout(loadAshore, 120000);
     }
     function setAshore(on) {
       ashoreOn = on;

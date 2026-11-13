@@ -185,6 +185,8 @@ class FerryWatch:
         sim = os.environ.get("FW_SIMULATE") == "1"
         self.maps = MapSources(DATA_DIR / "maps", self.session, self.store, fake=sim)
         self.buildings = Buildings(DATA_DIR / "maps" / "buildings", self.session, fake=sim)
+        from .parcels import Parcels
+        self.parcels = Parcels(DATA_DIR / "maps" / "parcels", self.session, self.store, fake=sim)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
             self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
@@ -566,6 +568,7 @@ class FerryWatch:
             await asyncio.to_thread(self.satellite.cache.prune)
             await asyncio.to_thread(self.maps.prune)
             await asyncio.to_thread(self.buildings.prune)
+            await asyncio.to_thread(self.parcels.prune)
             await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
@@ -617,7 +620,8 @@ class FerryWatch:
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
             "satellite": self.satellite.sources() if self.satellite else None,
-            "maps": self.maps.sources() + [{"id": "buildings", "name": "Building ages (HSY)", "layers": 1, "failing": self.buildings.failing}] if self.maps else None,
+            "maps": self.maps.sources() + [{"id": "buildings", "name": "Building ages (HSY, Ryhti)", "layers": 1, "failing": self.buildings.failing},
+                                          {"id": "parcels", "name": "Property ids (Land Survey)", "layers": 1, "failing": self.parcels.failing}] if self.maps else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
             "weather": self.weather_state(),
