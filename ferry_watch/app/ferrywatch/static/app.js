@@ -5043,6 +5043,7 @@
     const eta = pts.length > 1 ? routeSeconds() : null;
     setText($("route-total"), pts.length > 1 ? NavM.nm(total) : pts.length ? "1 point" : "Route");
     setText($("route-eta"), pts.length > 1 && eta != null ? `${NavM.duration(eta)} · ETA ${clock(now() + eta)}` : "");
+    renderModeApply();
     const hint = routeHint();
     setText($("route-hint"), hint?.text || "");
     $("route-hint").hidden = !hint;
@@ -5467,6 +5468,30 @@
     renderRoutePanel();
   }).catch(() => {});
 
+  // The switch sets how new legs are made. A route drawn another way keeps its legs, and a
+  // button offers to plan the whole of it the chosen way.
+  const legKind = (l) => (!l ? "line" : l.auto ? "auto" : l.fw ? "fw" : "line");
+  function renderModeApply() {
+    const el = $("route-mode-apply");
+    const differs = route.legs.length > 0 && route.legs.some((l) => legKind(l) !== routeMode);
+    el.hidden = !differs;
+    if (differs) {
+      el.textContent = routeMode === "fw" ? "Plan this whole route along the fairways"
+        : routeMode === "auto" ? "Plan this whole route automatically" : "Make this whole route straight lines";
+    }
+  }
+  function applyModeToRoute() {
+    if (!route.legs.length) return;
+    pushUndo();
+    route.status = null;
+    // Between each pair of numbered stops: one new leg (bends and via points of the old way go).
+    const at = route.stops.map((p, i) => (Plan.isBend(p) || Plan.isVia(p) ? -1 : i)).filter((i) => i >= 0);
+    for (let k = at.length - 1; k > 0; k--) Plan.setSection(route.stops, route.legs, at[k - 1], at[k], newLegMode());
+    planLegs(unplannedLegs(), { fit: true });
+    renderRoutePanel();
+    drawRoute();
+  }
+
   function renderRouteModes() {
     for (const b of $("route-modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === routeMode));
     $("route-modes").title = routeMode === "fw" ? "New legs follow the marked fairways"
@@ -5632,6 +5657,7 @@
       renderRoutePanel();
     });
   }
+  $("route-mode-apply").addEventListener("click", applyModeToRoute);
   $("route-find-button").addEventListener("click", () => showFind($("route-find").hidden));
   $("route-find-input").addEventListener("input", () => { clearTimeout(findTimer); findTimer = setTimeout(findHarbours, 250); });
   $("route-find-input").addEventListener("keydown", (e) => {

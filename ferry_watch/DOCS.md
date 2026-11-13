@@ -297,7 +297,10 @@ you were drawing is kept in the browser until you come back. On a phone the
 panel is a small sheet above the ship chips, on a computer a list on the left.
 
 **Straight / Fairways / Automatic** at the top of the panel says how new legs go
-(Automatic is described below). With **Fairways**, enter your draught (1.5 m to start with, remembered)
+(Automatic is described below). If the route on the map was drawn another way, a
+**Plan this whole route…** button appears under the switch: it plans every leg between
+your numbered stops the chosen way (bends and via points of the old way go; Undo brings
+them back). With **Fairways**, enter your draught (1.5 m to start with, remembered)
 and tap the start and the end: the add-on plans the leg along the fairway
 centre lines of the drawn chart, skipping fairways whose design depth is less
 than your draught plus 0.3 m. A fairway leg has a white line down its middle and
@@ -361,6 +364,9 @@ the bottom of the route panel lists every number the planning uses.
 **Automatic** (the third mode beside Straight and Fairways) plans the leg for the
 boat picked, on or off the marked fairways. Tap the start and the end; the add-on
 works out the quickest way through water deep enough.
+
+A marked fairway deep enough for the boat is always open to the planner, also through a sound
+narrower than the planner's grid can show (the cells right beside the fairway's line count as water).
 
 - The drawn chart's depth areas between the two ends become a grid of 40 m cells
   (wider on long trips, up to 400 m; one leg can be 150 NM and more, and the first plan of a long leg can take a minute).
