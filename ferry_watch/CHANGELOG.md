@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.65.1
+
+- Passage replays from Stats are drawn like a ship's voyage: the line coloured by speed,
+  no dots every 10 minutes, and tapping anywhere on it shows the speed and time there.
+- A replay shows the whole trip from Stockholm to Helsinki or back. The call at
+  Mariehamn or Långnäs on the way no longer ends it (only a stop of an hour or more
+  counts as the end of a trip).
+- The same goes for a ship's live voyage: leaving Mariehamn or Långnäs doesn't start a
+  new voyage, so the track on the ship card runs all the way from Stockholm.
+
 ## 0.65.0
 
 - **Places to go ashore**: a switch in Layers › On every map shows lean-to shelters, campfire
