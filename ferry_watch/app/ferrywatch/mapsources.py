@@ -36,6 +36,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -57,6 +58,7 @@ ESPOO_BOX = (60.04, 24.47, 60.37, 24.86)     # south, west, north, east
 HELSINKI_BOX = (60.06, 24.78, 60.31, 25.27)
 VANTAA_BOX = (60.24, 24.68, 60.42, 25.20)
 FINLAND_BOX = (59.3, 19.0, 70.2, 31.7)
+NORTH_BOX = (53.0, 9.0, 71.0, 33.0)          # Finland, the Baltic and its other shores
 
 # fmt: off
 SOURCES: list[dict[str, Any]] = [
@@ -121,7 +123,93 @@ SOURCES: list[dict[str, Any]] = [
             {"match": r"(?i)(vanha|old_?map|histor|senaat|pitajan|pitäjän|venal|venäl|russian|kalmberg"
                       r"|yleiskart|peruskart|taloudellinen|topografinen)", "group": "map",
              "title_too": True, "need_year": True},
+            # Older vintages of the Land Survey's own orthophotos, where Paituli's WMS draws them.
+            {"match": r"(?i)orto", "exclude": r"(?i)vaara|vääräv|cir|infra|index|ruudu|lehtijako", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
         ],
+    },
+    {
+        # The capital region's joint photo flights (HSY): also Kirkkonummi with Porkkala, Kerava,
+        # Järvenpää, Tuusula, Nurmijärvi and Sipoo, 2015 onwards. Layer names are read from the list.
+        "id": "hsy-region", "name": "Helsinki region", "kind": "wms",
+        "url": "https://kartta.hsy.fi/geoserver/wms",
+        "attribution": "Orthophoto © the region's municipalities, HSY, HSL and the Defence Forces (CC BY 4.0)",
+        "box": (59.90, 24.20, 60.65, 25.50), "max_zoom": 19, "discover_only": True,
+        "rules": [
+            {"match": r"(?i)orto.*(20\d\d)", "exclude": r"(?i)cir|vaara|vääräv|infra|nir", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
+        ],
+    },
+    {
+        "id": "turku", "name": "Turku", "kind": "wms",
+        "url": "https://turku.asiointi.fi/teklaogcweb/wms.ashx",
+        "attribution": "© Turun kaupunki (CC BY 4.0)",
+        "box": (60.28, 21.90, 60.62, 22.75), "max_zoom": 19,
+        "rules": [
+            {"match": r"(?i)ilmakuva.*\d{4}|orto.*\d{4}", "exclude": r"(?i)vaara|vääräv|cir", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
+            {"match": r"(?i)(kartta|opas|asemakaava).*1[6-9]\d\d", "group": "map", "title_too": True, "year_required": True},
+        ],
+        "known": ["Ilmakuva 2025", "Ilmakuva 2023", "Ilmakuva 2021", "Turunseutu ilmakuva 2018",
+                  "Turunseutu ilmakuva 2013", "Turku ilmakuva 2010", "Turku ilmakuva 2005"],
+    },
+    {
+        "id": "tampere", "name": "Tampere", "kind": "wms",
+        "url": "https://geodata.tampere.fi/geoserver/ows",
+        "attribution": "© Tampereen kaupunki (CC BY 4.0)",
+        "box": (61.35, 23.45, 61.85, 24.15), "max_zoom": 19, "discover_only": True,
+        "rules": [
+            {"match": r"(?i)(ilmakuva|orto).*(19|20)\d\d", "exclude": r"(?i)vaara|vääräv|cir|index|ruudu", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
+            {"match": r"(?i)(kartta|opas|asemakaava).*1[6-9]\d\d", "group": "map", "title_too": True, "year_required": True},
+        ],
+    },
+    {
+        "id": "oulu", "name": "Oulu", "kind": "wms",
+        "url": "https://e-kartta.ouka.fi/TeklaOgcWebOpen/WMS.ashx",
+        "attribution": "© Oulun kaupunki (CC BY 4.0)",
+        "box": (64.80, 24.90, 65.60, 26.80), "max_zoom": 19,
+        "rules": [
+            {"match": r"(?i)ilmakuva.*\d{4}|orto.*\d{4}", "exclude": r"(?i)vaara|vääräv|cir", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
+        ],
+        "known": ["Ilmakuva 2024", "Ilmakuva 2018 re", "Ilmakuva 2012 Oulu"],
+    },
+    {
+        # Estonia's Land Board: every orthophoto flight since 1993 and old maps back to the
+        # 1800s (verst maps, 1920s-30s Estonian and Soviet topographic maps), free with credit.
+        "id": "estonia-old", "name": "Estonia", "kind": "wms",
+        "url": "https://kaart.maaamet.ee/wms/ajalooline",
+        "attribution": "© Maa- ja Ruumiamet (Estonian Land and Spatial Development Board)",
+        "box": (57.5, 21.7, 59.75, 28.3), "max_zoom": 18, "discover_only": True,
+        "rules": [
+            {"match": r"(?i)orto|foto", "exclude": r"(?i)nir|cir|infra|ruudu|index|lehed", "group": "photo",
+             "format": "image/jpeg", "title_too": True, "year_required": True},
+            {"match": r"(?i)verst|topo|kaart|map|schmidt|r[üu]cker|heeres|kataster", "exclude": r"(?i)ruudu|index|lehed",
+             "group": "map", "title_too": True, "year_required": True},
+        ],
+    },
+    {
+        # Sentinel-2 cloudless (EOX): one cloud-free satellite picture of the whole region per
+        # year, 10 m. Coarse, but it covers every place the city photo flights don't.
+        "id": "s2", "name": "Sentinel-2 satellite", "kind": "xyz", "group": "photo",
+        "title": "Satellite (10 m)",
+        "years": {y: f"https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-{y}_3857/default/g/{{z}}/{{y}}/{{x}}.jpg"
+                  for y in range(2018, 2025)},
+        "attribution": "Sentinel-2 cloudless by EOX (modified Copernicus Sentinel data, CC BY-NC-SA 4.0)",
+        "box": NORTH_BOX, "min_zoom": 3, "max_zoom": 14, "wide": True,
+    },
+    {
+        # Esri's World Imagery archive ("Wayback"): what the satellite view showed at each past
+        # release since 2014, everywhere, down to house level. One release a year is offered
+        # (the year's last); the list of releases is read from Esri's own config once a day.
+        "id": "wayback", "name": "Esri imagery archive", "kind": "wayback", "group": "photo",
+        "title": "Satellite archive",
+        "url": "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json",
+        "template": "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/"
+                    "default028mm/MapServer/tile/{release}/{z}/{y}/{x}",
+        "attribution": "Imagery © Esri, Maxar, Earthstar Geographics (World Imagery Wayback)",
+        "box": NORTH_BOX, "min_zoom": 3, "max_zoom": 18, "wide": True, "discover_only": True,
     },
     {
         "id": "property", "name": "Property boundaries", "kind": "xyz", "group": "overlay",
@@ -259,6 +347,10 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
             if year is None:
                 years = YEAR_RE.findall(name) or YEAR_RE.findall(title)
                 year = int(years[0]) if years else None
+            if rule.get("exclude") and re.search(rule["exclude"], text):
+                continue
+            if rule.get("year_required") and year is None:
+                continue
             if rule.get("need_year") and (year is None or year > 2020):
                 continue  # today's maps aren't old maps
             group = rule["group"]
@@ -333,6 +425,28 @@ def parse_capabilities(path: Path) -> list[dict]:
     return out
 
 
+def _wide_row(source: dict, year: int, **more: Any) -> dict:
+    return {"id": f"{source['id']}-{year}", "source": source["id"], "where": source["name"], "group": source["group"],
+            "year": year, "label": source["title"], "title": f"{source['title']} {year}", "box": list(source["box"]),
+            "min_zoom": source.get("min_zoom", 0), "max_zoom": source.get("max_zoom", 18), "wide": True,
+            "attribution": source["attribution"], **more}
+
+
+def wayback_releases(config: dict) -> dict[int, int]:
+    """Esri's Wayback config ({release number: {itemTitle: "World Imagery (Wayback 2019-06-26)", …}})
+    -> {year: release number}, each year's last release."""
+    best: dict[int, tuple[str, int]] = {}
+    for num, item in (config or {}).items():
+        m = re.search(r"(\d{4})-(\d\d)-(\d\d)", str((item or {}).get("itemTitle", "")))
+        try:
+            release = int(num)
+        except (TypeError, ValueError):
+            continue
+        if m and (int(m.group(1)) not in best or m.group(0) > best[int(m.group(1))][0]):
+            best[int(m.group(1))] = (m.group(0), release)
+    return {year: rel for year, (_, rel) in sorted(best.items())}
+
+
 def known_layers(source: dict) -> list[dict]:
     return layers_from_names(source, [{"name": n} for n in source.get("known", [])])
 
@@ -361,6 +475,14 @@ class MapSources:
                 found = self.found.get(s["id"])
                 rows = layers_from_names(s, found) if found else ([] if s.get("discover_only") else known_layers(s))
                 for row in rows:
+                    layers[row["id"]] = row
+            elif s.get("years"):
+                for year in s["years"]:
+                    row = _wide_row(s, year)
+                    layers[row["id"]] = row
+            elif s["kind"] == "wayback":
+                for year, release in (self.found.get(s["id"]) or {}).items():
+                    row = _wide_row(s, int(year), release=release)
                     layers[row["id"]] = row
             else:
                 layers[s["id"]] = {
@@ -405,8 +527,31 @@ class MapSources:
             for s in SOURCES:
                 if s["kind"] == "wms":
                     await self.discover(s)
+                elif s["kind"] == "wayback":
+                    await self.discover_wayback(s)
             self._rebuild()
             await asyncio.sleep(DISCOVER_EVERY)
+
+    async def discover_wayback(self, s: dict) -> None:
+        try:
+            if self.fake:
+                config = {str(10 + i * 100): {"itemTitle": f"World Imagery (Wayback {2014 + i}-06-1{i % 9})"} for i in range(12)}
+            else:
+                async with self.session.get(s["url"], headers={"User-Agent": USER_AGENT},
+                                            timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    resp.raise_for_status()
+                    config = await resp.json(content_type=None)
+            releases = wayback_releases(config)
+            if not releases:
+                raise ValueError("no releases in the list")
+        except Exception as err:  # noqa: BLE001 - any failure keeps the last good list
+            _LOGGER.warning("Map layers from %s: couldn't read the release list: %s", s["name"], err)
+            self.checked[s["id"]] = {"ts": time.time(), "error": str(err) or type(err).__name__}
+            return
+        _LOGGER.info("Map layers from %s: %s years (%s to %s)", s["name"], len(releases), min(releases), max(releases))
+        self.found[s["id"]] = {str(y): r for y, r in releases.items()}
+        self.store.kv_set("mapsources_found", self.found)
+        self.checked[s["id"]] = {"ts": time.time(), "error": None}
 
     async def discover(self, s: dict) -> None:
         url = f"{s['url']}?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.1.1"
@@ -465,13 +610,17 @@ class MapSources:
         if src["kind"] == "wms":
             bbox = ",".join(f"{v:.3f}" for v in mercator_bbox(z, x, y))
             fmt = row["format"]
-            return [f"{src['url']}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={row['layer']}&STYLES="
+            return [f"{src['url']}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={quote(row['layer'], safe=':,')}&STYLES="
                     f"&SRS=EPSG:3857&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT={fmt}"
                     f"&TRANSPARENT={'FALSE' if fmt == 'image/jpeg' else 'TRUE'}"]
         if src["kind"] == "arcgis":
             bbox = ",".join(f"{v:.3f}" for v in mercator_bbox(z, x, y))
             return [f"{src['url']}?bbox={bbox}&bboxSR=3857&imageSR=3857&size=256,256&format=png32"
                     f"&transparent=true&f=image"]
+        if src.get("years"):
+            return [src["years"][row["year"]].format(z=z, x=x, y=y)]
+        if src["kind"] == "wayback":
+            return [src["template"].format(release=row["release"], z=z, x=x, y=y)]
         key = self.store.kv_get("mml_api_key", "")
         date = daily_date()
         return [t.format(z=z, x=x, y=y, key=key, date=date) for t in src["templates"] if key or "{key}" not in t]

@@ -112,3 +112,27 @@ def test_daily_and_latest_only():
     assert [(r["year"], r["label"], r["group"]) for r in rows] == [(2023, "Ship traffic density", "overlay")]
     gibs = next(s for s in mapsources.SOURCES if s["id"] == "gibs-today")
     assert all("{date}" in t for t in gibs["templates"])
+
+
+def test_wider_photo_sources():
+    from ferrywatch import simmaps
+    got = {}
+    for sid in ("hsy-region", "turku", "tampere", "oulu", "estonia-old", "mml-old"):
+        src = next(s for s in mapsources.SOURCES if s["id"] == sid)
+        rows = mapsources.layers_from_names(src, simmaps.fake_capabilities(src))
+        got[sid] = sorted((r["group"], r["year"]) for r in rows)
+    assert got["hsy-region"] == [("photo", 2015), ("photo", 2019), ("photo", 2023)]  # no false-colour
+    assert ("photo", 1939) in got["turku"] and len(got["turku"]) == 3
+    assert got["tampere"] == [("photo", 1946), ("photo", 1966)]
+    assert got["estonia-old"] == [("map", 1900), ("map", 1930), ("photo", 1993), ("photo", 2005)]
+    assert ("photo", 2009) in got["mml-old"] and sum(1 for g in got["mml-old"] if g[0] == "photo") == 1
+    turku = next(s for s in mapsources.SOURCES if s["id"] == "turku")
+    assert len(mapsources.known_layers(turku)) == 7
+
+
+def test_wayback_and_yearly_sources():
+    cfg = {"10": {"itemTitle": "World Imagery (Wayback 2014-02-20)"}, "999": {"itemTitle": "World Imagery (Wayback 2014-11-05)"},
+           "31144": {"itemTitle": "World Imagery (Wayback 2019-06-26)"}, "x": {"itemTitle": "junk"}}
+    assert mapsources.wayback_releases(cfg) == {2014: 999, 2019: 31144}
+    s2 = next(s for s in mapsources.SOURCES if s["id"] == "s2")
+    assert "s2cloudless-2020_3857" in s2["years"][2020] and "{z}/{y}/{x}" in s2["years"][2020]

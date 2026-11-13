@@ -25,6 +25,8 @@
   const PLACES = [
     { name: "Espoo", at: [60.168, 24.66], z: 13 },
     { name: "Helsinki", at: [60.168, 24.945], z: 13 },
+    { name: "Turku", at: [60.45, 22.27], z: 13 },
+    { name: "Tampere", at: [61.498, 23.76], z: 13 },
   ];
   // Building age colours, oldest to newest.
   const AGE_STOPS = [
@@ -258,8 +260,12 @@
       const old = shown.getLayers();
       let waiting = entry.rows.length;
       const done = () => { if (--waiting <= 0) old.forEach((l) => shown.removeLayer(l)); };
-      for (const r of entry.rows) {
+      // Whole-country satellite pictures go under the cities' own, sharper photo flights.
+      const area = (r) => (r.box[2] - r.box[0]) * (r.box[3] - r.box[1]);
+      const ordered = [...entry.rows].sort((a, b) => area(b) - area(a));
+      for (const [i, r] of ordered.entries()) {
         const layer = L.tileLayer(`api/maptile/${encodeURIComponent(r.id)}/{z}/{x}/{y}.png`, {
+          zIndex: i + 1,
           pane: PANE, minZoom: 0, maxZoom: 20, minNativeZoom: r.min_zoom, maxNativeZoom: r.max_zoom,
           bounds: boxBounds(r.box), opacity: opacity / 100, attribution: r.attribution,
         });
