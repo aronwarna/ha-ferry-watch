@@ -227,6 +227,11 @@ class FerryWatch:
         wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
         self.dayscore = self._day_score()
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
+        from .ashore import Ashore
+        fake_ashore = None
+        if fake_overpass:
+            from .simmaps import fake_ashore_fetch as fake_ashore
+        self.ashore = Ashore(DATA_DIR / "ashore.json.gz", self.session, fake_ashore)
         self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves, fake_syke)
         # Trips from ben's own Garmin plotter (GPX uploads); backed up with Home Assistant.
         self.logbook = Logbook(DATA_DIR / "logbook.db", self.harbours)

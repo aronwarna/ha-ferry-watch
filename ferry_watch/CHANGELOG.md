@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.65.0
+
+- **Places to go ashore**: a switch in Layers › On every map shows lean-to shelters, campfire
+  sites, wilderness and day huts, campsites, saunas, toilets and drinking water along the coast,
+  from OpenStreetMap, from zoom 11. Tap one for what's there (fireplace, firewood, free or fee).
+  Downloaded once a month like the harbours, and left out of backups.
+
 ## 0.64.0
 
 - **What's here** lists the three nearest harbours (tap one to go there) and stays clear of the

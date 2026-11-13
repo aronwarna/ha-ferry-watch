@@ -134,6 +134,15 @@ def parse_overpass(data: Any) -> list[list[Any]]:
 
 
 class Harbours:
+    # A subclass (ashore.py) swaps what is asked for and how it's read.
+    WHAT = "harbours"
+
+    def query(self) -> str:
+        return overpass_query()
+
+    def parse(self, data: Any) -> list[list[Any]]:
+        return parse_overpass(data)
+
     def __init__(self, path: Path, session: aiohttp.ClientSession | None, fetch: Fetch | None = None):
         self.path = path
         self.session = session
@@ -180,18 +189,18 @@ class Harbours:
 
     async def _download(self) -> None:
         try:
-            data = await self.fetch(overpass_query())
-            rows = await asyncio.to_thread(parse_overpass, data)
+            data = await self.fetch(self.query())
+            rows = await asyncio.to_thread(self.parse, data)
             del data
             if not rows:
-                raise ValueError("no harbours in the answer")
+                raise ValueError(f"no {self.WHAT} in the answer")
             now = time.time()
             await asyncio.to_thread(self._save, rows, now)
             self.rows, self.updated, self.error = [tuple(r) for r in rows], now, None
-            _LOGGER.info("Harbours from OpenStreetMap: %s", len(rows))
+            _LOGGER.info("%s from OpenStreetMap: %s", self.WHAT.capitalize(), len(rows))
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
             if self.error is None:
-                _LOGGER.warning("Could not download harbours from OpenStreetMap (Overpass): %s", err)
+                _LOGGER.warning("Could not download %s from OpenStreetMap (Overpass): %s", self.WHAT, err)
             self.error = str(err) or type(err).__name__
             self._failed = time.time()
 

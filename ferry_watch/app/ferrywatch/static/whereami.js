@@ -374,6 +374,57 @@
       if (!rows.length) list.innerHTML = `<li class="muted small sr-empty">${places.error ? `Couldn't search just now (${esc(places.error)}).` : "Nothing found."}</li>`;
     }
 
+    // --- places ashore (ashore.py, OpenStreetMap), from zoom 11 ---------------------------
+    const ASHORE = {
+      "Lean-to shelter": ["⛺", "#15803d"], "Wilderness hut": ["⌂", "#166534"], "Day hut": ["⌂", "#4d7c0f"],
+      "Campsite": ["▲", "#15803d"], "Campfire site": ["🔥", "#c2410c"], "Sauna": ["♨", "#b45309"],
+      "Toilet": ["WC", "#475569"], "Drinking water": ["💧", "#0284c7"],
+    };
+    const EXTRA = { fire: "fireplace", wood: "firewood", toilet: "toilet", water: "drinking water", free: "free", fee: "fee" };
+    let ashoreOn = store.get("fw-ashore") === "1";
+    let ashoreNote = "";
+    let ashoreCount = 0;
+    const ashoreLayer = L.layerGroup();
+    let ashoreSeq = 0;
+    async function loadAshore() {
+      if (!ashoreOn || map.getZoom() < 11) { ashoreLayer.clearLayers(); ashoreCount = 0; return; }
+      const b = map.getBounds().pad(0.2);
+      const f = (v) => v.toFixed(3);
+      const my = ++ashoreSeq;
+      let data;
+      try { data = await api(`api/ashore?bbox=${f(b.getWest())},${f(b.getSouth())},${f(b.getEast())},${f(b.getNorth())}`); }
+      catch { return; }
+      if (my !== ashoreSeq) return;
+      ashoreNote = data.pending ? "Downloading them from OpenStreetMap…"
+        : data.error && !data.harbours.length ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+      ashoreLayer.clearLayers();
+      ashoreCount = data.harbours.length;
+      for (const [, lat, lon, name, kind, extras] of data.harbours) {
+        const [glyph, color] = ASHORE[kind] || ["•", "#15803d"];
+        const icon = L.divIcon({ className: "ashore-icon", iconSize: [22, 22], iconAnchor: [11, 11],
+          html: `<span style="background:${color}">${glyph}</span>` });
+        const m = L.marker([lat, lon], { icon, title: name || kind, keyboard: false });
+        m.on("click", () => {
+          const box = document.createElement("div");
+          box.className = "here-box";
+          box.innerHTML = `<strong>${esc(name || kind)}</strong><div class="muted small">${esc(kind)}${(extras || []).length ? ` · ${esc(extras.map((x) => EXTRA[x] || x).join(", "))}` : ""}</div>
+            <div class="small muted">From OpenStreetMap: check on site.</div>
+            <div class="here-actions"><button type="button" class="chip-btn">What's here</button></div>`;
+          box.querySelector("button").addEventListener("click", () => whatsHere(L.latLng(lat, lon), name || kind));
+          L.popup({ className: "aid-popup here-popup", maxWidth: 280, offset: [0, -8], ...PAD }).setLatLng([lat, lon]).setContent(box).openOn(map);
+        });
+        ashoreLayer.addLayer(m);
+      }
+      if (data.pending) setTimeout(loadAshore, 10000);
+    }
+    function setAshore(on) {
+      ashoreOn = on;
+      store.set("fw-ashore", on ? "1" : "0");
+      if (on) { ashoreLayer.addTo(map); loadAshore(); } else { map.removeLayer(ashoreLayer); ashoreLayer.clearLayers(); }
+    }
+    if (ashoreOn) setAshore(true);
+    map.on("moveend", () => { if (ashoreOn) loadAshore().then(() => onChange?.()); });
+
     // --- Layers row ---------------------------------------------------------------------
     function rows() {
       const a = document.createElement("div");
@@ -397,6 +448,11 @@
         note: "Your own marks: long-press the map (right-click on a computer), then Save as pin. Kept on the NAS, so the phone and the computer share them.",
         extra: a,
         onChange: async (on) => setPins(on),
+      }, {
+        title: "Places to go ashore", color: "#15803d", checked: ashoreOn,
+        count: ashoreOn && ashoreCount ? `${ashoreCount} in view` : "",
+        note: ashoreNote || "Lean-to shelters, campfire sites, huts, campsites, saunas, toilets and drinking water by the shore, from OpenStreetMap, from zoom 11. Tap one for what's there. Downloaded once a month.",
+        onChange: async (on) => setAshore(on),
       }];
     }
 

@@ -337,6 +337,7 @@ class Web:
         r.add_get("/api/stations", self.stations)
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
+        r.add_get("/api/ashore", self.ashore)
         r.add_get("/api/reserves", self.reserves)
         r.add_get("/api/logbook", self.logbook)
         r.add_post("/api/logbook/upload", self.logbook_upload)
@@ -1323,6 +1324,16 @@ class Web:
         if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
             raise web.HTTPBadRequest(text="The box is too big; zoom in")
         return web.json_response(self.fw.harbours.in_view(south, west, north, east))
+
+    async def ashore(self, request: web.Request) -> web.Response:
+        """Places to go ashore (shelters, campfire sites, huts, saunas…) in a box (bbox=w,s,e,n)."""
+        try:
+            west, south, east, north = (float(v) for v in request.query["bbox"].split(","))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox=west,south,east,north is needed") from None
+        if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
+            raise web.HTTPBadRequest(text="The box is too big; zoom in")
+        return web.json_response(self.fw.ashore.in_view(south, west, north, east))
 
     # --- trip logbook (the Garmin plotter's tracks) -------------------------------------
 

@@ -99,3 +99,15 @@ def fake_places(q: str) -> list[dict]:
              ("Espoonlahti", 60.15, 24.64, "bay"), ("Pentala", 60.13, 24.68, "island")]
     ql = q.lower()
     return [{"name": n, "where": "Uusimaa, Suomi", "kind": k, "lat": a, "lon": b} for n, a, b, k in names if ql in n.lower()]
+
+
+async def fake_ashore_fetch(query: str) -> dict:
+    """Shelters, campfire sites and a sauna around Porkkala, as Overpass would answer."""
+    els = [(3001, 59.9345, 24.3825, {"amenity": "shelter", "shelter_type": "lean_to", "name": "Rönnskärin laavu",
+                                       "fireplace": "yes", "firewood": "yes"}),
+           (3002, 59.9700, 24.4400, {"leisure": "firepit", "fee": "no"}),
+           (3003, 59.9930, 24.4050, {"tourism": "wilderness_hut", "name": "Kallbåda kämppä", "toilets": "yes"}),
+           (3004, 59.9790, 24.4310, {"leisure": "sauna", "name": "Rantasauna", "fee": "yes"}),
+           (3005, 59.9600, 24.4100, {"amenity": "toilets"}),
+           (3006, 60.2500, 24.0700, {"leisure": "firepit"})]  # inland: left out
+    return {"elements": [{"type": "node", "id": i, "lat": a, "lon": b, "tags": t} for i, a, b, t in els]}
