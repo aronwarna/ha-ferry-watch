@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.65.0
+
+- **Places to go ashore**: a switch in Layers › On every map shows lean-to shelters, campfire
+  sites, wilderness and day huts, campsites, saunas, toilets and drinking water along the coast,
+  from OpenStreetMap, from zoom 11. Tap one for what's there (fireplace, firewood, free or fee).
+  Downloaded once a month like the harbours, and left out of backups.
+
+## 0.64.0
+
+- **What's here** lists the three nearest harbours (tap one to go there) and stays clear of the
+  top bar and ship cards on a phone; five forecast hours on a phone, six on a computer.
+- Find a place: one close button (no second clear cross on phones).
+
+## 0.63.0
+
+- **Place links**: What's here has a Link button (share sheet on the phone, copy on a computer):
+  the link opens the app at that place with What's here open (`#at=lat,lon,zoom`).
+- **Pins from GPX**: Layers › My pins › "Add waypoints from a GPX file" takes the plotter's
+  waypoints (or another app's); Garmin symbols pick the kind (fishing, anchor, danger, …), and a
+  place already pinned with the same name isn't added twice.
+- Map key lists this device's GPS dot and your pins.
+
+## 0.62.0
+
+- **Satellite today (NASA)**: a switch in Layers › On every map lays NASA's daily satellite picture
+  (VIIRS, about 375 m, today's after the afternoon pass, else yesterday's) over any map: sea ice,
+  algae blooms, snow and clouds as they really were. Kept 3 days.
+- **Ship traffic density (EMODnet)**: where ships go, from EMODnet's yearly AIS map (all ship types,
+  the newest year the service has; its layer name is read from the service's list each day).
+- The map catalogue can now hold daily pictures ({date} in a template) and keep only a service's
+  newest year of a layer.
+
+## 0.61.0
+
+- **Where am I**: a locate button (bottom right) centres the map on you: this device's GPS when the
+  browser allows it, else your phone's position from Home Assistant. Tap again to follow you;
+  moving the map stops following. A cone shows which way you're heading.
+- **What's here**: long-press the map (right-click on a computer) for the place's coordinates in
+  sea style (tap to copy), distance and bearing from you, the chart's depth there, the seabed type
+  (GTK), and the wind, gusts, waves and temperatures now and for the next 12 hours (Open-Meteo).
+  When the chart-sample switch in Settings is on, a long press on the drawn chart still saves a sample.
+- **Find a place**: the search button (or the / key) finds islands, bays and villages
+  (OpenStreetMap), harbours, your pins and typed coordinates (decimal or degrees and minutes).
+- **My pins**: save any place as a pin (fishing spot, anchorage, sauna, swimming, campfire, danger,
+  view, home, or plain) with a name and a note. Kept on the NAS, so the phone and the computer
+  share them; Layers › On every map has the switch and a GPX download for the plotter.
+
+## 0.60.0
+
+- **Then & now**: a new map type with old aerial photos and old maps. Pick Aerial photos or
+  Old maps and slide through the years there is something for where you're looking:
+  - Espoo's aerial photos from 1969 to 2026 (16 years) and its old guide maps,
+  - Helsinki's aerial photos from 1932 on and its old maps back to the 1700s (Senate map 1870 …),
+  - Vantaa's, and the Land Survey's old printed maps of all of Finland (1860s to 2020) where
+    CSC's Paituli service draws them.
+  "Compare with today" puts a divider on the map: the old picture on the left, today's on the
+  right; drag it across. "Fade" lays the old picture over today's.
+- **Building ages** (Layers › On every map): every building in Helsinki, Espoo, Vantaa and
+  Kauniainen as a dot coloured by the year it was finished. Tap one for the year, its use,
+  floors, facade and address (HSY's building register).
+- **Property boundaries** and **property ids** from the Land Survey (from zoom 14 and 16), and
+  the **seabed type** from GTK (mud, clay, sand, rock: where the anchor holds).
+- On a phone the map type is now one button with a drop-down, so there's room for more types.
+- A scale bar in nautical miles and metres.
+- The map opens where you left it (if that was in the last 6 hours), else on the ships.
+- All these layers come from one list on the NAS (mapsources.py), which reads each service's
+  layer list once a day, so new years appear by themselves. Settings › Copy diagnostics lists
+  what each service gave.
 ## 0.55.1
 
 - Places to check: short brushes past the shore (under 150 m) are no longer listed, and

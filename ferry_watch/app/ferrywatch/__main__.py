@@ -41,6 +41,10 @@ from .passages import Detector, backfill_timing
 from .photos import PhotoCache
 from .portcalls import PortTimes
 from .satellite import Satellite
+from .mapsources import MapSources
+from .buildings import Buildings
+from .here import Here
+from .pins import Places
 from .predict import Predictor
 from .stations import Stations
 from .store import Store
@@ -123,6 +127,9 @@ class FerryWatch:
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
         self.satellite: Satellite | None = None
+        self.maps: MapSources | None = None
+        self.buildings: Buildings | None = None
+        self.here: Here | None = None
         self.overlays: Overlays | None = None
         self.vchart: VectorChart | None = None
         self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
@@ -174,6 +181,10 @@ class FerryWatch:
         # never push chart tiles out.
         self.satellite = Satellite(TileCache(DATA_DIR / "satellite", self.session, 400 * 1024 * 1024),
                                    self.store.kv_get("mml_api_key", ""))
+        # Old aerial photos, old maps and overlays (mapsources.py), and building ages.
+        sim = os.environ.get("FW_SIMULATE") == "1"
+        self.maps = MapSources(DATA_DIR / "maps", self.session, self.store, fake=sim)
+        self.buildings = Buildings(DATA_DIR / "maps" / "buildings", self.session, fake=sim)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
             self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
@@ -216,12 +227,19 @@ class FerryWatch:
         wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
         self.dayscore = self._day_score()
         self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
+        from .ashore import Ashore
+        fake_ashore = None
+        if fake_overpass:
+            from .simmaps import fake_ashore_fetch as fake_ashore
+        self.ashore = Ashore(DATA_DIR / "ashore.json.gz", self.session, fake_ashore)
         self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves, fake_syke)
         # Trips from ben's own Garmin plotter (GPX uploads); backed up with Home Assistant.
         self.logbook = Logbook(DATA_DIR / "logbook.db", self.harbours)
         mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
         self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
         self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
+        self.here = Here(self.session, self.vchart, fake=os.environ.get("FW_SIMULATE") == "1", harbours=self.harbours)
+        self.places = Places(self.session, fake=os.environ.get("FW_SIMULATE") == "1")
         self.autoroute = AutoRouter(self.vchart)
         self.smartroute = SmartRouter(self.vchart, self.dayscore, self.notices)
         fake_ports = None
@@ -297,6 +315,7 @@ class FerryWatch:
             self.tasks.append(asyncio.create_task(self._load_chart()))
             self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self.maps.run()))
         self.tasks.append(asyncio.create_task(self._overlay_pruning()))
         self.tasks.append(asyncio.create_task(self.ports.run()))
         self.tasks.append(asyncio.create_task(self.ice.run()))
@@ -545,6 +564,8 @@ class FerryWatch:
             self.ports.visits.prune()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.satellite.cache.prune)
+            await asyncio.to_thread(self.maps.prune)
+            await asyncio.to_thread(self.buildings.prune)
             await asyncio.to_thread(self.overlays.prune)
             await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
@@ -596,6 +617,7 @@ class FerryWatch:
             "chart": self.chart,
             "vchart": self.vchart.status() if self.vchart else None,
             "satellite": self.satellite.sources() if self.satellite else None,
+            "maps": self.maps.sources() + [{"id": "buildings", "name": "Building ages (HSY)", "layers": 1, "failing": self.buildings.failing}] if self.maps else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
             "weather": self.weather_state(),

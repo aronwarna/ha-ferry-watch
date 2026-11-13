@@ -134,6 +134,15 @@ def parse_overpass(data: Any) -> list[list[Any]]:
 
 
 class Harbours:
+    # A subclass (ashore.py) swaps what is asked for and how it's read.
+    WHAT = "harbours"
+
+    def query(self) -> str:
+        return overpass_query()
+
+    def parse(self, data: Any) -> list[list[Any]]:
+        return parse_overpass(data)
+
     def __init__(self, path: Path, session: aiohttp.ClientSession | None, fetch: Fetch | None = None):
         self.path = path
         self.session = session
@@ -180,18 +189,18 @@ class Harbours:
 
     async def _download(self) -> None:
         try:
-            data = await self.fetch(overpass_query())
-            rows = await asyncio.to_thread(parse_overpass, data)
+            data = await self.fetch(self.query())
+            rows = await asyncio.to_thread(self.parse, data)
             del data
             if not rows:
-                raise ValueError("no harbours in the answer")
+                raise ValueError(f"no {self.WHAT} in the answer")
             now = time.time()
             await asyncio.to_thread(self._save, rows, now)
             self.rows, self.updated, self.error = [tuple(r) for r in rows], now, None
-            _LOGGER.info("Harbours from OpenStreetMap: %s", len(rows))
+            _LOGGER.info("%s from OpenStreetMap: %s", self.WHAT.capitalize(), len(rows))
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
             if self.error is None:
-                _LOGGER.warning("Could not download harbours from OpenStreetMap (Overpass): %s", err)
+                _LOGGER.warning("Could not download %s from OpenStreetMap (Overpass): %s", self.WHAT, err)
             self.error = str(err) or type(err).__name__
             self._failed = time.time()
 
@@ -235,6 +244,21 @@ class Harbours:
                 found.append((not name.startswith(whole), d, r))
         found.sort(key=lambda f: f[:2])
         return {"harbours": [f[2] for f in found[:limit]], "pending": bool(self._task and not self._task.done())}
+
+    def nearest(self, lat: float, lon: float, limit: int = 3, within_m: float = 20000) -> list[dict[str, Any]]:
+        """The nearest named harbours to a place, as the crow flies: [{name, kind, lat, lon, m}]."""
+        self._ready()
+        kx = math.cos(math.radians(lat))
+        near = []
+        for r in self.rows:
+            if not r[3]:
+                continue
+            d2 = (r[1] - lat) ** 2 + ((r[2] - lon) * kx) ** 2
+            if d2 < (within_m / 111000) ** 2:
+                near.append((d2, r))
+        near.sort(key=lambda n: n[0])
+        return [{"name": r[3], "kind": r[4], "lat": r[1], "lon": r[2], "m": round(distance_m(lat, lon, r[1], r[2]))}
+                for _, r in near[:limit]]
 
     def in_view(self, south: float, west: float, north: float, east: float) -> dict[str, Any]:
         """Harbours inside a box, and whether a download is under way."""

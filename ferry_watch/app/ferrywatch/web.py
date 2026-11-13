@@ -286,6 +286,16 @@ class Web:
         r.add_get("/api/notify/picture/{name}", self.notify_picture)
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
+        r.add_get("/api/mapsources", self.mapsources)
+        r.add_get("/api/here", self.here)
+        r.add_get("/api/pins", self.pins)
+        r.add_post("/api/pins", self.save_pin)
+        r.add_delete("/api/pins/{pin_id}", self.delete_pin)
+        r.add_get("/api/pins.gpx", self.pins_gpx)
+        r.add_post("/api/pins/import", self.import_pins)
+        r.add_get("/api/places", self.places)
+        r.add_get("/api/maptile/{layer}/{z}/{x}/{y}", self.map_tile)
+        r.add_get("/api/buildings/{x}/{y}", self.buildings_tile)
         r.add_get("/api/vchart/{z}/{x}/{y}", self.vchart_tile)
         r.add_get("/api/vchart-water/{z}/{x}/{y}", self.vchart_water)
         r.add_get("/api/overlays", self.overlays)
@@ -327,6 +337,7 @@ class Web:
         r.add_get("/api/stations", self.stations)
         r.add_get("/api/stations/{fmisid}/history", self.station_history)
         r.add_get("/api/harbours", self.harbours)
+        r.add_get("/api/ashore", self.ashore)
         r.add_get("/api/reserves", self.reserves)
         r.add_get("/api/logbook", self.logbook)
         r.add_post("/api/logbook/upload", self.logbook_upload)
@@ -505,6 +516,121 @@ class Web:
         if not path:
             raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
         return web.FileResponse(path, headers={"Cache-Control": "max-age=604800", "Content-Type": _image_type(path)})
+
+    async def here(self, request: web.Request) -> web.Response:
+        """What's here: depth, weather and seabed at a long-pressed place (here.py)."""
+        try:
+            lat, lon = float(request.query["lat"]), float(request.query["lon"])
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest() from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or not self.fw.here:
+            raise web.HTTPBadRequest()
+        return web.json_response(await self.fw.here.at(lat, lon), headers={"Cache-Control": "no-store"})
+
+    # --- your own pins, and place search (pins.py) -------------------------------------
+
+    async def pins(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.store.kv_get("pins", []) or [], headers={"Cache-Control": "no-store"})
+
+    async def save_pin(self, request: web.Request) -> web.Response:
+        from .pins import MAX_PINS, clean_pin
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        rows = list(self.fw.store.kv_get("pins", []) or [])
+        old = next((p for p in rows if body.get("id") and p.get("id") == body["id"]), None)
+        try:
+            pin = clean_pin(body, old)
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        if old:
+            rows[rows.index(old)] = pin
+        elif len(rows) >= MAX_PINS:
+            raise web.HTTPBadRequest(text="Too many pins")
+        else:
+            rows.append(pin)
+        self.fw.store.kv_set("pins", rows)
+        return web.json_response(pin)
+
+    async def delete_pin(self, request: web.Request) -> web.Response:
+        rows = [p for p in (self.fw.store.kv_get("pins", []) or []) if p.get("id") != request.match_info["pin_id"]]
+        self.fw.store.kv_set("pins", rows)
+        return web.json_response({"ok": True})
+
+    async def pins_gpx(self, request: web.Request) -> web.Response:
+        from .pins import pins_gpx
+        return web.Response(text=pins_gpx(self.fw.store.kv_get("pins", []) or []), content_type="application/gpx+xml",
+                            headers={"Content-Disposition": 'attachment; filename="ferry-watch-pins.gpx"'})
+
+    async def import_pins(self, request: web.Request) -> web.Response:
+        """Waypoints from a GPX file (the plotter's, or another app's) become pins; the same
+        place and name twice is taken once."""
+        from .pins import MAX_PINS, clean_pin, gpx_waypoints
+        raw = await request.content.read(5 * 1024 * 1024 + 1)
+        if len(raw) > 5 * 1024 * 1024:
+            raise web.HTTPRequestEntityTooLarge(max_size=5 * 1024 * 1024, actual_size=len(raw))
+        try:
+            found = gpx_waypoints(raw.decode("utf-8", "replace"))
+        except ValueError as err:
+            raise web.HTTPBadRequest(text=str(err)) from None
+        rows = list(self.fw.store.kv_get("pins", []) or [])
+        seen = {(round(p["lat"], 5), round(p["lon"], 5), p.get("name", "")) for p in rows}
+        added = skipped = 0
+        for body in found:
+            try:
+                pin = clean_pin(body)
+            except ValueError:
+                skipped += 1
+                continue
+            key = (round(pin["lat"], 5), round(pin["lon"], 5), pin["name"])
+            if key in seen or len(rows) >= MAX_PINS:
+                skipped += 1
+                continue
+            seen.add(key)
+            rows.append(pin)
+            added += 1
+        self.fw.store.kv_set("pins", rows)
+        return web.json_response({"added": added, "skipped": skipped})
+
+    async def places(self, request: web.Request) -> web.Response:
+        from .pins import parse_coords
+        q = request.query.get("q", "")
+        coords = parse_coords(q)
+        rows = [] if coords else await self.fw.places.search(q)
+        return web.json_response({"coords": coords, "places": rows, "error": self.fw.places.error})
+
+    async def mapsources(self, request: web.Request) -> web.Response:
+        """The extra layers (old photos and maps, overlays) the panel can show."""
+        return web.json_response(self.fw.maps.listing(), headers={"Cache-Control": "no-store"})
+
+    async def map_tile(self, request: web.Request) -> web.StreamResponse:
+        try:
+            z, x = int(request.match_info["z"]), int(request.match_info["x"])
+            y = int(request.match_info["y"].split(".")[0])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        layer = request.match_info["layer"]
+        cover = self.fw.maps.covers(layer, z, x, y)
+        if not cover:  # outside the layer's area or zooms: for good
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=604800" if cover is False else "no-store"})
+        path = await self.fw.maps.tile(layer, z, x, y)
+        if not path:
+            raise web.HTTPNotFound(headers={"Cache-Control": "no-store"})  # may just be a failed fetch
+        daily = (self.fw.maps.row(layer) or {}).get("daily")
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=21600" if daily else "max-age=2592000",
+                                               "Content-Type": _image_type(path)})
+
+    async def buildings_tile(self, request: web.Request) -> web.Response:
+        try:
+            x, y = int(request.match_info["x"]), int(request.match_info["y"])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        body = await self.fw.buildings.tile(x, y)
+        if body is None:
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=86400"})
+        return web.Response(body=body, content_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Cache-Control": "max-age=86400"})
 
     async def overlays(self, request: web.Request) -> web.Response:
         on = {i for i in request.query.get("times", "").split(",") if i}
@@ -1200,6 +1326,16 @@ class Web:
         if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
             raise web.HTTPBadRequest(text="The box is too big; zoom in")
         return web.json_response(self.fw.harbours.in_view(south, west, north, east))
+
+    async def ashore(self, request: web.Request) -> web.Response:
+        """Places to go ashore (shelters, campfire sites, huts, saunas…) in a box (bbox=w,s,e,n)."""
+        try:
+            west, south, east, north = (float(v) for v in request.query["bbox"].split(","))
+        except (KeyError, ValueError):
+            raise web.HTTPBadRequest(text="bbox=west,south,east,north is needed") from None
+        if not (south <= north and west <= east) or (north - south) * (east - west) > 4:
+            raise web.HTTPBadRequest(text="The box is too big; zoom in")
+        return web.json_response(self.fw.ashore.in_view(south, west, north, east))
 
     # --- trip logbook (the Garmin plotter's tracks) -------------------------------------
 

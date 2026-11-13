@@ -49,6 +49,43 @@
     .setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   window.ferryMap = map; // handy from the browser console
+  // Open where the map was last left if that was in the last 6 hours (else on the ships).
+  let viewRestored = false;
+  try {
+    const v = (store.get("fw-view") || "").split(",").map(Number);
+    if (v.length >= 3 && v.slice(0, 3).every(Number.isFinite) && !(v[3] && Date.now() - v[3] > 6 * 3600e3)) {
+      map.setView([v[0], v[1]], v[2], { animate: false });
+      viewRestored = true;
+    }
+  } catch (err) { /* the default view */ }
+  map.on("moveend", () => {
+    const c = map.getCenter();
+    store.set("fw-view", `${c.lat.toFixed(5)},${c.lng.toFixed(5)},${map.getZoom()},${Date.now()}`);
+  });
+  // A scale bar in nautical miles and metres.
+  const ScaleBar = L.Control.extend({
+    options: { position: "bottomright" },
+    onAdd() {
+      this.el = L.DomUtil.create("div", "nm-scale");
+      this.el.innerHTML = '<div class="nm-row"><i></i><span></span></div><div class="nm-row km"><i></i><span></span></div>';
+      map.on("zoomend moveend", this.update, this);
+      setTimeout(() => this.update(), 0);
+      return this.el;
+    },
+    update() {
+      const y = map.getSize().y / 2;
+      const m = map.distance(map.containerPointToLatLng([0, y]), map.containerPointToLatLng([100, y])); // per 100 px
+      const nice = (v) => { const e = 10 ** Math.floor(Math.log10(v)); const f = v / e; return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * e; };
+      const nm = nice(m / 1852);
+      const metres = nice(m);
+      const [rowNm, rowKm] = this.el.querySelectorAll(".nm-row");
+      rowNm.querySelector("i").style.width = `${Math.round((nm * 1852 / m) * 100)}px`;
+      rowNm.querySelector("span").textContent = `${nm < 1 ? nm.toFixed(nm < 0.1 ? 2 : 1) : nm} NM`;
+      rowKm.querySelector("i").style.width = `${Math.round((metres / m) * 100)}px`;
+      rowKm.querySelector("span").textContent = metres >= 1000 ? `${metres / 1000} km` : `${metres} m`;
+    },
+  });
+  new ScaleBar().addTo(map);
   map.attributionControl.setPrefix(false);
 
   // Weather layers (overlays.js): ice, radar and wind over the map, with a shared time bar.
@@ -170,6 +207,39 @@
     ]),
   };
   if (aerialOn) layers.satellite.addLayer(aerialPhotos);
+  // Then & now: old aerial photos and old maps over today's picture, plus the catalogue's
+  // overlays and building ages (histmaps.js, mapsources.py).
+  const hist = FerryHist.create({
+    map, api, store,
+    today: {
+      photo: () => L.layerGroup([
+        L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+          maxZoom: 19, maxNativeZoom: ESRI_SAFE_Z, referrerPolicy: REFERRER, zIndex: 1,
+          attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+        }),
+        L.tileLayer("api/tiles/photo/{z}/{x}/{y}.jpg", {
+          minZoom: 11, maxZoom: 19, maxNativeZoom: 18, zIndex: 2,
+          attribution: "Aerial photos © Maanmittauslaitos (via Kapsi)",
+        }),
+      ]),
+      map: streets,
+    },
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  layers.historic = hist.layer;
+  // Where am I, What's here (long press), Find a place, My pins (whereami.js, here.py, pins.py).
+  const here = FerryHere.create({
+    map, api, store,
+    phoneFix: () => phoneFix(),
+    // A long press on the drawn chart saves a chart sample instead, when that's switched on.
+    busy: () => sampleOnPress && activeLayer === layers.chart && chartStyle === "drawn",
+    onChange: () => {
+      if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
+    },
+  });
+  FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
   function setAerial(on) {
     aerialOn = on;
     store.set("fw-aerial", on ? "1" : "0");
@@ -3403,6 +3473,9 @@
         note: "From zoom 11 in, the Land Survey's and Maa-amet's own aerial photos (0.5 m, summer) over Esri's satellite images. Sharper close up, but a different look; off shows Esri's as before.",
         onChange: async (on) => { setAerial(on); },
       }),
+      groupHead("On every map"),
+      ...here.rows().map((r) => switchRow({ compact: true, ...r })),
+      ...hist.rows().map((r) => switchRow({ compact: true, ...r, onChange: async (on) => { await r.onChange(on); renderLayers(); } })),
       groupHead("Traffic"),
       trafficRow(),
       renderAircraftSection(),
@@ -3421,6 +3494,8 @@
       [line(ZONE_STYLE.outer.color), "Outer route line"],
       [icon(`<path d="M5 4h18v10H5z" stroke="${ZONE_STYLE.phone.color}" stroke-width="2.5" stroke-dasharray="5 4" fill="${ZONE_STYLE.phone.color}" fill-opacity="0.12"/>`), "My area: alerts only while your phone is in it"],
       [icon('<circle cx="14" cy="9" r="6" fill="#2563eb" stroke="#fff" stroke-width="2.5"/>'), "Your phone, from Home Assistant"],
+      [icon('<circle cx="14" cy="9" r="6" fill="#0ea5e9" stroke="#fff" stroke-width="2.5"/>'), "You, from this device's GPS (locate button)"],
+      [icon('<path d="M14 17 C14 17 8 11 8 7.5 A6 6 0 0 1 20 7.5 C20 11 14 17 14 17Z" fill="#2563eb" stroke="#fff" stroke-width="1.5"/>'), "Your pin (long-press the map to add one)"],
       [icon('<circle cx="14" cy="9" r="8" fill="#16a34a"/><text x="14" y="12.5" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">6</text>'), "Weather station: wind in m/s, coloured by strength"],
       [icon('<rect x="2" y="3" width="24" height="12" rx="4" fill="#0f766e"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1.4 m</text>'), "Wave buoy (wave height) or sea temperature"],
       [icon('<rect x="5" y="3" width="18" height="12" rx="4" fill="#64748b"/><text x="14" y="12.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">4°</text>'), "Station without wind: air temperature"],
@@ -6040,6 +6115,7 @@
   map.on("click", (e) => {
     if (route.on) return;
     if (activeLayer === layers.chart && chartStyle === "drawn" && map.getZoom() >= 11 && FerryChart.aidAt(map, e.latlng)) return;
+    if (hist.tap(e.latlng)) return;
     reserves.tap(e.latlng);
   });
   const SERVICE_INFO = {
@@ -6331,7 +6407,8 @@
     }
     const target = shipFromUrl();
     if (target && ships.has(target)) focusShip(target);
-    else if (!focusFromNotification()) fitAllShips();
+    else if (here.fromHash()) { /* a place link */ }
+    else if (!focusFromNotification() && !viewRestored) fitAllShips();
     connectSocket();
     if (trafficOn) pollTraffic();
     if (stationsOn) pollStations();
