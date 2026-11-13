@@ -69,7 +69,7 @@ SHELTER_LAND_SHARE = 0.10  # this much land around (or upwind): fully sheltered
 SHELTER_WIND = (0.35, 2.0)  # the boat's weight times wind / its "okay" wind, kept within these
 EXPOSED_FROM = 0.5  # of full exposure: counted as open water in the sums
 SHORE_ROOM = {"close": 0.5, "normal": 1.0, "wide": 2.0}  # the panel's "Room from shore": times the shore distances
-CHECK_MIN_M = 80  # a stretch near the shore or over uncertain depth this long is listed as a place to check
+CHECK_MIN_M = 150  # a stretch near the shore or over uncertain depth this long is listed as a place to check
 CHECK_MAX = 12
 STRAIGHT_SLACK = 1.02  # a straight line may cost this much more than the way it replaces
 FAIRWAY_KEEP = 0.9  # a straight line keeps this much of the fairway the way it replaces ran on
@@ -831,7 +831,7 @@ def describe(grid: Grid, cells: list[tuple[int, int]], idx: list[int], found: di
             if kind is None:
                 gap += 1  # a gap of a cell or two doesn't end a stretch
                 continue
-            if runs and gap <= 2 and runs[-1][0] == kind:
+            if runs and gap <= 4 and runs[-1][0] == kind:
                 runs[-1][1] += step
                 runs[-1][2].append(cell)
             else:

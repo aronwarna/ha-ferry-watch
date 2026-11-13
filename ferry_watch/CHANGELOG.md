@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.55.1
+
+- Places to check: short brushes past the shore (under 150 m) are no longer listed, and
+  stretches close together are joined, so the list holds the places that matter.
+- The app has its own icon in the browser tab, and the browser's top bar takes the app's
+  colour in light and dark mode.
+
 ## 0.55.0
 
 - Automatic routes now list the **places to check yourself**, as the big chart plotter apps

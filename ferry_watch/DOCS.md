@@ -411,7 +411,7 @@ consumption at cruising speed: 0.5 l/NM for Buster M, 0.8 for Buster XL, 1.4 for
 the cabin boat. It is a rough guess; your engine, load and the sea decide.
 
 **Places to check.** The route lists every stretch that passes within the shore
-room of the shore or a shoal for 80 m or more, or over water of uncertain depth.
+room of the shore or a shoal for 150 m or more, or over water of uncertain depth.
 Each has an orange sign on the map and a row under "places to check yourself" in
 the panel; tap one to go there and read why. On a marked fairway nothing is
 listed for being near the shore.

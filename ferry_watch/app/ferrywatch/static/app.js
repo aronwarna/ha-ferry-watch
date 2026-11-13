@@ -4913,7 +4913,7 @@
     }
     const total = sum((x) => x.metres) / 1852;
     if (b?.fuel_lnm && !isSail() && total >= 0.5) {
-      out.push([`Fuel about ${Math.max(1, Math.round(total * b.fuel_lnm))} l`, "", `A rough guess at cruising speed: ${b.fuel_lnm} litres a nautical mile for ${b.title}. Your engine and load decide.`]);
+      out.push([`Fuel about ${Math.max(1, Math.round(total * b.fuel_lnm))} litres`, "", `A rough guess at cruising speed: ${b.fuel_lnm} litres a nautical mile for ${b.title}. Your engine and load decide.`]);
     }
     if (shallow >= 0.1) out.push([`Uncertain depth ${shallow.toFixed(1)} NM`, "warn", "Water the chart only gives as a depth range that may be too shallow: the amber dashed stretches"]);
     return out;
