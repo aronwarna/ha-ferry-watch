@@ -289,8 +289,15 @@ def finish(grid: Grid, cls: Image.Image, fw: Image.Image, areas: list[dict[str, 
     shore = round(SHORE_CLEAR_M * room / cell)
     if shore:
         nav = nav.filter(ImageFilter.MinFilter(2 * shore + 1))
-    nav = ImageChops.lighter(nav, fw)
-    marginal = ImageChops.multiply(marginal, ImageChops.invert(fw))  # a fairway is deep enough
+    # A fairway's line is one cell wide, and through a sound narrower than a cell or two it is
+    # all the open water there is. The search never slips between two closed cells, so where
+    # the line steps sideways the cells beside it are opened too (as plain water near the
+    # shore: the route still keeps to the line itself).
+    beside = fw
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        beside = ImageChops.lighter(beside, ImageChops.offset(fw, dx, dy))
+    nav = ImageChops.lighter(nav, beside)
+    marginal = ImageChops.multiply(marginal, ImageChops.invert(beside))  # a fairway is deep enough
     near = max(1, math.ceil(NEAR_SHORE_M * room / cell))
     # Near the shore, and as near water of uncertain depth: shoals are given room too.
     sure = ImageChops.multiply(nav, ImageChops.invert(marginal))

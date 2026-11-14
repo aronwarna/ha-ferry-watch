@@ -335,3 +335,40 @@ def test_motor_boat_gets_the_direct_route_beside_the_sheltered_one(tmp_path):
     other = asyncio.run(router.route(a, b, "buster_m", style="direct"))
     assert other["style"] == "direct" and other["alt"]["style"] == "shelter"
     assert other["points"] == out["alt"]["points"]
+
+
+def sound_grid(detour=True, cell_m=80.0):
+    """Two basins with land between: a fairway's line runs slantwise through the land (a sound
+    narrower than a cell), and with `detour` open water joins the basins the long way round."""
+    from PIL import ImageDraw
+    w, h = 200, 120
+    grid = S.Grid(1164, 594, 1164, 594, cell_m)
+    grid.w, grid.h = w + 2 * S.BORDER, h + 2 * S.BORDER
+    cls = Image.new("L", (grid.w, grid.h), 0)
+    draw = ImageDraw.Draw(cls)
+    draw.rectangle((5, 5, 40, 115), fill=2)
+    draw.rectangle((160, 5, 195, 115), fill=2)
+    if detour:
+        draw.rectangle((5, 100, 195, 115), fill=2)
+    fw = Image.new("L", (grid.w, grid.h), 0)
+    pts = [(30, 20), (70, 45), (120, 30), (170, 60)]
+    ImageDraw.Draw(fw).line(pts, fill=128, width=1)
+    S.add_fairway_lines(grid, [pts], 0, 0)
+    S.finish(grid, cls, fw)
+    return grid
+
+
+def test_fairway_through_a_narrow_sound_is_open():
+    # The fairway's one-cell line steps sideways through closed cells: it still joins the basins
+    # (the search doesn't slip between two closed cells, so the cells beside the line are open).
+    a, b = (20, 30), (60, 170)
+    grid = sound_grid(detour=False)
+    assert S.search_power(grid, a, b, 20) is not None
+    assert sail(grid, a, b, 180, 7) is not None
+    # With open water the long way round as well, the sound is still the way taken.
+    grid = sound_grid(detour=True)
+    found = S.search_power(grid, a, b, 20, fairway=(0.75, 0.6))
+    assert max(r for r, _ in found["cells"]) < 90
+    idx = S.SmartRouter._shape_power(grid, found, 20)
+    out = S.describe(grid, found["cells"], idx, found, False, grid.latlon(*a), grid.latlon(*b))
+    assert len(out["points"]) <= 6 and out["fairway_nm"] > 5

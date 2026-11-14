@@ -631,6 +631,8 @@ body.attribution-open .strip { visibility: hidden; }
 .route-modes { padding: 2px; border: 1px solid var(--border); border-radius: 10px; flex: 0 1 auto; }
 .route-modes button { min-height: 32px; padding: 4px 10px; font: 600 13px/1.2 system-ui, sans-serif; color: var(--text); border-radius: 8px; white-space: nowrap; }
 .route-modes button[aria-pressed="true"] { background: var(--route); color: #fff; }
+.route-mode-apply { align-self: flex-start; min-height: 32px; padding: 5px 12px; border: 1px solid var(--route); border-radius: 9px; background: transparent; color: var(--text); font: 600 13px/1.2 system-ui, sans-serif; cursor: pointer; }
+.route-mode-apply:hover { background: color-mix(in srgb, var(--route) 18%, transparent); }
 .route-find { display: flex; flex-direction: column; gap: 4px; }
 .route-find-results { list-style: none; margin: 0; padding: 0; max-height: 168px; overflow-y: auto; }
 .route-find-results:empty { display: none; }

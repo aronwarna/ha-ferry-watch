@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.65.1
+
+- **Automatic routes go through narrow sounds**: a marked fairway through a sound too narrow for
+  the planner's grid (Barösund, for one) was closed to it wherever the fairway's line ran
+  slantwise, so the route went round by the outer skerries and the sailboat got "No way found".
+  The water right beside a fairway's line now counts as open, so the fairway is always a way
+  through for a boat it is deep enough for.
+- **Plan this whole route…**: the Straight / Fairways / Automatic switch only sets how new legs
+  go. When a route is already drawn another way, a button under the switch now plans all of it
+  the chosen way (your numbered stops stay; Undo brings the old route back).
+
 ## 0.65.0
 
 - **Places to go ashore**: a switch in Layers › On every map shows lean-to shelters, campfire
