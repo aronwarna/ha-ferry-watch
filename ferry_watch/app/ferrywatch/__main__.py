@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
 import logging
 import os
 import signal
@@ -12,23 +14,80 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from . import __version__
+from . import __version__, diagnostics, memory
 from .ais import DigitrafficFeed
-from .charts import chart_layer
+from .aircraft import AircraftWatcher
+from .airhistory import AircraftHistory
+from .autoroute import AutoRouter
+from .smartroute import SmartRouter
+from .charts import ENC_DEFAULT, chart_layers, enc_service, enc_tile_url
+from .faults import Faults
+from .fleets import FleetManager, FleetMatcher
+from . import config
 from .config import (DATA_DIR, DEFAULT_SHIPS, DEFAULT_ZONES, DEV, EXTRA_COLORS, PORT, SUPERVISOR_TOKEN,
                      Options, load_options)
-from .ha import HAClient, HAPublisher
-from .notify import Notifier
-from .passages import Detector
+from .geo import sun_info
+from .ha import HAClient, HAPublisher, NextPassageSensor
+from .harbours import Harbours
+from .logbook import Logbook
+from .reserves import Reserves
+from .ice import IceWatch
+from .notices import Notices
+from .notify import Notifier, sun_place
+from .outlook import Outlook, fake_get_json
+from . import algae, aurora, dayscore, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from .overlays import Overlays
+from .passages import Detector, backfill_timing
 from .photos import PhotoCache
+from .portcalls import PortTimes
+from .satellite import Satellite
+from .mapsources import MapSources
+from .buildings import Buildings
+from .here import Here
+from .pins import Places
+from .predict import Predictor
+from .stations import Stations
 from .store import Store
+from .tilecache import TileCache
 from .tracker import Tracker
+from .traffic import Traffic
+from .vchart import VectorChart
+from .weather import SeaWeather
 from .web import Web
 
 _LOGGER = logging.getLogger("ferrywatch")
 
 HOUSEKEEPING_INTERVAL = 6 * 3600
+OVERLAY_PRUNE_EVERY = 1800  # s; radar frames are removed once 6 hours old
 HA_SENSOR_INTERVAL = 30 * 60
+PANEL_TICK = 60  # s between sea-condition checks and phone reads while a panel is open
+FLEET_KEEP = 3 * 86400  # fleet ships only need their current voyage
+FLEET_REFRESH = 24 * 3600
+SEAMARK_URL = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
+# Heights for the sunset spots' view (Mapzen terrain tiles on AWS Open Data: EU-DEM in
+# Finland, sea floor below 0), as terrarium PNGs: height = R*256 + G + B/256 - 32768 m.
+# The Land Survey's terrain map (maastokartta, CC BY 4.0) for the Terrain view: from its own
+# open map service with the user's key, otherwise from Kapsi's free copy of the same maps.
+TOPO_MML = ("https://avoin-karttakuva.maanmittauslaitos.fi/avoin/wmts/1.0.0/maastokartta/default/"
+            "WGS84_Pseudo-Mercator/{z}/{y}/{x}.png?api-key={key}")
+TOPO_KAPSI = "https://tiles.kartat.kapsi.fi/peruskartta/{z}/{x}/{y}.jpg"
+TOPO_MIN_Z, TOPO_MAX_Z = 5, 16
+TOPO_BOX = (59.3, 19.0, 70.2, 31.7)  # Finland: south, west, north, east
+
+
+def topo_covers(z: int, x: int, y: int) -> bool:
+    """Whether a map tile touches Finland's box (the terrain map has nothing elsewhere)."""
+    import math
+    n = 2**z
+    west, east = x / n * 360 - 180, (x + 1) / n * 360 - 180
+    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))  # noqa: E731
+    north, south = lat(y), lat(y + 1)
+    return TOPO_MIN_Z <= z <= TOPO_MAX_Z and south < TOPO_BOX[2] and north > TOPO_BOX[0] \
+        and west < TOPO_BOX[3] and east > TOPO_BOX[1]
+
+
+TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+FLEET_STORE_MOVING, FLEET_STORE_STOPPED = 60, 600  # sparser tracks than the main ships
 
 
 class FerryWatch:
@@ -38,18 +97,55 @@ class FerryWatch:
         self.store = Store(DATA_DIR / "ferrywatch.db")
         self._seed_ships()
         self._seed_zones()
+        self._rename_old_zones()
         self.tracker = Tracker(self.store)
         self.tracker.load()
+        self.fleets = FleetManager(self.store)
+        self.fleet_tracker = Tracker(self.store, members=self._fleet_members,
+                                     store_moving=FLEET_STORE_MOVING, store_stopped=FLEET_STORE_STOPPED)
+        self.fleet_tracker.load()
         self.notifier = Notifier(self)
         self.detector = Detector(self.store, self.notifier.on_passage)
+        if not self.store.kv_get("passages_timed"):
+            # Passages from before 0.36.4 timed at their timing place off Porkkala too, from
+            # the tracks still kept (once; older ones keep their own time in the stats).
+            _LOGGER.info("Timed %s earlier passages off Porkkala", backfill_timing(self.store, 0))
+            self.store.kv_set("passages_timed", True)
+        self.predictor = Predictor(self.store, self._next_passage_changed)
+        self.next_sensor: NextPassageSensor | None = None
+        self._background: set[asyncio.Task] = set()
         self.session: aiohttp.ClientSession | None = None
         self.feed: DigitrafficFeed | None = None
         self.photos: PhotoCache | None = None
+        self.other_photos: PhotoCache | None = None
+        self.ports: PortTimes | None = None
         self.web = Web(self)
         self.ha: HAClient | None = None
         self.publisher: HAPublisher | None = None
         self.chart: dict[str, Any] | None = None
+        self.enc: dict[str, str] = dict(ENC_DEFAULT)
+        self.aircraft: AircraftWatcher | None = None
+        self.tiles: TileCache | None = None
+        self.satellite: Satellite | None = None
+        self.maps: MapSources | None = None
+        self.buildings: Buildings | None = None
+        self.here: Here | None = None
+        self.overlays: Overlays | None = None
+        self.vchart: VectorChart | None = None
+        self.aircraft_enabled: bool = self.store.kv_get("aircraft_enabled", False)
+        self.air_history = AircraftHistory(self.store.db)
+        self.ice: IceWatch | None = None
+        self.weather: SeaWeather | None = None
+        self.weather_enabled: bool = self.store.kv_get("weather_enabled", True)
+        self.phone: dict[str, Any] | None = None  # the phone's last position, read while a panel is open
+        self.phone_name: str | None = None  # its name in Home Assistant, for Settings
+        self._wakers: list[asyncio.Event] = []
+        self.vchart_keep: bool = self.store.kv_get("vchart_keep", True)
+        self._keep_task: asyncio.Task | None = None
         self.tasks: list[asyncio.Task] = []
+
+    def _fleet_members(self) -> set[int]:
+        return set(self.fleets.active(set(self.tracker.ships)))
 
     def _seed_ships(self) -> None:
         if self.store.kv_get("seeded"):
@@ -65,25 +161,136 @@ class FerryWatch:
             self.store.add_zone(zone["name"], zone["role"], zone["shape"], zone["points"])
         self.store.kv_set("zones_seeded", True)
 
+    def _rename_old_zones(self) -> None:
+        """The first areas were named "... (from old setup)"; once, drop that ending."""
+        if self.store.kv_get("zones_renamed"):
+            return
+        for zone in self.store.zones():
+            if zone["name"].endswith(" (from old setup)"):
+                self.store.update_zone(zone["id"], zone["name"][:-len(" (from old setup)")], zone["points"])
+        self.store.kv_set("zones_renamed", True)
+
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self.session = aiohttp.ClientSession()
         self.photos = PhotoCache(DATA_DIR / "photos", self.session)
+        # Photos looked up for other ships when their popup opens: the newest 300 (~25 MB).
+        self.other_photos = PhotoCache(DATA_DIR / "photos" / "others", self.session, max_files=300)
+        self.tiles = TileCache(DATA_DIR / "tiles", self.session)
+        # Aerial photos for the Satellite view: their own folder and size limit, so they
+        # never push chart tiles out.
+        self.satellite = Satellite(TileCache(DATA_DIR / "satellite", self.session, 400 * 1024 * 1024),
+                                   self.store.kv_get("mml_api_key", ""))
+        # Old aerial photos, old maps and overlays (mapsources.py), and building ages.
+        sim = os.environ.get("FW_SIMULATE") == "1"
+        self.maps = MapSources(DATA_DIR / "maps", self.session, self.store, fake=sim)
+        self.buildings = Buildings(DATA_DIR / "maps" / "buildings", self.session, fake=sim)
+        if os.environ.get("FW_SIMULATE") == "1":
+            from . import simoverlays
+            self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
+            simoverlays.register(self.overlays)
+        else:
+            self.overlays = Overlays(DATA_DIR / "overlays", self.session)
+            seaice.register(self.overlays)
+            radar.register(self.overlays)
+        fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = fake_forecast = fake_reserves = fake_syke = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simulate import fake_chart_layer as fake_chart
+            from .simulate import fake_fmi_fetch as fake_fmi
+            from .simulate import fake_faults_fetch as fake_faults
+            from .simulate import fake_traffic_fetch as fake_traffic
+            from .simsea import fake_overpass_fetch as fake_overpass
+            from .simsea import fake_reserves_fetch as fake_reserves
+            from .simsea import fake_syke_wfs as fake_syke
+            from .simsea import fake_stations_fetch as fake_stations
+            from .simsea import fake_forecast_fetch as fake_forecast
+        self.weather = SeaWeather(self.session, fake_fmi)
+        fake_ice = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simulate import fake_ice_fetch as fake_ice
+        self.ice = IceWatch(self.session, self.store, fake_ice)
+        self.outlook = Outlook(self.store, self.session,
+                               fake_get_json(self.store) if os.environ.get("FW_SIMULATE") == "1" else None,
+                               live=self.predictor.get, ice=self.ice)
+        # These only answer the panel's requests: nothing runs while no one looks.
+        self.faults = Faults(self.session, fake_faults)
+        fake_notices = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simnotices import FAKE as fake_notices
+        self.notices = Notices(DATA_DIR / "notices", self.session, fake_notices)
+        self.traffic = Traffic(self.session, self.store,
+                               lambda: {*self.tracker.ships, *self.fleet_tracker.ships}, fake_traffic)
+        self.stations = Stations(self.session, fake_stations)
+        self._register_weather_layers()
+        # The wind is checked against the stations' readings (when they are read anyway); it
+        # comes with the weather model's run.
+        wind.register(self.overlays, self.stations, fake_forecast, shared=forecast.RUN_ID)
+        self.dayscore = self._day_score()
+        self.harbours = Harbours(DATA_DIR / "harbours.json.gz", self.session, fake_overpass)
+        from .ashore import Ashore
+        fake_ashore = None
+        if fake_overpass:
+            from .simmaps import fake_ashore_fetch as fake_ashore
+        self.ashore = Ashore(DATA_DIR / "ashore.json.gz", self.session, fake_ashore)
+        self.reserves = Reserves(DATA_DIR / "reserves", self.session, fake_reserves, fake_syke)
+        # Trips from ben's own Garmin plotter (GPX uploads); backed up with Home Assistant.
+        self.logbook = Logbook(DATA_DIR / "logbook.db", self.harbours)
+        mml_key = "simulated" if fake_chart else self.store.kv_get("mml_api_key", "")
+        self.vchart = VectorChart(DATA_DIR / "vchart", self.session, fake_chart, mml_key)
+        self.vchart.set_foreign(self.store.kv_get("vchart_foreign", True))
+        self.here = Here(self.session, self.vchart, fake=os.environ.get("FW_SIMULATE") == "1", harbours=self.harbours)
+        self.places = Places(self.session, fake=os.environ.get("FW_SIMULATE") == "1")
+        self.autoroute = AutoRouter(self.vchart)
+        self.smartroute = SmartRouter(self.vchart, self.dayscore, self.notices)
+        fake_ports = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simports import fake_port_calls as fake_ports
+            from .simports import seed_visits
+            if os.environ.get("FW_SIM_HISTORY") == "1":
+                seed_visits(self.store.db)
+        self.ports = PortTimes(self.session, self.store.db, DATA_DIR / "portcalls.json.gz", fake_ports)
+        if not self.store.kv_get("port_visits_filled"):
+            # Port visits from the tracks kept from before 0.41.0, once, before any new
+            # position comes in.
+            ships = [s["mmsi"] for s in self.store.ships()] + list(self.fleets.members)
+            since = int(time.time()) - self.options.retention_days * 86400
+            added = await asyncio.to_thread(self.ports.visits.backfill, self.store, ships, since)
+            _LOGGER.info("Found %s earlier port visits in the stored tracks", added)
+            self.store.kv_set("port_visits_filled", True)
+        self.tracker.subscribe(self._port_event)
+        self.fleet_tracker.subscribe(self._port_event)
         self.feed = DigitrafficFeed(loop, self.session, self.store, self.tracker)
+        self.feed.add_tracker(self.fleet_tracker)
+        self.tracker.subscribe(self.predictor.on_event)  # before the panel, which shows its result
         self.tracker.subscribe(self.web.on_event)
         self.tracker.subscribe(self.detector.on_event)
+        self.fleet_tracker.subscribe(self.web.on_fleet_event)
+        # Aircraft are only fetched while the switch is on: often while a panel is open,
+        # gently otherwise, for the flight history.
+        self.aircraft = AircraftWatcher(self.session, lambda: self.aircraft_enabled, self.web.broadcast_aircraft,
+                                        self.air_history, lambda: self.aircraft_enabled and bool(self.web.sockets))
 
         if os.environ.get("FW_FAKE_HA") == "1":
             from .simulate import FakeHA
             self.ha = FakeHA()
-        elif SUPERVISOR_TOKEN and not DEV:
-            self.ha = HAClient(self.session, SUPERVISOR_TOKEN)
+            self.next_sensor = NextPassageSensor(self.ha)
+        elif config.HA_TOKEN and not DEV:
+            self.ha = HAClient(self.session, config.HA_TOKEN)
             self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
             self.tasks.append(asyncio.create_task(self._keep_ha_sensor()))
+            self.tasks.append(asyncio.create_task(self.notifier.get_panel_url()))  # for Settings' link
             if self.options.ha_entities:
+                self.next_sensor = NextPassageSensor(self.ha)
                 self.publisher = HAPublisher(self.ha, self.options.ha_update_interval, self)
                 self.tracker.subscribe(self.publisher.on_event)
                 self.tasks.append(asyncio.create_task(self.publisher.run()))
+
+        elif config.NTFY_URL and not DEV:  # no Home Assistant: feed warnings still go out, through ntfy
+            self.tasks.append(asyncio.create_task(self.notifier.watch_feed()))
+        if config.STANDALONE:
+            _LOGGER.info("Standalone: Home Assistant %s, ntfy %s, panel %s",
+                         config.HA_URL if self.ha else "not set up", "set" if config.NTFY_URL else "not set",
+                         "asks for the password" if config.PASSWORD else "open to anyone who reaches this port")
 
         runner = web.AppRunner(self.web.app, access_log=None)
         await runner.setup()
@@ -91,14 +298,33 @@ class FerryWatch:
         _LOGGER.info("Ferry Watch %s listening on port %s", __version__, PORT)
 
         if os.environ.get("FW_SIMULATE") == "1":
-            from .simulate import run_simulation, seed_history
+            from .simulate import (FLEET_MEMBERS, fake_vessel_list, run_simulation, seed_aircraft_history,
+                                   seed_history, simulate_aircraft)
             if os.environ.get("FW_SIM_HISTORY") == "1":
                 seed_history(self.store)
-            self.tasks.append(asyncio.create_task(run_simulation(self.tracker)))
+                seed_aircraft_history(self.air_history)
+            self.feed.vessel_list_source = fake_vessel_list
+            await self.feed.refresh_directory()
+            self.fleets.update(FLEET_MEMBERS)
+            self.fleet_tracker.load()
+            self.tasks.append(asyncio.create_task(run_simulation(self.tracker, self.fleet_tracker)))
+            self.tasks.append(asyncio.create_task(simulate_aircraft(self.aircraft)))
         else:
+            self.tasks.append(asyncio.create_task(self.aircraft.run()))
             self.tasks.append(asyncio.create_task(self.feed.start()))
             self.tasks.append(asyncio.create_task(self._load_chart()))
+            self.tasks.append(asyncio.create_task(self._refresh_fleets_daily()))
         self.tasks.append(asyncio.create_task(self._housekeeping()))
+        self.tasks.append(asyncio.create_task(self.maps.run()))
+        self.tasks.append(asyncio.create_task(self._overlay_pruning()))
+        self.tasks.append(asyncio.create_task(self.ports.run()))
+        self.tasks.append(asyncio.create_task(self.ice.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run()))
+        self.tasks.append(asyncio.create_task(self.outlook.run_log()))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._weather_tick)))
+        self.tasks.append(asyncio.create_task(self._while_panel_open(self._phone_tick)))
+        if self.vchart_keep:
+            self._start_keeping()
 
     async def stop(self) -> None:
         for task in self.tasks:
@@ -108,20 +334,219 @@ class FerryWatch:
         if self.session:
             await self.session.close()
         self.store.close()
+        self.logbook.close()
 
     async def _load_chart(self) -> None:
-        self.chart = await chart_layer(self.session, self.store)
+        self.enc = await enc_service(self.session, self.store)
+        self.chart = await chart_layers(self.session, self.store)
         if self.chart:
             await self.web.broadcast_ships()
+
+    async def _refresh_fleets_daily(self) -> None:
+        while True:
+            if (time.time() - self.fleets.updated_ts >= FLEET_REFRESH or not self.store.vessel_count()
+                    or not self.store.vessel_imos_known()):  # IMO numbers are kept since 0.33.0
+                await self.refresh_fleets()
+            await asyncio.sleep(3600)
+
+    async def refresh_fleets(self) -> None:
+        """Work out fleet membership from Digitraffic's vessel list, which also refreshes
+        the vessel directory used by ship search."""
+        matcher = FleetMatcher()
+        try:
+            count = await self.feed.refresh_directory(matcher)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+            _LOGGER.warning("Could not update the fleets: %s", err)
+            return
+        _LOGGER.info("Vessel directory: %s vessels", count)
+        members = matcher.result()
+        if self.fleets.update(members):
+            _LOGGER.info("Fleets: %s ships", len(members))
+            await self.fleets_changed()
+
+    async def fleets_changed(self) -> None:
+        before = set(self.fleet_tracker.ships)
+        self.fleet_tracker.load()
+        self.feed.sync_subscriptions()
+        await self.web.broadcast_ships()
+        new = sorted(set(self.fleet_tracker.ships) - before)
+        if new and not os.environ.get("FW_SIMULATE"):
+            await self.feed.bootstrap(new)
+            await self.web.broadcast_ships()
+        if new:
+            asyncio.create_task(self._fleet_photos())
+
+    def _with_imo(self, ship: dict[str, Any]) -> dict[str, Any]:
+        imo = self.store.vessel_info([ship["mmsi"]]).get(ship["mmsi"], {}).get("imo")
+        return {**ship, "imo": imo}
+
+    def photo_path(self, mmsi: int):
+        return self.photos.path(mmsi) or self.other_photos.path(mmsi)
+
+    async def any_ship_photo(self, mmsi: int) -> dict[str, Any] | None:
+        """A photo of any vessel (an "other ship" whose popup was opened): my ships and fleet
+        ships keep theirs; the rest are looked up by IMO number in a capped cache. Wikipedia
+        is only asked by name for passenger ships, whose names are rarely shared."""
+        if self.photos.path(mmsi):
+            return self.photos.public_info(mmsi)
+        if not self.other_photos.path(mmsi) and not self.other_photos.tried(mmsi):
+            v = self.store.vessel_info([mmsi]).get(mmsi, {})
+            passenger = isinstance(v.get("type"), int) and 60 <= v["type"] <= 69
+            await self.other_photos.ensure({"mmsi": mmsi, "name": v.get("name"), "imo": v.get("imo"),
+                                            "by_name": passenger, "imo_first": True})
+        return self.other_photos.public_info(mmsi)
+
+    def ship_photo_miss(self, mmsi: int) -> dict[str, Any]:
+        return self.other_photos.miss(mmsi)
+
+    async def _fleet_photos(self) -> None:
+        """Look up photos for followed fleet ships, one at a time (each is looked up once)."""
+        changed = False
+        active = self.fleets.active(set(self.tracker.ships))
+        imos = self.store.vessel_info(active)
+        for mmsi, info in active.items():
+            if not self.photos.path(mmsi):
+                imo = imos.get(mmsi, {}).get("imo")
+                changed |= await self.photos.ensure({"mmsi": mmsi, "name": info["name"], "imo": imo})
+        if changed:
+            await self.web.broadcast_ships()
+
+    def _start_keeping(self) -> None:
+        if self._keep_task is None or self._keep_task.done():
+            self._keep_task = asyncio.create_task(self.vchart.keep())
+            self.tasks.append(self._keep_task)
+
+    async def set_vchart_keep(self, on: bool) -> None:
+        """Keep the drawn chart of the whole Gulf of Finland on disk, or only what's been looked at."""
+        self.vchart_keep = on
+        self.store.kv_set("vchart_keep", on)
+        if on:
+            self._start_keeping()
+        elif self._keep_task:
+            self._keep_task.cancel()
+            self._keep_task = None
+
+    def set_vchart_foreign(self, on: bool) -> None:
+        """Draw the chart outside Finnish waters too, or not (to save RAM)."""
+        self.store.kv_set("vchart_foreign", on)
+        self.vchart.set_foreign(on)
+
+    def set_mml_key(self, key: str) -> None:
+        self.store.kv_set("mml_api_key", key.strip())
+        self.vchart.set_mml_key(key)
+        if self.satellite:
+            self.satellite.mml_key = key.strip()
+        if self._keep_task:  # start a new pass now, to fetch the new part everywhere
+            self._keep_task.cancel()
+            self._keep_task = None
+            self._start_keeping()
+
+    # --- while a panel is open: sea conditions and the phone's position ----------------
+
+    def panel_opened(self) -> None:
+        """A panel connected: check the sea conditions and the phone now, not in a minute."""
+        for wake in self._wakers:
+            wake.set()
+        if self.aircraft:
+            self.aircraft.wake()
+
+    async def _while_panel_open(self, tick) -> None:
+        wake = asyncio.Event()
+        self._wakers.append(wake)
+        while True:
+            if self.web.sockets:
+                try:
+                    await tick()
+                except Exception:  # noqa: BLE001 - keep the loop alive
+                    _LOGGER.exception("Panel update failed")
+            try:
+                await asyncio.wait_for(wake.wait(), PANEL_TICK)
+            except asyncio.TimeoutError:
+                pass
+            wake.clear()
+
+    async def _weather_tick(self) -> None:
+        if not self.weather_enabled:
+            return
+        before = self.weather.fetched
+        await self.weather.latest()
+        if self.weather.fetched != before:
+            self.web.broadcast({"type": "weather", "weather": self.weather_state()})
+
+    async def _phone_tick(self) -> None:
+        if not self.ha or not self.options.phone_entity:
+            return
+        if self.phone_name is None:  # once; "" when Home Assistant has none
+            self.phone_name = await self.ha.friendly_name(self.options.phone_entity) or ""
+        fix = await self.ha.phone_state(self.options.phone_entity)
+        phone = {**fix, "max_age": self.options.phone_max_age_minutes * 60} if fix else None
+        if phone != self.phone:
+            self.phone = phone
+            self.web.broadcast({"type": "phone", "phone": phone})
+
+    def weather_state(self) -> dict[str, Any]:
+        cond = self.weather.conditions() if self.weather and self.weather_enabled else {}
+        return {**cond, "enabled": self.weather_enabled, "sun": sun_info(*sun_place(self.store))}
+
+    async def set_weather(self, on: bool) -> None:
+        self.weather_enabled = on
+        self.store.kv_set("weather_enabled", on)
+        if on:
+            self.panel_opened()
+        self.web.broadcast({"type": "weather", "weather": self.weather_state()})
+
+    async def set_aircraft(self, on: bool) -> None:
+        self.aircraft_enabled = on
+        self.store.kv_set("aircraft_enabled", on)
+        if not on:
+            self.aircraft.aircraft.clear()
+        self.web.broadcast_aircraft(self.aircraft.snapshot())
+        await self.web.broadcast_ships()
+
+    async def follow(self, mmsi: int, name: str) -> None:
+        self.fleets.follow(mmsi, name)
+        await self.fleets_changed()
+
+    async def unfollow(self, mmsi: int) -> None:
+        self.fleets.unfollow(mmsi)
+        await self.fleets_changed()
+
+    async def set_fleet(self, fleet_id: str, on: bool) -> None:
+        self.fleets.set_enabled(fleet_id, on)
+        await self.fleets_changed()
 
     async def _keep_ha_sensor(self) -> None:
         # States set through the API are lost when Home Assistant restarts; re-send now and then.
         while True:
             try:
                 await self.notifier.publish_last_inner()
+                await self._publish_next_passage(force=True)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.debug("Could not update the last passage sensor: %s", err)
+                _LOGGER.debug("Could not update the passage sensors: %s", err)
             await asyncio.sleep(HA_SENSOR_INTERVAL)
+
+    def spawn(self, coro) -> asyncio.Task:
+        """Run a coroutine in the background, keeping a reference until it finishes."""
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    def _next_passage_changed(self) -> None:
+        if self.next_sensor:
+            self.spawn(self._publish_next_passage())
+
+    async def _publish_next_passage(self, force: bool = False) -> None:
+        """sensor.ferry_watch_next_passage, for the ships with alerts on."""
+        if not self.next_sensor:
+            return
+        alerting = {s["mmsi"]: s["name"] for s in self.store.ships() if self.store.alerts_on(s["mmsi"])}
+        best = self.predictor.soonest(set(alerting))
+        mmsi, prediction = best if best else (None, None)
+        try:
+            await self.next_sensor.update(alerting.get(mmsi), mmsi, prediction, force=force)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("Could not update the next passage sensor: %s", err)
 
     async def _housekeeping(self) -> None:
         while True:
@@ -129,11 +554,32 @@ class FerryWatch:
             removed = self.store.prune(cutoff)
             if removed:
                 _LOGGER.info("Removed %s positions older than %s days", removed, self.options.retention_days)
+            self.store.prune_untracked(int(time.time()) - FLEET_KEEP)
+            if time.time() - self.store.kv_get("air_pruned", 0) >= 86400:  # once a day
+                removed = self.air_history.prune()
+                self.store.kv_set("air_pruned", int(time.time()))
+                if removed:
+                    _LOGGER.info("Removed %s aircraft positions older than a year", removed)
             self.notifier.cleanup_pictures()
+            self.ports.visits.prune()
+            await asyncio.to_thread(self.tiles.prune)
+            await asyncio.to_thread(self.satellite.cache.prune)
+            await asyncio.to_thread(self.maps.prune)
+            await asyncio.to_thread(self.buildings.prune)
+            await asyncio.to_thread(self.overlays.prune)
+            await asyncio.to_thread(self.vchart.prune)
             for ship in self.store.ships():
-                await self.photos.ensure(ship)
+                await self.photos.ensure(self._with_imo(ship))
+            await self._fleet_photos()
             await self.web.broadcast_ships()
             await asyncio.sleep(HOUSEKEEPING_INTERVAL)
+
+    async def _overlay_pruning(self) -> None:
+        """Radar frames leave the disk within half an hour of turning 6 hours old, whether
+        or not anyone is looking (housekeeping alone runs only every few hours)."""
+        while True:
+            await asyncio.sleep(OVERLAY_PRUNE_EVERY)
+            await asyncio.to_thread(self.overlays.prune)
 
     # --- used by the web API --------------------------------------------
 
@@ -146,22 +592,155 @@ class FerryWatch:
                 **self.tracker.ship_summary(ship["mmsi"]),
                 "name": ship["name"],
                 "color": ship["color"],
+                "next_passage": self.predictor.get(ship["mmsi"]),
+                "alerts": self.store.alerts_on(ship["mmsi"]),
                 "photo": self.photos.public_info(ship["mmsi"]) if self.photos else None,
             })
+        fleet_ships = []
+        for mmsi, info in self.fleets.active(set(self.tracker.ships)).items():
+            if mmsi in self.fleet_tracker.ships:
+                fleet_ships.append(self.fleet_summary(mmsi, info))
         feed = self.feed.status() if self.feed else {}
         return {
+            "fleets": self.fleets.summary(),
+            "fleet_ships": fleet_ships,
             "zones": self.store.zones(),
             "last_notification": self.store.kv_get("last_notification"),
             "ha_connected": self.ha is not None,
+            "can_notify": self.ha is not None or bool(config.NTFY_URL),
             "version": __version__,
             "now": time.time(),
             "ships": ships,
             "feed": feed,
+            "port_calls": self.ports.status(),
             "simulated": os.environ.get("FW_SIMULATE") == "1",
             "chart": self.chart,
+            "vchart": self.vchart.status() if self.vchart else None,
+            "satellite": self.satellite.sources() if self.satellite else None,
+            "maps": self.maps.sources() + [{"id": "buildings", "name": "Building ages (HSY)", "layers": 1, "failing": self.buildings.failing}] if self.maps else None,
             "positions_stored": self.store.position_count(),
             "retention_days": self.options.retention_days,
+            "weather": self.weather_state(),
+            "phone": self.phone,
+            "memory_mb": memory.rss_mb(),
+            "memory": memory.breakdown(self),
+            "alerts": self.alert_settings(),
+            "aircraft": {
+                "enabled": self.aircraft_enabled,
+                "flights_stored": self.air_history.count(),
+                "error": self.aircraft.error if self.aircraft else None,
+                "list": self.aircraft.snapshot() if self.aircraft and self.aircraft_enabled else [],
+            },
         }
+
+    def alert_settings(self) -> dict[str, Any]:
+        """The add-on options that shape alerts, for Settings, and where they're changed."""
+        o = self.options
+        panel = self.notifier.panel_url  # "/<slug>", once looked up
+        return {
+            "notify_service": o.notify_service, "phone_entity": o.phone_entity,
+            "require_phone_area": o.require_phone_area, "notify_feed_problems": o.notify_feed_problems,
+            "phone_max_age_minutes": o.phone_max_age_minutes,
+            "config_url": f"/hassio/addon{panel}/config" if panel else "/hassio/dashboard",
+            "standalone": config.STANDALONE, "ntfy": bool(config.NTFY_URL), "phone_name": self.phone_name or None,
+        }
+
+    def _register_weather_layers(self) -> None:
+        """The Windy-style layers: the weather and sea models, lightning, aurora, light pollution."""
+        fmi = om = noaa = lp = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import fake_fmi_fetch as fmi
+            from .simweather import fake_lp_get as lp
+            from .simweather import fake_marine_json as om
+            from .simweather import fake_noaa_get as noaa
+        forecast.register(self.overlays, fmi)
+        marine.register(self.overlays, om)
+        lightning.register(self.overlays, fmi)
+        aurora.register(self.overlays, noaa)
+        lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
+        sunset.register(self.overlays)
+        ice_get = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simoverlays import fake_icechart_get as ice_get
+        icechart.register(self.overlays, DATA_DIR / "overlays" / "icechart", self.session, self._chart_water, ice_get)
+        if os.environ.get("FW_SIMULATE") == "1":
+            from . import simalgae
+            algae.register(self.overlays, simalgae.fake_get, simalgae.fake_reports,
+                           satellite={"url": "sim://algae/{ts}/{z}/{x}/{y}",
+                                      "attribution": algae.ATTRIBUTION + " (simulated)"})
+        else:
+            algae.register(self.overlays)
+
+    async def _chart_water(self, z: int, x: int, y: int) -> tuple[dict, bool] | None:
+        """A drawn chart tile's water (vchart.water_of), for cutting the ice chart to the sea."""
+        if self.vchart is None:
+            return None
+        got = await self.vchart.water_gz(z, x, y, wait=2.0)
+        if got is None:
+            return None
+        body, complete = got
+        return json.loads(await asyncio.to_thread(gzip.decompress, body)), complete
+
+    def _day_score(self) -> dayscore.DayScore:
+        """The boating day score's own point forecasts along a route (made-up ones offline)."""
+        fetch = get_json = None
+        if os.environ.get("FW_SIMULATE") == "1":
+            from .simweather import fake_fmi_fetch as fetch
+            from .simweather import fake_marine_json
+
+            async def get_json(url: str, params: dict[str, str]):
+                if url == marine.URL:
+                    return await fake_marine_json(url, params)
+                raise ValueError("offline")
+        return dayscore.DayScore(self.session, self.overlays, fetch, get_json)
+
+    def tile_url(self, source: str, z: int, x: int, y: int) -> str | None:
+        """Upstream address of a chart or sea mark tile the panel asks for."""
+        if source == "seamark":
+            return SEAMARK_URL.format(z=z, x=x, y=y)
+        if source == "topo":
+            if not topo_covers(z, x, y):
+                return None
+            key = self.store.kv_get("mml_api_key", "")
+            return TOPO_MML.format(z=z, x=x, y=y, key=key) if key else TOPO_KAPSI.format(z=z, x=x, y=y)
+        if source == "terrain":
+            return TERRAIN_URL.format(z=z, x=x, y=y) if 8 <= z <= 13 else None
+        if source == "enc":  # the panel asks for these as 512-pixel tiles one zoom out
+            return enc_tile_url(self.enc, z, x, y) if 5 <= z <= 18 else None
+        layer = next((l for l in (self.chart or {}).get("layers", []) if f"chart-{l['id']}" == source), None)
+        if layer:
+            ids = layer["matrix_ids"]
+            if not layer["min_zoom"] <= z < len(ids) or not ids[z]:
+                return None
+            return (layer["url"].replace("{TileMatrix}", ids[z])
+                    .replace("{x}", str(x)).replace("{y}", str(y)))
+        return None
+
+    def fleet_summary(self, mmsi: int, info: dict[str, Any] | None = None) -> dict[str, Any]:
+        info = info or self.fleets.members.get(mmsi, {})
+        return {
+            **self.fleet_tracker.ship_summary(mmsi),
+            "name": info.get("name", f"MMSI {mmsi}"),
+            "fleet": info.get("fleet"),
+            "color": self.fleets.color(info.get("fleet")),
+            "photo": self.photos.public_info(mmsi) if self.photos else None,
+        }
+
+    def _port_event(self, kind: str, payload: dict[str, Any]) -> None:
+        p = payload.get("position") if kind == "position" else None
+        if p:
+            self.ports.visits.see(payload["mmsi"], p["ts"], p["lat"], p["lon"], p.get("sog"))
+
+    def port_times(self, mmsi: int) -> dict[str, Any]:
+        tracker = self.tracker_for(mmsi)
+        ship = tracker.ship_summary(mmsi) if tracker else {}
+        return self.ports.summary(mmsi, ship)
+
+    def tracker_for(self, mmsi: int) -> Tracker | None:
+        for tracker in (self.tracker, self.fleet_tracker):
+            if mmsi in tracker.ships:
+                return tracker
+        return None
 
     async def add_ship(self, mmsi: int, name: str) -> None:
         if self.store.ship(mmsi):
@@ -169,7 +748,9 @@ class FerryWatch:
         used = {s["color"] for s in self.store.ships()}
         color = next((c for c in EXTRA_COLORS if c not in used), EXTRA_COLORS[len(used) % len(EXTRA_COLORS)])
         self.store.add_ship(mmsi, name, color)
+        self.store.set_alerts(mmsi, False)  # only the four ferries alert unless switched on
         self.tracker.load()
+        self.fleet_tracker.load()
         self.feed.sync_subscriptions()
         await self.web.broadcast_ships()
         await self.feed.bootstrap([mmsi])
@@ -178,7 +759,7 @@ class FerryWatch:
     async def _after_add(self, mmsi: int) -> None:
         ship = self.store.ship(mmsi)
         if ship:
-            await self.photos.ensure(ship)
+            await self.photos.ensure(self._with_imo(ship))
             await self.web.broadcast_ships()
 
     def zones_changed(self) -> None:
@@ -191,6 +772,7 @@ class FerryWatch:
     async def remove_ship(self, mmsi: int) -> None:
         self.store.remove_ship(mmsi)
         self.tracker.load()
+        self.fleet_tracker.load()
         self.feed.sync_subscriptions()
         await self.web.broadcast_ships()
 
@@ -202,6 +784,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger().addHandler(diagnostics.RING)  # the latest warnings, for Copy diagnostics
     fw = FerryWatch(options)
     await fw.start()
     stop = asyncio.Event()

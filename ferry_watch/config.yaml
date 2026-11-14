@@ -1,5 +1,5 @@
 name: Ferry Watch
-version: "0.3.0"
+version: "0.65.1"
 slug: ferry_watch
 description: Live map of the Porkkala inner-route ferries, with alerts when one takes the inner route.
 url: https://github.com/aronwarna/ha-ferry-watch
@@ -15,6 +15,23 @@ panel_icon: mdi:ferry
 panel_title: Ferry Watch
 homeassistant_api: true
 hassio_api: true
+# Home Assistant backups leave out what is downloaded again by itself: the drawn chart
+# (1 GB or more for all of Finland), the map tile caches and the weather overlays. Ship
+# tracks, stats, areas, settings, photos and the Land Survey key are still backed up.
+backup_exclude:
+  - "*/vchart/blocks"
+  - "*/vchart/tiles"
+  - "*/vchart/overview"
+  - "*/vchart/heritage"
+  - "*/vchart/foreign"
+  - "*/tiles"
+  - "*/satellite"
+  - "*/overlays"
+  - "*/harbours.json.gz"
+  - "*/ashore.json.gz"
+  - "*/reserves"
+  - "*/photos/others"
+  - "*/maps"
 map:
   - type: media
     read_only: false
