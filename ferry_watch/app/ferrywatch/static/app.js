@@ -49,6 +49,8 @@
     .setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   window.ferryMap = map; // handy from the browser console
+  // Phones: double-tap and slide to zoom, two-finger tap to zoom out (gestures.js).
+  window.FerryGestures?.oneFingerZoom(map);
   // Open where the map was last left if that was in the last 6 hours (else on the ships).
   let viewRestored = false;
   try {
@@ -902,7 +904,10 @@
 
   // --- focus a ship -------------------------------------------------------------
 
-  async function focusShip(mmsi, { fit = true } = {}) {
+  // How the view follows: "keep" (tapped on the map: the view stays put, the ship is only
+  // brought out from under the card), "center" (picked from a list: the ship in the middle,
+  // zoomed in a bit if far out), "fit" (an alert or a link: the whole trip so far).
+  async function focusShip(mmsi, { view = "keep" } = {}) {
     const entry = ships.get(mmsi);
     if (!entry || editing) return;
     if (route.on) { // measuring: a tapped ship becomes a point, to see how far it is
@@ -917,10 +922,13 @@
     const mine = { mmsi, line: null, points: [] };
     focused = mine;
     applyDimming();
-    setCardState("full", { animate: false });
+    // On a phone the card opens low, so the map and the ship stay in sight; drag it up for more.
+    setCardState(phone() && view !== "fit" ? "peek" : "full", { animate: false });
     renderCard();
     $("strip").hidden = true;
     history.replaceState(null, "", `#ship=${mmsi}`);
+    if (view === "center") centerOnShip(entry);
+    else if (view === "keep") keepShipInSight(entry);
 
     let data;
     try {
@@ -934,7 +942,30 @@
     mine.line = speedTrack(data.points).addTo(map);
     entry.marker?.setZIndexOffset(1000);
     renderCard();
-    if (fit) zoomToTrack();
+    if (view === "fit") zoomToTrack();
+  }
+
+  // The part of the map not under the card, in container pixels.
+  function clearArea() {
+    const pad = cardPadding(), size = map.getSize();
+    return L.bounds(L.point(pad.paddingTopLeft), size.subtract(L.point(pad.paddingBottomRight)));
+  }
+
+  function keepShipInSight(entry) {
+    const p = entry?.info.position;
+    if (!p) return;
+    const at = map.latLngToContainerPoint([p.lat, p.lon]), area = clearArea();
+    if (area.contains(at)) return;
+    map.panBy(at.subtract(area.getCenter()), { animate: true });
+  }
+
+  function centerOnShip(entry) {
+    const p = entry?.info.position;
+    if (!p) return;
+    const zoom = Math.max(map.getZoom(), 11);
+    const area = clearArea();
+    const shift = area.getCenter().subtract(map.getSize().divideBy(2));
+    map.setView(map.unproject(map.project([p.lat, p.lon], zoom).subtract(shift), zoom), zoom);
   }
 
   function zoomToTrack() {
@@ -1271,7 +1302,7 @@
     await api("api/ships", { method: "POST", body: { mmsi: info.mmsi, name: info.name } });
     await loadState();
     await loadTails();
-    focusShip(info.mmsi);
+    focusShip(info.mmsi, { view: "center" });
   });
   $("card-zoom").addEventListener("click", () => {
     if (phone()) setCardState("peek");
@@ -1514,7 +1545,7 @@
         sub.className = "sub";
         text.append(name, document.createElement("br"), sub);
         button.append(dot, text);
-        button.addEventListener("click", () => focusShip(info.mmsi));
+        button.addEventListener("click", () => focusShip(info.mmsi, { view: "center" }));
         chip = { button, dot, name, sub };
         chips.set(info.mmsi, chip);
       }
@@ -1755,7 +1786,7 @@
       }
       li.addEventListener("click", () => {
         if (menuModal()) menu.close();
-        focusShip(info.mmsi);
+        focusShip(info.mmsi, { view: "center" });
       });
       return li;
     }));
@@ -1889,6 +1920,7 @@
   });
 
   function openMenu(tab) {
+    map.closePopup();
     renderShipsList();
     $("notify-result").textContent = "";
     const saved = store.get("fw-tab") === "fleets" ? "layers" : store.get("fw-tab");
@@ -2422,7 +2454,7 @@
     const key = `${n.mmsi}:${Math.round(n.ts)}`;
     if (store.get("fw-alert-seen") === key || !ships.has(n.mmsi)) return false;
     store.set("fw-alert-seen", key);
-    focusShip(n.mmsi);
+    focusShip(n.mmsi, { view: "fit" });
     return true;
   }
 
@@ -3302,7 +3334,7 @@
         }
         li.addEventListener("click", () => {
           if (menuModal()) menu.close();
-          focusShip(info.mmsi);
+          focusShip(info.mmsi, { view: "center" });
         });
         return li;
       }));
@@ -3591,6 +3623,7 @@
   }
 
   function toggleWeather(open = $("weather-sheet").hidden) {
+    if (open !== false) map.closePopup(); // a popup left open would sit on top of the sheet
     $("weather-sheet").hidden = !open;
     document.body.classList.toggle("weather-open", open);
     $("weather-button").setAttribute("aria-expanded", String(open));
@@ -3788,6 +3821,7 @@
   }
 
   function toggleConditions(open = $("conditions-sheet").hidden) {
+    if (open !== false) map.closePopup(); // a popup left open would sit on top of the sheet
     $("conditions-sheet").hidden = !open;
     document.body.classList.toggle("conditions-open", open); // the chips give way on a phone
     $("conditions").setAttribute("aria-expanded", String(open));
@@ -5684,7 +5718,15 @@
   map.on("click", (e) => {
     if (!route.on) return;
     if (routePopupWasOpen) { routePopupWasOpen = false; return; }
+    const adds = !route.pick && route.points.length < ROUTE_MAX_POINTS;
     addRoutePoint(e.latlng); // or, while picking where a cut rejoins, cancels that
+    lastRouteTap = adds ? Date.now() : 0;
+  });
+  // The first tap of a double-tap zoom (gestures.js) isn't meant as a new point: take it back.
+  let lastRouteTap = 0;
+  map.on("doubletapstart", () => {
+    if (route.on && Date.now() - lastRouteTap < 600) undoRoute();
+    lastRouteTap = 0;
   });
 
   // Saved routes: a dashed line each, with the name at the start; tap one for its numbers.
@@ -6432,7 +6474,7 @@
       console.error(err);
     }
     const target = shipFromUrl();
-    if (target && ships.has(target)) focusShip(target);
+    if (target && ships.has(target)) focusShip(target, { view: "fit" });
     else if (here.fromHash()) { /* a place link */ }
     else if (!focusFromNotification() && !viewRestored) fitAllShips();
     connectSocket();
