@@ -523,6 +523,7 @@ details.sources ul { margin-top: 4px; }
   body.menu-open .topbar, body.menu-open .subbar { right: calc(var(--panel-w) + 10px); }
   body.menu-open .leaflet-bottom.leaflet-right { right: var(--panel-w); }
   body.menu-open .strip { right: var(--panel-w); }
+  @media (pointer: fine) { body.menu-open .strip { right: calc(var(--panel-w) + 64px); } }
   body.menu-open .timebar { left: calc((100vw - var(--panel-w)) / 2); }
   body.menu-open #route { right: calc(var(--panel-w) + 10px); }
 }
@@ -1014,6 +1015,10 @@ body.sky-open .leaflet-control-container { visibility: hidden; }
 .sky-note-open { flex: 0 0 auto; padding: 6px 10px; border: 0; border-radius: 10px; background: #6366f1; color: #fff; font-weight: 600; cursor: pointer; }
 .sky-note .icon-button { color: #cbd5e1; }
 body.weather-open .sky-note, body.sky-open .sky-note { display: none; }
+/* On a phone the note would sit on top of whatever was just opened. */
+@media (max-width: 560px) {
+  body.conditions-open .sky-note, body.route-open .sky-note, body:has(#card:not([hidden])) .sky-note { display: none; }
+}
 .sky-days { margin-left: auto; display: flex; gap: 4px; }
 .sky-days .sky-now { margin-left: 0; }
 .sky-day { width: 30px; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--text); font-size: 16px; line-height: 1; cursor: pointer; }
@@ -1418,3 +1423,4 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
   /* Clear of the ship list along the bottom. */
   .route-panel { max-height: calc(100vh - var(--top) - var(--topbar-h) - 150px); }
 }
+.brand-name, .status { white-space: nowrap; }

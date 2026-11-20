@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.67.0
+
+- **One-finger zoom on the phone, like Google Maps**: double-tap and keep the finger down, then
+  slide down to zoom in or up to zoom out, around the place you tapped. A plain double tap still
+  zooms one step in, and a tap with two fingers zooms one step out. With the route tool open,
+  the first tap of a double tap no longer leaves a route point behind.
+- **Tapping a ship keeps your view**: the map no longer jumps out to the whole trip. On a phone
+  the ship's card opens low (drag it up for everything), and the map only moves if the ship
+  would be hidden under the card. Picking a ship from the Ships list or the chips centres it.
+  "Show whole track" on the card still shows the whole trip; alerts and ship links still do too.
+- Opening the weather, conditions or the menu closes a map popup left open on top of it.
+- Phones: tonight's sky note stays out of the way while a ship card, the route tool or
+  conditions are open.
+- Computers: the ship chips stop short of the +/− zoom buttons (they slid under them with the
+  menu open); the app's name no longer wraps in the top bar.
+
 ## 0.65.1
 
 - **Automatic routes go through narrow sounds**: a marked fairway through a sound too narrow for
