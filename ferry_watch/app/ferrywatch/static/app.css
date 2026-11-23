@@ -371,6 +371,10 @@ dialog h3 { font-size: 14px; margin: 16px 0 6px; }
 @media (pointer: coarse) {
   .leaflet-control-zoom { display: none; }
 }
+/* With a mouse the +/- buttons stay; the chips scroll short of them instead of over them. */
+@media (pointer: fine) {
+  .strip { right: 64px; }
+}
 
 /* Inner-route numbers on the ship card */
 .card-stats { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
