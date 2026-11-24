@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.67.1
+
+- **Tidier map buttons on the phone**: the menu, weather and ruler buttons now run down the right
+  side as one column instead of crowding the top. The map type ("Satellite ▾") sits in the top
+  left as a plain chip like the others, with the chart style beside it when Chart is on, and the
+  weather pill under them. Everything in those rows is the same height and shape, and the search
+  and locate buttons lower down match them. Desktop is unchanged.
+
 ## 0.67.0
 
 - **One-finger zoom on the phone, like Google Maps**: double-tap and keep the finger down, then
