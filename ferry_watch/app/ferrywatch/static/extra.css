@@ -1425,48 +1425,55 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 }
 .brand-name, .status { white-space: nowrap; }
 
-/* Phones: map type and chart style chips in the top left, the weather pill under them, and the
-   ruler, weather and menu buttons as one column down the right side (like a car's map buttons).
-   Everything in these rows is 42 px tall so the edges line up. */
+/* Phones: one even column of square buttons down the right side (like a car's map buttons):
+   menu, map type, weather, ruler. The weather pill takes the top left on the same row as the
+   menu, and the chart style (when Chart is on) sits under it. Everything is 42 px. */
 @media (max-width: 560px) {
   :root { --topbar-h: 42px; --fab: 42px; }
-  .topbar { pointer-events: none; }
+  .topbar { left: auto; pointer-events: none; }
   .tools {
-    flex: 1; min-width: 0; pointer-events: none;
-    display: grid; grid-template-columns: auto auto 1fr var(--fab); grid-auto-rows: var(--fab);
-    gap: 8px; align-items: start;
+    pointer-events: none;
+    display: grid; grid-template-columns: var(--fab); grid-auto-rows: var(--fab); gap: 8px;
   }
   .tools > * { pointer-events: auto; }
-  .tools .type-wrap { grid-column: 1; grid-row: 1; }
-  .tools .chart-style { grid-column: 2; grid-row: 1; }
-  .tools .chart-style[hidden] { display: none; }
-  .tools > .icon-button { grid-column: 4; width: var(--fab); height: var(--fab); }
-  /* Menu at the top, then weather, ruler, and the alert-area pencil while editing. */
+  .tools > .icon-button { width: var(--fab); height: var(--fab); }
   #ships-button { grid-row: 1; }
-  #weather-button { grid-row: 2; }
-  #route-button { grid-row: 3; }
-  #areas-button { grid-row: 4; }
-  /* Map type: a plain chip like the others; the chosen type reads in normal text, not as a blue button. */
-  .tools .type-picker:not(.open) { padding: 2px; height: var(--fab); box-sizing: border-box; }
+  .tools .type-wrap { grid-row: 2; width: var(--fab); height: var(--fab); }
+  #weather-button { grid-row: 3; }
+  #route-button { grid-row: 4; }
+  #areas-button { grid-row: 5; }
+  /* Map type, closed: a square layers button like the others. */
+  .tools .type-picker:not(.open) { padding: 0; width: var(--fab); height: var(--fab); box-sizing: border-box; }
   .tools .type-picker:not(.open) button[aria-pressed="true"] {
-    background: transparent; color: var(--text); font-weight: 600; padding: 0 10px; min-height: 36px;
+    flex: 1 1 auto; display: grid; place-items: center; padding: 0; min-height: 0;
+    background: transparent; color: var(--text); font-size: 0;
   }
+  .tools .type-picker:not(.open) button[aria-pressed="true"]::after { content: none; }
+  .tools .type-picker:not(.open) button[aria-pressed="true"]::before {
+    content: ""; width: 20px; height: 20px; background: currentColor;
+    -webkit-mask: var(--layers-icon) center / contain no-repeat; mask: var(--layers-icon) center / contain no-repeat;
+  }
+  /* Open: the list drops out to the left of the column. */
+  .tools .type-picker.open { left: auto; right: 0; top: 0; min-width: 150px; }
   .tools .type-picker.open button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-  .tools #chart-style-select {
-    height: var(--fab); min-height: 0; box-sizing: border-box; padding: 0 26px 0 12px; font-weight: 600;
-    border-radius: var(--radius); -webkit-appearance: none; appearance: none; cursor: pointer;
-    /* the same small ▾ as the map type chip */
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%2394a3b8'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 11px center; background-size: 9px 6px;
+  :root {
+    --layers-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M12 3l9 5-9 5-9-5z'/%3E%3Cpath d='M3 12.5l9 5 9-5'/%3E%3Cpath d='M3 17l9 5 9-5'/%3E%3C/svg%3E");
   }
+  /* Left side: the weather pill level with the menu button, then the chart style under it. */
+  .subbar { top: var(--top); right: calc(10px + var(--fab) + 8px); }
+  .subbar-left { gap: 8px; }
+  .conditions, .air-badge { min-height: var(--fab); }
+  .conditions { gap: 7px; padding: 0 12px; }
+  .icon-button.air-history-button { width: var(--fab); height: var(--fab); }
+  .subbar #chart-style-select {
+    height: var(--fab); min-height: 0; box-sizing: border-box; padding: 0 28px 0 12px; font-weight: 600;
+    border-radius: var(--radius); -webkit-appearance: none; appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%2394a3b8'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 12px center; background-size: 9px 6px;
+  }
+  .map-fabs { right: 10px; }
+  .map-fabs .icon-button { width: var(--fab); height: var(--fab); border-radius: var(--radius); }
   /* Notes and labels near the top keep clear of the right-hand column. */
   .sky-note { left: 10px; transform: none; width: calc(100vw - 20px - var(--fab) - 8px); }
   .hist-divider .hd-then { right: calc(10px + var(--fab) + 8px); }
-  /* The sub row keeps clear of the right-hand column. */
-  .subbar { right: calc(10px + var(--fab) + 8px); }
-  .conditions, .air-badge { min-height: var(--fab); }
-  .conditions { gap: 7px; padding: 0 10px; }
-  .icon-button.air-history-button { width: var(--fab); height: var(--fab); }
-  .map-fabs { right: 10px; }
-  .map-fabs .icon-button { width: var(--fab); height: var(--fab); border-radius: var(--radius); }
 }
