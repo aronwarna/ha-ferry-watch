@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.67.1
+
+- **Tidier map buttons on the phone**: one even column of square buttons down the right side
+  (menu, map type, weather, ruler), like a car's map buttons. The map type is now a layers button
+  that opens the list beside it. The weather pill sits alone in the top left, level with the
+  menu, with the chart style under it when Chart is on. Everything is the same height and shape,
+  and the search and locate buttons lower down match. Desktop is unchanged.
+
 ## 0.67.0
 
 - **One-finger zoom on the phone, like Google Maps**: double-tap and keep the finger down, then

@@ -242,6 +242,18 @@
     },
   });
   FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
+  // Phones: the chart style sits under the weather pill (the map buttons run down the right
+  // side, see extra.css); wider screens keep it at the right under the top bar.
+  {
+    const phone = window.matchMedia("(max-width: 560px)");
+    const placeChartStyle = () => {
+      const box = $("chart-style");
+      if (phone.matches) $("conditions").after(box);
+      else document.querySelector(".subbar-right").prepend(box);
+    };
+    placeChartStyle();
+    phone.addEventListener("change", placeChartStyle);
+  }
   function setAerial(on) {
     aerialOn = on;
     store.set("fw-aerial", on ? "1" : "0");
