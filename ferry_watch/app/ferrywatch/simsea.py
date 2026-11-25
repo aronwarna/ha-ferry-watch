@@ -150,7 +150,17 @@ def fake_overpass() -> dict[str, Any]:
 
 
 async def fake_overpass_fetch(query: str) -> dict[str, Any]:
-    return fake_overpass()
+    out = fake_overpass()
+    # FW_FAKE_HARBOURS_N=120: a crowded coast like Helsinki's, for decluttering.
+    import os, random
+    rnd = random.Random(11)
+    for i in range(int(os.environ.get("FW_FAKE_HARBOURS_N", "0") or 0)):
+        tags = {"leisure": "marina", "name": f"Venesatama {i + 1}"}
+        if rnd.random() < 0.5:
+            tags.update(toilets="yes", fuel=rnd.choice(["yes", "no"]))
+        out["elements"].append({"type": "node", "id": 50000 + i, "lat": rnd.uniform(59.95, 60.19),
+                                "lon": rnd.uniform(24.30, 25.05), "tags": tags})
+    return out
 
 
 def fake_forecast(params: list[tuple[str, str]]) -> str:

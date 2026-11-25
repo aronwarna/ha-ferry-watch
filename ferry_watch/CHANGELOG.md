@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.72.1
+
+- **Places ashore and harbours no longer clutter the map.** Each kind of place ashore now
+  starts at its own zoom: lean-to shelters, huts and campsites from 12, campfire sites and
+  saunas from 13, drinking water from 14 and toilets only from 15. They are small,
+  see-through round symbols drawn under the ships and harbours, and places that would
+  touch on screen share one mark, with little coloured dots for the other kinds there.
+  Tap it for the list (nameless ones counted, "Toilet ×3") and Zoom in.
+- Places right at a harbour fold into the harbour: its card says "Ashore here:" with the
+  kinds. Below zoom 14, harbours that would overlap show as one (the one with the most
+  services), and its card lists the others "Close by". Harbours are smaller when zoomed
+  out and slightly see-through on the map and satellite views.
+- Layers › Places to go ashore has a switch per kind (shelters, huts, campsites, campfire
+  sites, saunas, drinking water, toilets), remembered in this browser.
+- Simulator: FW_FAKE_ASHORE_N and FW_FAKE_HARBOURS_N fill the coast for testing this.
+
 ## 0.72.0
 
 - **Enhance** switch in the Historic bar (on by default) for old aerial photos:
