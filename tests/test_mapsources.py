@@ -55,14 +55,25 @@ def test_rules_pick_years_and_one_photo_per_year(tmp_path: Path):
 def test_known_layers_work_without_capabilities():
     rows = mapsources.known_layers(ESPOO)
     years = sorted(r["year"] for r in rows if r["group"] == "photo")
-    assert years[0] == 1969 and years[-1] == 2026 and len(years) == 16
+    assert years[0] == 1950 and years[-1] == 2026 and len(years) == 17
 
 
-def test_old_map_rule_reads_titles():
-    found = [{"name": "paituli:x1", "title": "Pitäjänkartta 1935"}, {"name": "paituli:corine", "title": "Corine"},
-             {"name": "paituli:y", "title": "Peruskartta 1:20 000 (1960)"}]
-    rows = mapsources.layers_from_names(MML, found)
-    assert {(r["label"], r["year"]) for r in rows} == {("Parish map", 1935), ("Basic map", 1960)}
+def test_old_map_series_match_exact_names():
+    found = [{"name": "mml_pitajakartta_20k_1912-1968", "title": "x"}, {"name": "corine", "title": "Corine"},
+             {"name": "mml_topo_20k_1960-1969", "title": "y"}, {"name": "mml_yleiskartta_400k_1863-1879", "title": "z"}]
+    rows = {r["label"]: r for r in mapsources.layers_from_names(MML, found)}
+    assert set(rows) == {"Parish map 1:20 000", "Basic map 1:20 000", "General map 1:400 000"}
+    assert (rows["Parish map 1:20 000"]["year"], rows["Parish map 1:20 000"]["year_to"]) == (1912, 1968)
+    assert rows["General map 1:400 000"]["max_zoom"] < rows["Parish map 1:20 000"]["max_zoom"]
+    # every known series name has its own rule, so the fallback lists all of them
+    assert len(mapsources.known_layers(MML)) == len(MML["known"])
+
+
+def test_years_and_base_names():
+    assert mapsources._years("x", "Pitäjänkartta 1912-1968") == (1912, 1968)
+    assert mapsources._years("avoindata:Ortoilmakuva_2019_20cm", "") == (2019, None)  # 20 cm is not a year
+    assert mapsources._years("a", "Senaatinkartta 192x") == (1920, 1929)
+    assert mapsources._base("avoindata:Ortoilmakuva_2019_20cm") == mapsources._base("avoindata:Ortoilmakuva_1932")
 
 
 def test_tile_urls_and_coverage(tmp_path):
@@ -79,7 +90,12 @@ def test_tile_urls_and_coverage(tmp_path):
     assert ms.covers(lid, 14, 9300, 4790) is False      # far south at sea
     assert ms.covers("nope", 14, 1, 1) is None
     url = ms.tile_urls(ms._layers[lid], 14, 9318, 4739)[0]
-    assert "LAYERS=Ortokartta_1969" in url and "SRS=EPSG:3857" in url and "FORMAT=image/jpeg" in url
+    assert "LAYERS=Ortokartta_1969" in url and "SRS=EPSG:3857" in url and "FORMAT=image/png" in url
+    assert "TRANSPARENT=TRUE" in url
+    hel = ms.tile_urls(ms._layers["helsinki-ortoilmakuva-1932"], 14, 9318, 4739)[0]
+    assert "FORMAT=image/vnd.jpeg-png" in hel  # see-through outside the photo, not white
+    est = next(r for r in ms._layers.values() if r["source"] == "estonia-old" and r["group"] == "photo")
+    assert "SRS=EPSG:3301" in ms.tile_urls(est, 12, 2312, 1170)[0]
     prop = ms.tile_urls(ms._layers["property"], 15, 18640, 9480)
     assert "api-key=KEY" in prop[0] and "kapsi" in prop[1]
     names = {r["id"] for r in ms.listing()["layers"]}
@@ -97,7 +113,8 @@ def test_buildings_compact():
     assert rows[0][:6] == [60.2, 24.9, 1972, "Rivitalot", 2, "Rantatie 5"]
     assert rows[1][2] is None and abs(rows[1][0] - 60.1) < 0.06
     assert len(rows) == 2
-    assert buildings.covers(9325, 4740) and not buildings.covers(9200, 4800)
+    assert buildings.covers(9325, 4740) and buildings.in_hsy(9325, 4740) and not buildings.in_hsy(9200, 4800)
+    assert not buildings.covers(8000, 6000)
 
 
 def test_daily_and_latest_only():
@@ -111,4 +128,72 @@ def test_daily_and_latest_only():
     ])
     assert [(r["year"], r["label"], r["group"]) for r in rows] == [(2023, "Ship traffic density", "overlay")]
     gibs = next(s for s in mapsources.SOURCES if s["id"] == "gibs-today")
-    assert all("{date}" in t for t in gibs["templates"])
+    assert all("{date" in t for t in gibs["templates"]) and len(gibs["templates"]) == 10
+
+
+def test_wider_photo_sources():
+    from ferrywatch import simmaps
+    got = {}
+    for sid in ("hsy-region", "turku", "oulu", "estonia-old", "vantaa"):
+        src = next(s for s in mapsources.SOURCES if s["id"] == sid)
+        rows = mapsources.layers_from_names(src, simmaps.fake_capabilities(src))
+        got[sid] = sorted((r["group"], r["year"]) for r in rows)
+    assert got["hsy-region"] == [("photo", 2015), ("photo", 2019), ("photo", 2023)]  # no false-colour
+    assert ("photo", 1939) in got["turku"] and ("map", 1950) in got["turku"]
+    assert ("photo", 1993) in got["estonia-old"] and ("map", 1894) in got["estonia-old"]
+    assert ("map", 1776) in got["vantaa"] and ("photo", 1954) in got["vantaa"]
+    assert not any(s["id"] == "tampere" for s in mapsources.SOURCES)
+
+
+def test_wayback_and_yearly_sources():
+    cfg = {"10": {"itemTitle": "World Imagery (Wayback 2014-02-20)"}, "999": {"itemTitle": "World Imagery (Wayback 2014-11-05)"},
+           "31144": {"itemTitle": "World Imagery (Wayback 2019-06-26)"}, "x": {"itemTitle": "junk"}}
+    assert mapsources.wayback_releases(cfg) == {2014: 999, 2019: 31144}
+    s2 = next(s for s in mapsources.SOURCES if s["id"] == "s2")
+    assert "s2cloudless-2020_3857" in s2["years"][2020] and "{z}/{y}/{x}" in s2["years"][2020]
+
+
+def test_kirkkonummi_folder_and_sipoo_tiles(tmp_path):
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    class Store:
+        def kv_get(self, k, d=None):
+            return d
+
+        def kv_set(self, k, v):
+            pass
+
+    kirkko = next(s for s in mapsources.SOURCES if s["id"] == "kirkkonummi")
+    found = [{"name": f"Historia_aineisto/{n}"} for n in ("Ilmakuva_1944", "Ilmakuva_1954_1956", "ortokuva_2017",
+                                                         "Parenteesialueen_raja", "Pitäjänkartta_1932_1943")]
+    rows = {r["id"]: r for r in mapsources.layers_from_names(kirkko, found)}
+    assert set(rows) == {"kirkkonummi-ilmakuva-1944", "kirkkonummi-ilmakuva-1954-1956", "kirkkonummi-ortokuva-2017",
+                         "kirkkonummi-pit-j-nkartta-1932-1943"}  # the lease border is an overlay, not a year
+    assert (rows["kirkkonummi-ilmakuva-1954-1956"]["year"], rows["kirkkonummi-ilmakuva-1954-1956"]["year_to"]) == (1954, 1956)
+
+    ms = mapsources.MapSources(tmp_path, session=None, store=Store())
+    url = ms.tile_urls(ms._layers["kirkkonummi-ilmakuva-1944"], 14, 9300, 4740)[0]
+    assert "/Historia_aineisto/Ilmakuva_1944/MapServer/export?" in url and "imageSR=3857" in url
+    assert "porkkala-lease" in ms._layers and ms._layers["porkkala-lease"]["group"] == "overlay"
+
+    sipoo = ms._layers["sipoo-1987"]
+    assert mapsources._needs_cover(sipoo) and not sipoo["wide"]
+    asked = []
+
+    async def fake_get(url, timeout):
+        asked.append(url)
+        z, y, x = (int(v) for v in url.rsplit("/", 3)[1:])
+        if x % 2:
+            raise ValueError("no tile")
+        buf = io.BytesIO()
+        Image.new("RGB", (256, 256), (90, 110, 80)).save(buf, "PNG")
+        return buf.getvalue()
+
+    ms._get = fake_get
+    img = asyncio.run(ms._stitch(sipoo, mapsources.box_merc(sipoo["box"]), (300, 400)))
+    assert img.size == (300, 400) and 1 < len(asked) <= 24  # its first zoom (11) already needs 20
+    alphas = img.getchannel("A").getextrema()
+    assert alphas == (0, 255)  # missing tiles stay see-through

@@ -1,10 +1,13 @@
-/* Old aerial photos, old maps, map overlays and building ages (mapsources.py, buildings.py).
+/* Historic maps, map overlays and building ages (mapsources.py, histclean.py, buildings.py).
 
-   - "Then & now" map type: old aerial photos or old maps of the year picked on a slider,
-     over today's picture (satellite for photos, the map for old maps). The slider only
-     holds the years there is something for in view. "Compare with today" puts a divider
-     on the map: the old picture left of it, today right of it. An opacity slider fades
-     the old one over today's.
+   - "Historic" map type: old aerial photos or old maps over today's picture. The bar's
+     timeline marks only the years that have picture where you are looking (each layer's
+     real coverage comes from the NAS as a coarse grid), with map series as spans; ‹ ›
+     step through those. "Compare with" picks what lies underneath: today's satellite
+     picture, map or terrain map, or another year of this place. "Side by side" puts a
+     divider on the map (old left, the comparison right); Fade shows the one under
+     through the old picture. A faint dashed line marks where the shown year ends.
+     Nowhere to show: the nearest places that have some, one tap away.
    - Overlays from the catalogue (property boundaries, seabed type, …) as switches in
      Layers, on top of any map type.
    - Building ages: every building in the Helsinki region as a dot coloured by the year
@@ -17,15 +20,13 @@
   "use strict";
 
   const PANE = "histPane";
+  const BASE_PANE = "histBasePane";   // another year to compare with, under the shown one
+  const EDGE_PANE = "histEdgePane";   // the outline of where the shown year has picture
   const OVERLAY_PANE = "mapOverlayPane";
   const BUILD_Z = 14;          // the NAS keeps building ages per zoom-14 tile
   const BUILD_MIN_Z = 13;      // shown from here in
   const BUILD_MAX_TILES = 30;
   const REFRESH = 6 * 3600e3;
-  const PLACES = [
-    { name: "Espoo", at: [60.168, 24.66], z: 13 },
-    { name: "Helsinki", at: [60.168, 24.945], z: 13 },
-  ];
   // Building age colours, oldest to newest.
   const AGE_STOPS = [
     [1700, "#5b1a0f"], [1900, "#9a3412"], [1930, "#d97706"], [1950, "#eab308"], [1970, "#84cc16"],
@@ -60,26 +61,60 @@
     let wanted = store.get("fw-hist-year") || "";
     let opacity = Number(store.get("fw-hist-opacity") || 100);
     let swipe = store.get("fw-hist-swipe") === "1";
-    let entries = [];
+    let entries = [];          // what there is here, oldest first: {key, year, to, rows}
+    let others = { photo: 0, map: 0 };
     let current = null;
     let swipeX = 0.5;
+    let coversRev = -1;
+    let coversPending = 0;
+    const covers = new Map();  // layer id -> {w, h, bits, mb}
 
     map.createPane(PANE).style.zIndex = 250;
+    map.createPane(BASE_PANE).style.zIndex = 240;
+    map.createPane(EDGE_PANE).style.zIndex = 260;
     map.createPane(OVERLAY_PANE).style.zIndex = 390;
     const pane = map.getPane(PANE);
+    map.getPane(EDGE_PANE).style.pointerEvents = "none";
 
-    // The map type: today's picture underneath, the old one on top.
+    // The map type: what to compare with underneath, the old picture on top.
     const group = L.layerGroup();
-    const base = { photo: today.photo(), map: today.map() };
     const shown = L.layerGroup().addTo(group);
-    group.on("add", () => { active = true; refreshBase(); update(true); bar.hidden = false; renderSwipe(); });
+    const edges = L.layerGroup().addTo(group);
+    let baseLayer = null;
+    let baseKey = "";
+    group.on("add", () => { active = true; bar.hidden = false; update(true); refreshBase(); renderSwipe(); pollCovers(); });
     group.on("remove", () => { active = false; bar.hidden = true; divider.hidden = true; pane.style.clip = ""; });
 
-    function refreshBase() {
-      for (const k of Object.keys(base)) {
-        if (k === kind) group.addLayer(base[k]);
-        else group.removeLayer(base[k]);
+    // --- what to compare with ---------------------------------------------------------
+    const TODAY = [
+      { key: "satellite", label: "Satellite today", short: "Today", make: () => today.photo() },
+      { key: "map", label: "Map today", short: "Today", make: () => today.map() },
+      ...(today.terrain ? [{ key: "terrain", label: "Terrain map today", short: "Today", make: () => today.terrain() }] : []),
+    ];
+    function baseChoice() {
+      const saved = store.get(`fw-hist-base-${kind}`) || (kind === "photo" ? "satellite" : "map");
+      if (saved.startsWith("y:")) {
+        const e = entries.find((x) => `y:${x.key}` === saved && x !== current);
+        if (e) return { key: saved, entry: e, label: entryTitle(e), short: yearText(e) };
       }
+      return TODAY.find((t) => t.key === saved) || TODAY[kind === "photo" ? 0 : 1];
+    }
+    function refreshBase() {
+      if (!active) return;
+      const choice = baseChoice();
+      const key = choice.entry ? `${choice.key}|${choice.entry.rows.map((r) => r.id).join(",")}` : choice.key;
+      divider.querySelector(".hd-now").textContent = choice.short;
+      renderCompare(choice);
+      if (key === baseKey) return;
+      baseKey = key;
+      if (baseLayer) group.removeLayer(baseLayer);
+      if (choice.entry) {
+        // Another year: today's satellite picture with that year's old one over it.
+        baseLayer = L.layerGroup([today.photo(), ...tileLayers(choice.entry, BASE_PANE, 1)]);
+      } else {
+        baseLayer = choice.make();
+      }
+      group.addLayer(baseLayer);
     }
 
     // --- the bar --------------------------------------------------------------------
@@ -90,51 +125,149 @@
     bar.innerHTML = `
       <div class="hb-top">
         <div class="segmented hb-kind" role="group" aria-label="What to show">
-          <button type="button" data-kind="photo">Aerial photos</button>
-          <button type="button" data-kind="map">Old maps</button>
+          <button type="button" data-kind="photo">Aerial photos<span class="hb-count"></span></button>
+          <button type="button" data-kind="map">Old maps<span class="hb-count"></span></button>
         </div>
-        <span class="hb-where small muted"></span>
+        <span class="hb-busy small muted" hidden>Finding edges…</span>
       </div>
-      <div class="hb-year-row">
-        <button type="button" class="tb-step hb-prev" aria-label="Earlier">‹</button>
-        <strong class="hb-year">–</strong>
-        <input type="range" class="player-range hb-range" min="0" max="0" step="1" aria-label="Year">
-        <button type="button" class="tb-step hb-next" aria-label="Later">›</button>
+      <div class="hb-main">
+        <div class="hb-head">
+          <button type="button" class="tb-step hb-prev" aria-label="Earlier">‹</button>
+          <div class="hb-title">
+            <strong class="hb-year">–</strong>
+            <span class="hb-what small muted"></span>
+          </div>
+          <button type="button" class="tb-step hb-next" aria-label="Later">›</button>
+        </div>
+        <div class="hb-line" role="slider" tabindex="0" aria-label="Year">
+          <div class="hb-track"></div>
+          <div class="hb-marks"></div>
+          <span class="hb-knob" aria-hidden="true"></span>
+        </div>
+        <div class="hb-scale small muted"></div>
       </div>
-      <div class="hb-ticks small muted"></div>
       <div class="hb-opts small">
-        <label class="hb-check"><input type="checkbox" class="switch hb-swipe"> Compare with today</label>
-        <label class="hb-op"><span class="muted">Fade</span><input type="range" class="player-range hb-opacity" min="15" max="100" step="5" aria-label="Opacity"></label>
+        <label class="hb-cmp"><span class="muted">Compare with</span>
+          <select class="hb-base" aria-label="Compare with"></select></label>
+        <button type="button" class="hb-split" aria-pressed="false" title="Side by side: drag the divider">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 2v16" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span>Side by side</span></button>
+        <label class="hb-op" title="See today's picture through the old one"><span class="muted">Fade</span><input type="range" class="player-range hb-opacity" min="15" max="100" step="5" aria-label="Opacity"></label>
       </div>
       <div class="hb-empty small" hidden></div>
       <p class="hb-credit small muted"></p>`;
     document.body.append(bar);
     const $b = (sel) => bar.querySelector(sel);
-    bar.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
-      kind = b.dataset.kind;
+    bar.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => setKind(b.dataset.kind)));
+    function setKind(k) {
+      if (k === kind) return;
+      kind = k;
       store.set("fw-hist-kind", kind);
       current = null;  // the same year of the other kind is a different picture
-      refreshBase();
       update(true);
-    }));
-    $b(".hb-range").addEventListener("input", (e) => pick(Number(e.target.value)));
-    $b(".hb-prev").addEventListener("click", () => pick(entries.indexOf(current) - 1));
-    $b(".hb-next").addEventListener("click", () => pick(entries.indexOf(current) + 1));
-    $b(".hb-swipe").checked = swipe;
-    $b(".hb-swipe").addEventListener("change", (e) => {
-      swipe = e.target.checked;
+      refreshBase();
+    }
+    $b(".hb-prev").addEventListener("click", () => step(-1));
+    $b(".hb-next").addEventListener("click", () => step(1));
+    function step(d) {
+      const i = entries.indexOf(current);
+      if (i + d >= 0 && i + d < entries.length) pick(i + d);
+    }
+    $b(".hb-split").addEventListener("click", () => {
+      swipe = !swipe;
       store.set("fw-hist-swipe", swipe ? "1" : "0");
       renderSwipe();
+    });
+    $b(".hb-base").addEventListener("change", (e) => {
+      store.set(`fw-hist-base-${kind}`, e.target.value);
+      refreshBase();
     });
     $b(".hb-opacity").value = String(opacity);
     $b(".hb-opacity").addEventListener("input", (e) => {
       opacity = Number(e.target.value);
       store.set("fw-hist-opacity", String(opacity));
-      shown.eachLayer((l) => l.setOpacity(opacity / 100));
+      shown.eachLayer((l) => l.setOpacity?.(opacity / 100));
     });
     // Keep map gestures off the bar.
     L.DomEvent.disableClickPropagation(bar);
     L.DomEvent.disableScrollPropagation(bar);
+
+    // --- the timeline ------------------------------------------------------------------
+    const line = $b(".hb-line");
+    let span = [1900, 2026];
+    const pos = (year) => ((year - span[0]) / Math.max(1, span[1] - span[0])) * 100;
+    function nearestAt(clientX) {
+      const r = line.getBoundingClientRect();
+      const year = span[0] + ((clientX - r.left) / Math.max(1, r.width)) * (span[1] - span[0]);
+      let best = 0;
+      let bestD = Infinity;
+      entries.forEach((e, i) => {
+        const d = e.to && year >= e.year && year <= e.to ? 0 : Math.min(Math.abs(year - e.year), e.to ? Math.abs(year - e.to) : Infinity);
+        if (d < bestD || (d === bestD && e === current)) { bestD = d; best = i; }
+      });
+      return best;
+    }
+    let lineDrag = false;
+    line.addEventListener("pointerdown", (e) => {
+      if (!entries.length) return;
+      lineDrag = true;
+      line.setPointerCapture(e.pointerId);
+      pick(nearestAt(e.clientX));
+      e.preventDefault();
+    });
+    line.addEventListener("pointermove", (e) => { if (lineDrag) pick(nearestAt(e.clientX)); });
+    const endDrag = () => { lineDrag = false; };
+    line.addEventListener("pointerup", endDrag);
+    line.addEventListener("pointercancel", endDrag);
+    line.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft" || e.key === "ArrowDown") { step(-1); e.preventDefault(); }
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") { step(1); e.preventDefault(); }
+      if (e.key === "Home") { pick(0); e.preventDefault(); }
+      if (e.key === "End") { pick(entries.length - 1); e.preventDefault(); }
+    });
+
+    function renderLine() {
+      const marks = $b(".hb-marks");
+      if (!entries.length) { marks.innerHTML = ""; $b(".hb-scale").innerHTML = ""; return; }
+      const first = Math.min(...entries.map((e) => e.year));
+      const last = Math.max(...entries.map((e) => e.to || e.year));
+      // Some air either side, ends on round years, and today at the right for photos.
+      const lo = Math.floor((first - 2) / 10) * 10;
+      const hi = Math.max(last + 2, kind === "photo" ? new Date().getFullYear() : last + 2);
+      span = [lo, Math.max(lo + 10, hi)];
+      // Spans (map series) in lanes so overlapping ones stay apart.
+      const lanes = [];
+      const lane = new Map();
+      for (const e of entries.filter((x) => x.to)) {
+        let i = lanes.findIndex((end) => end < e.year);
+        if (i < 0) { i = lanes.length; lanes.push(0); }
+        lanes[i] = e.to;
+        lane.set(e, Math.min(i, 3));
+      }
+      line.style.setProperty("--lanes", String(Math.min(4, lanes.length)));
+      marks.innerHTML = entries.map((e) => {
+        const i = entries.indexOf(e);
+        const cls = `hb-mark${e === current ? " on" : ""}`;
+        if (e.to) {
+          return `<span class="${cls} span" data-i="${i}" style="left:${pos(e.year)}%;width:${Math.max(0.8, pos(e.to) - pos(e.year))}%;--lane:${lane.get(e)}" title="${esc(yearText(e))}"></span>`;
+        }
+        return `<span class="${cls}" data-i="${i}" style="left:${pos(e.year)}%" title="${esc(yearText(e))}"></span>`;
+      }).join("");
+      // Round years under the line, spaced so they never crowd.
+      const width = line.clientWidth || 300;
+      const every = [10, 20, 25, 50, 100, 200].find((s) => ((span[1] - span[0]) / s) * 44 <= width) || 250;
+      const ticks = [];
+      for (let y = Math.ceil(span[0] / every) * every; y <= span[1]; y += every) ticks.push(y);
+      $b(".hb-scale").innerHTML = ticks.map((y) => `<span style="left:${pos(y)}%">${y}</span>`).join("");
+    }
+    function placeKnob() {
+      const knob = $b(".hb-knob");
+      if (!current) { knob.hidden = true; return; }
+      knob.hidden = false;
+      knob.style.left = `${pos(current.to ? (current.year + current.to) / 2 : current.year)}%`;
+      line.setAttribute("aria-valuetext", yearText(current));
+      bar.querySelectorAll(".hb-mark").forEach((m) => m.classList.toggle("on", entries[Number(m.dataset.i)] === current));
+    }
 
     // --- the divider for comparing ---------------------------------------------------
     const divider = document.createElement("div");
@@ -161,113 +294,305 @@
     divider.addEventListener("pointercancel", stop);
 
     function clip() {
-      if (!active || !swipe) { pane.style.clip = ""; divider.hidden = true; return; }
+      if (!active || !swipe || !current) {
+        pane.style.clip = "";
+        map.getPane(EDGE_PANE).style.clip = "";
+        divider.hidden = true;
+        return;
+      }
       const size = map.getSize();
       const x = Math.round(size.x * swipeX);
       const nw = map.containerPointToLayerPoint([0, 0]);
       const se = map.containerPointToLayerPoint(size);
       const cx = map.containerPointToLayerPoint([x, 0]).x;
       pane.style.clip = `rect(${nw.y}px, ${cx}px, ${se.y}px, ${nw.x}px)`;
+      map.getPane(EDGE_PANE).style.clip = pane.style.clip;
       divider.hidden = false;
       divider.style.left = `${x}px`;
     }
-    function renderSwipe() { clip(); }
+    function renderSwipe() {
+      $b(".hb-split").setAttribute("aria-pressed", String(swipe));
+      clip();
+    }
     map.on("move zoom resize", clip);
 
-    // --- years in view ---------------------------------------------------------------
-    function inView() {
-      const view = map.getBounds().pad(0.1);
+    // --- coverage --------------------------------------------------------------------
+    // Each old photo and map comes with a coarse grid of where it really has picture
+    // (mapsources.py works it out once): the bar offers only the years that show here.
+    const HALF = 20037508.342789244;
+    const merc = (lat, lon) => [lon / 180 * HALF, Math.log(Math.tan(Math.PI / 4 + Math.max(-85, Math.min(85, lat)) * Math.PI / 360)) * HALF / Math.PI];
+    const unmerc = (x, y) => [(2 * Math.atan(Math.exp(y / HALF * Math.PI)) - Math.PI / 2) * 180 / Math.PI, x / HALF * 180];
+    const boxMerc = (b) => [...merc(b[0], b[1]), ...merc(b[2], b[3])];
+    function decode(row, [w, h, rle]) {
+      const bits = new Uint8Array(w * h);
+      let at = 0;
+      let on = 0;
+      for (const part of rle.split(",")) {
+        const n = Number(part);
+        if (on) bits.fill(1, at, Math.min(w * h, at + n));
+        at += n;
+        on ^= 1;
+      }
+      return { w, h, bits, mb: boxMerc(row.box) };
+    }
+    async function loadCovers(rev) {
+      if (rev === coversRev) return;
+      try {
+        const res = await api(`api/mapcovers?v=${rev}`);
+        const byId = new Map(catalogue.map((r) => [r.id, r]));
+        for (const [id, c] of Object.entries(res.covers || {})) if (byId.has(id)) covers.set(id, decode(byId.get(id), c));
+        coversRev = rev;
+      } catch (err) {
+        console.warn("map covers", err);
+      }
+    }
+    // While the NAS is still working coverage out (the first hours after an update), look again now and then.
+    let pollTimer = 0;
+    function pollCovers() {
+      clearTimeout(pollTimer);
+      if (!active || coversPending <= 0) return;
+      pollTimer = setTimeout(async () => { await load(); pollCovers(); }, 60000);
+    }
+    function cellsOf(c, mb) {
+      const cw = (c.mb[2] - c.mb[0]) / c.w;
+      const ch = (c.mb[3] - c.mb[1]) / c.h;
+      return [Math.floor((mb[0] - c.mb[0]) / cw), Math.floor((c.mb[3] - mb[3]) / ch),
+        Math.floor((mb[2] - c.mb[0]) / cw), Math.floor((c.mb[3] - mb[1]) / ch)];
+    }
+    function hasPicture(row, mb) {
+      const c = covers.get(row.id);
+      if (!c) {
+        const b = boxMerc(row.box);
+        return b[0] < mb[2] && b[2] > mb[0] && b[1] < mb[3] && b[3] > mb[1];
+      }
+      const [i0, j0, i1, j1] = cellsOf(c, mb);
+      for (let j = Math.max(0, j0); j <= Math.min(c.h - 1, j1); j++) {
+        for (let i = Math.max(0, i0); i <= Math.min(c.w - 1, i1); i++) if (c.bits[j * c.w + i]) return true;
+      }
+      return false;
+    }
+    // The part of the view that counts as "here": its middle, so a year that only
+    // touches a corner isn't offered as if it showed this place.
+    function focusBox() {
+      const b = map.getBounds();
+      const [x0, y0, x1, y1] = [...merc(b.getSouth(), b.getWest()), ...merc(b.getNorth(), b.getEast())];
+      const mx = (x1 - x0) * 0.22;
+      const my = (y1 - y0) * 0.22;
+      return [x0 + mx, y0 + my, x1 - mx, y1 - my];
+    }
+    const zoomFits = (r, z) => z >= (r.min_zoom || 0) - 1 && z <= (r.max_zoom || 19) + 3;
+    // Nearest place with picture of this kind: {where, at: [lat, lon], km, years}.
+    function nearest(k) {
+      const c0 = map.getCenter();
+      const [cx, cy] = merc(c0.lat, c0.lng);
+      const best = new Map();
+      for (const r of catalogue) {
+        if (r.group !== k || r.wide) continue;
+        const c = covers.get(r.id);
+        let at = null;
+        let d = Infinity;
+        if (c) {
+          const cw = (c.mb[2] - c.mb[0]) / c.w;
+          const ch = (c.mb[3] - c.mb[1]) / c.h;
+          for (let j = 0; j < c.h; j += 1) {
+            for (let i = 0; i < c.w; i += 1) {
+              if (!c.bits[j * c.w + i]) continue;
+              const x = c.mb[0] + (i + 0.5) * cw;
+              const y = c.mb[3] - (j + 0.5) * ch;
+              const dd = (x - cx) ** 2 + (y - cy) ** 2;
+              if (dd < d) { d = dd; at = [x, y]; }
+            }
+          }
+        } else {
+          const b = boxMerc(r.box);
+          at = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+          d = (at[0] - cx) ** 2 + (at[1] - cy) ** 2;
+        }
+        if (!at) continue;
+        const prev = best.get(r.where);
+        const years = [r.year, r.to || r.year_to || r.year];
+        if (!prev || d < prev.d) best.set(r.where, { where: r.where, d, at, years: prev ? [Math.min(prev.years[0], years[0]), Math.max(prev.years[1], years[1])] : years });
+        else prev.years = [Math.min(prev.years[0], years[0]), Math.max(prev.years[1], years[1])];
+      }
+      const lat = c0.lat * Math.PI / 180;
+      return [...best.values()].sort((a, b) => a.d - b.d).slice(0, 3).map((p) => ({
+        ...p, at: unmerc(...p.at), km: Math.sqrt(p.d) * Math.cos(lat) / 1000,
+      }));
+    }
+
+    // --- years here --------------------------------------------------------------------
+    const yearText = (e) => (e.to ? `${e.year}–${e.to}` : String(e.year || e.key));
+    function entryTitle(e) {
+      const labels = [...new Set(e.rows.map((r) => r.label))];
+      return `${yearText(e)} ${labels.length === 1 && kind === "map" ? labels[0].toLowerCase() : (kind === "photo" ? "photo" : "map")}`;
+    }
+    function here(k) {
       const z = map.getZoom();
-      return catalogue.filter((r) => r.group === kind && z >= (r.min_zoom || 0) - 3 && boxBounds(r.box).intersects(view));
+      const focus = focusBox();
+      return catalogue.filter((r) => r.group === k && zoomFits(r, z) && hasPicture(r, focus));
     }
 
     function update(force) {
       if (!active) return;
-      const rows = inView();
+      const rows = here(kind);
+      others = { photo: kind === "photo" ? rows.length : here("photo").length, map: kind === "map" ? rows.length : here("map").length };
       const byKey = new Map();
       for (const r of rows) {
-        const key = r.year ? String(r.year) : r.label;
-        if (!byKey.has(key)) byKey.set(key, { key, year: r.year, rows: [] });
+        const key = r.year ? `${r.year}${r.year_to ? `-${r.year_to}` : ""}` : r.label;
+        if (!byKey.has(key)) byKey.set(key, { key, year: r.year, to: r.year_to || null, rows: [] });
         byKey.get(key).rows.push(r);
       }
-      const next = [...byKey.values()].sort((a, b) => (a.year || 9999) - (b.year || 9999) || a.key.localeCompare(b.key));
+      const next = [...byKey.values()].sort((a, b) => (a.year || 9999) - (b.year || 9999) || (a.to || 0) - (b.to || 0) || a.key.localeCompare(b.key));
       const same = next.length === entries.length && next.every((e, i) => e.key === entries[i].key && e.rows.length === entries[i].rows.length);
-      if (same && !force) return;
+      bar.querySelectorAll("[data-kind]").forEach((b) => {
+        b.setAttribute("aria-pressed", String(b.dataset.kind === kind));
+        const n = new Set(here(b.dataset.kind).map((r) => `${r.year}-${r.year_to}`)).size;
+        b.querySelector(".hb-count").textContent = n ? ` ${n}` : "";
+      });
+      $b(".hb-busy").hidden = coversPending <= 0;
+      if (same && !force) { drawEdges(); return; }
       entries = next;
-      bar.querySelectorAll("[data-kind]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.kind === kind)));
-      const range = $b(".hb-range");
-      range.max = String(Math.max(0, entries.length - 1));
-      let idx = entries.findIndex((e) => e.key === (current?.key || wanted));
+      if (current) current = entries.find((e) => e.key === current.key) || null;
+      let idx = current ? entries.indexOf(current) : entries.findIndex((e) => e.key === wanted);
       if (idx < 0 && entries.length) {
-        // The nearest year to the one wanted, else the oldest.
-        const want = Number(current?.year || wanted);
-        idx = want ? entries.reduce((best, e, i) => (Math.abs((e.year || 9999) - want) < Math.abs((entries[best].year || 9999) - want) ? i : best), 0) : 0;
+        // The nearest year to the one wanted, else the newest old one.
+        const want = Number(String(current?.year || wanted).slice(0, 4));
+        idx = want ? entries.reduce((best, e, i) => (Math.abs(e.year - want) < Math.abs(entries[best].year - want) ? i : best), 0) : 0;
       }
-      renderTicks();
       const empty = $b(".hb-empty");
       empty.hidden = entries.length > 0;
       bar.classList.toggle("is-empty", !entries.length);
+      renderLine();
       if (!entries.length) {
         current = null;
         shown.clearLayers();
-        $b(".hb-year").textContent = "–";
-        $b(".hb-where").textContent = "";
-        const all = [...new Set(catalogue.filter((r) => r.group === kind).map((r) => r.where))];
-        empty.innerHTML = `<p>${kind === "photo" ? "No old aerial photos here." : "No old maps here."} `
-          + `${all.length ? `They cover ${esc(all.join(", "))}.` : "The services haven't answered yet."}</p>`
-          + `<div class="hb-jump">${PLACES.map((p, i) => `<button type="button" data-go="${i}">Go to ${esc(p.name)}</button>`).join("")}</div>`;
-        empty.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => {
-          const p = PLACES[Number(b.dataset.go)];
-          map.setView(p.at, Math.max(map.getZoom(), p.z));
-        }));
+        edges.clearLayers();
+        placeKnob();
+        clip();
+        renderEmpty();
         $b(".hb-credit").textContent = "";
         return;
       }
       pick(idx, true);
+      refreshBase();
     }
 
-    function renderTicks() {
-      const ticks = $b(".hb-ticks");
-      if (entries.length < 2) { ticks.textContent = ""; return; }
-      const first = entries[0];
-      const last = entries[entries.length - 1];
-      ticks.innerHTML = `<span>${esc(first.key)}</span><span>${entries.length} ${kind === "photo" ? "years" : "maps"}</span><span>${esc(last.key)}</span>`;
+    function renderEmpty() {
+      const empty = $b(".hb-empty");
+      const what = kind === "photo" ? "old aerial photos" : "old maps";
+      const z = map.getZoom();
+      const focus = focusBox();
+      const zoomIn = catalogue.filter((r) => r.group === kind && z < (r.min_zoom || 0) - 1 && hasPicture(r, focus));
+      const other = kind === "photo" ? "map" : "photo";
+      const places = nearest(kind).filter((p) => p.km > 0.5);
+      empty.innerHTML = `
+        <p class="hb-empty-title">${zoomIn.length ? `Zoom in to see ${what} of this area.` : `No ${what} of this spot.`}</p>
+        ${others[other] ? `<p class="muted">${others[other]} old ${other === "map" ? "map" : "photo"}${others[other] === 1 ? "" : "s"} here. <button type="button" class="link-button" data-switch>Show ${other === "map" ? "old maps" : "aerial photos"}</button></p>` : ""}
+        ${places.length && !zoomIn.length ? `<p class="muted">Nearest:</p><div class="hb-jump">${places.map((p, i) => `<button type="button" data-go="${i}"><b>${esc(p.where)}</b><span>${p.km < 1 ? "here" : `${p.km < 10 ? p.km.toFixed(1) : Math.round(p.km)} km`} · ${p.years[0]}${p.years[1] > p.years[0] ? `–${p.years[1]}` : ""}</span></button>`).join("")}</div>` : ""}`;
+      empty.querySelector("[data-switch]")?.addEventListener("click", () => setKind(other));
+      if (zoomIn.length) {
+        empty.insertAdjacentHTML("beforeend", '<div class="hb-jump"><button type="button" data-zoom><b>Zoom in</b></button></div>');
+        empty.querySelector("[data-zoom]").addEventListener("click", () => map.setZoom(Math.min(...zoomIn.map((r) => r.min_zoom || 0))));
+      }
+      empty.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => {
+        const p = places[Number(b.dataset.go)];
+        map.flyTo(p.at, Math.max(map.getZoom(), kind === "photo" ? 13 : 11), { duration: 0.8 });
+      }));
+    }
+
+    function tileLayers(entry, paneName, alpha) {
+      // Whole-country pictures go under the cities' own, sharper ones.
+      const area = (r) => (r.box[2] - r.box[0]) * (r.box[3] - r.box[1]);
+      return [...entry.rows].sort((a, b) => area(b) - area(a)).map((r, i) => L.tileLayer(
+        `api/maptile/${encodeURIComponent(r.id)}/{z}/{x}/{y}.png`, {
+          zIndex: i + 1, pane: paneName, minZoom: 0, maxZoom: 20, minNativeZoom: r.min_zoom, maxNativeZoom: r.max_zoom,
+          bounds: boxBounds(r.box), opacity: alpha, attribution: r.attribution, className: "hist-tile",
+        }));
     }
 
     function pick(i, quiet) {
       if (!entries.length) return;
       i = Math.max(0, Math.min(entries.length - 1, i));
       const entry = entries[i];
-      $b(".hb-range").value = String(i);
       $b(".hb-prev").disabled = i === 0;
       $b(".hb-next").disabled = i === entries.length - 1;
-      if (current && current.key === entry.key && !quiet) return;
-      if (current && current.key === entry.key && shown.getLayers().length) {
-        current = entry;
-        return;
-      }
+      if (current && current.key === entry.key && shown.getLayers().length && !quiet) return;
+      const changed = !current || current.key !== entry.key || !shown.getLayers().length;
       current = entry;
       wanted = entry.key;
       store.set("fw-hist-year", wanted);
-      $b(".hb-year").textContent = entry.year ? String(entry.year) : entry.key;
-      const labels = [...new Set(entry.rows.map((r) => (kind === "map" ? `${r.label}, ${r.where}` : r.where)))];
-      $b(".hb-where").textContent = labels.join(" · ");
-      divider.querySelector(".hd-then").textContent = entry.year ? String(entry.year) : entry.key;
+      $b(".hb-year").textContent = yearText(entry);
+      const labels = [...new Set(entry.rows.map((r) => r.label))];
+      const wheres = [...new Set(entry.rows.map((r) => r.where))];
+      $b(".hb-what").textContent = kind === "map" ? `${labels.join(" · ")} · ${wheres.join(", ")}` : `Aerial photo · ${wheres.join(", ")}`;
+      $b(".hb-what").title = $b(".hb-what").textContent;
+      divider.querySelector(".hd-then").textContent = yearText(entry);
       $b(".hb-credit").textContent = [...new Set(entry.rows.map((r) => r.attribution))].join(" · ");
-      // Swap without a blank: the new year's tiles go on top, the old ones leave once loaded.
-      const old = shown.getLayers();
-      let waiting = entry.rows.length;
-      const done = () => { if (--waiting <= 0) old.forEach((l) => shown.removeLayer(l)); };
-      for (const r of entry.rows) {
-        const layer = L.tileLayer(`api/maptile/${encodeURIComponent(r.id)}/{z}/{x}/{y}.png`, {
-          pane: PANE, minZoom: 0, maxZoom: 20, minNativeZoom: r.min_zoom, maxNativeZoom: r.max_zoom,
-          bounds: boxBounds(r.box), opacity: opacity / 100, attribution: r.attribution,
-        });
-        layer.once("load", done);
-        shown.addLayer(layer);
+      placeKnob();
+      if (changed) {
+        // Swap without a blank: the new year's tiles go on top, the old ones leave once loaded.
+        const old = shown.getLayers();
+        const layers = tileLayers(entry, PANE, opacity / 100);
+        let waiting = layers.length;
+        const done = () => { if (--waiting <= 0) old.forEach((l) => shown.removeLayer(l)); };
+        for (const layer of layers) {
+          layer.once("load", done);
+          shown.addLayer(layer);
+        }
+        setTimeout(() => old.forEach((l) => shown.removeLayer(l)), 4000);
+        if (baseChoice().entry) refreshBase();
+        renderCompare(baseChoice());
       }
-      setTimeout(() => old.forEach((l) => shown.removeLayer(l)), 4000);
+      drawEdges();
       clip();
+    }
+
+    // The outline of where the shown year has picture: a faint line, so it's clear where
+    // the old picture ends and today's begins.
+    let edgesKey = "";
+    function drawEdges() {
+      const key = current ? `${current.key}|${current.rows.map((r) => r.id).join(",")}|${coversRev}|${map.getZoom() > 15}` : "";
+      if (key === edgesKey) return;
+      edgesKey = key;
+      edges.clearLayers();
+      if (!current) return;
+      for (const r of current.rows) {
+        const c = covers.get(r.id);
+        if (!c || c.bits.every((b) => b)) continue;
+        const cw = (c.mb[2] - c.mb[0]) / c.w;
+        const ch = (c.mb[3] - c.mb[1]) / c.h;
+        const ll = (i, j) => unmerc(c.mb[0] + i * cw, c.mb[3] - j * ch);
+        const on = (i, j) => i >= 0 && j >= 0 && i < c.w && j < c.h && c.bits[j * c.w + i];
+        const segs = [];
+        // Horizontal edges, joined along each row; then vertical ones along each column.
+        for (let j = 0; j <= c.h; j++) {
+          let start = -1;
+          for (let i = 0; i <= c.w; i++) {
+            const edge = i < c.w && on(i, j - 1) !== on(i, j);
+            if (edge && start < 0) start = i;
+            if (!edge && start >= 0) { segs.push([ll(start, j), ll(i, j)]); start = -1; }
+          }
+        }
+        for (let i = 0; i <= c.w; i++) {
+          let start = -1;
+          for (let j = 0; j <= c.h; j++) {
+            const edge = j < c.h && on(i - 1, j) !== on(i, j);
+            if (edge && start < 0) start = j;
+            if (!edge && start >= 0) { segs.push([ll(i, start), ll(i, j)]); start = -1; }
+          }
+        }
+        if (!segs.length) continue;
+        edges.addLayer(L.polyline(segs, { pane: EDGE_PANE, color: "#0f172a", weight: 3, opacity: 0.25, interactive: false }));
+        edges.addLayer(L.polyline(segs, { pane: EDGE_PANE, color: "#fff", weight: 1.25, opacity: 0.85, dashArray: "4 4", interactive: false }));
+      }
+    }
+
+    function renderCompare(choice) {
+      const sel = $b(".hb-base");
+      const years = entries.filter((e) => e !== current);
+      sel.innerHTML = `<optgroup label="Today">${TODAY.map((t) => `<option value="${t.key}">${esc(t.label)}</option>`).join("")}</optgroup>`
+        + (years.length ? `<optgroup label="Another year here">${years.map((e) => `<option value="y:${esc(e.key)}">${esc(entryTitle(e))}</option>`).join("")}</optgroup>` : "");
+      sel.value = choice.key;
     }
 
     map.on("moveend", () => update(false));
@@ -275,9 +600,75 @@
     // --- overlays (Layers switches) --------------------------------------------------
     const overlayOn = new Map();
     const overlayLayers = new Map();
+    // Property ids are written by the panel from the Land Survey's id points (parcels.py):
+    // sharp at every zoom, one size, never cut at a tile edge. Only if those can't be had do
+    // the Land Survey's ready-made picture tiles stand in.
+    const PARCEL_Z = 15;
+    const PARCEL_MIN_Z = 15;
+    const parcelLayer = L.layerGroup();
+    const parcelTiles = new Map();
+    let parcelRow = null;
+    let parcelFallback = false;
+    let parcelSeq = 0;
+    async function loadParcels() {
+      if (!parcelRow || !overlayOn.get(parcelRow.id) || parcelFallback) return;
+      parcelLayer.clearLayers();
+      if (map.getZoom() < PARCEL_MIN_Z) return;
+      const my = ++parcelSeq;
+      const b = map.getBounds();
+      const nw = map.project(b.getNorthWest(), PARCEL_Z).divideBy(256).floor();
+      const se = map.project(b.getSouthEast(), PARCEL_Z).divideBy(256).floor();
+      const keys = [];
+      for (let x = nw.x; x <= se.x; x++) for (let y = nw.y; y <= se.y; y++) keys.push(`${x}/${y}`);
+      if (keys.length > 40) return;
+      let failed = 0;
+      await Promise.all(keys.map(async (k) => {
+        if (Array.isArray(parcelTiles.get(k))) return;
+        try {
+          const r = await fetch(`api/parcels/${k}`);
+          if (!r.ok) throw new Error(String(r.status));
+          parcelTiles.set(k, (await r.json()).rows || []);
+          if (parcelTiles.size > 200) parcelTiles.delete(parcelTiles.keys().next().value);
+        } catch { failed += 1; }
+      }));
+      if (my !== parcelSeq || !overlayOn.get(parcelRow.id)) return;
+      if (failed === keys.length && keys.length) {  // no id points to be had: the picture tiles
+        parcelFallback = true;
+        setOverlay(parcelRow, true);
+        return;
+      }
+      // Largest-first isn't known, so first come first served; a label never covers another.
+      const taken = [];
+      const z = map.getZoom();
+      const w = 112;
+      for (const k of keys) {
+        for (const [lat, lon, id] of parcelTiles.get(k) || []) {
+          const pt = map.latLngToContainerPoint([lat, lon]);
+          if (taken.some((t) => Math.abs(t.x - pt.x) < w && Math.abs(t.y - pt.y) < 24)) continue;
+          taken.push(pt);
+          const icon = L.divIcon({ className: "parcel-id", iconSize: [0, 0], html: `<span>${esc(id)}</span>` });
+          const m = L.marker([lat, lon], { icon, keyboard: false, pane: OVERLAY_PANE });
+          m.on("click", () => {
+            const box = document.createElement("div");
+            box.innerHTML = `<strong>${esc(id)}</strong><div class="muted small">Property id (kiinteistötunnus)</div>`
+              + `<div style="margin-top:6px"><button type="button" class="chip-btn">Copy</button></div>`;
+            box.querySelector("button").addEventListener("click", () => navigator.clipboard?.writeText(id).catch(() => {}));
+            L.popup({ className: "aid-popup", offset: [0, -6] }).setLatLng([lat, lon]).setContent(box).openOn(map);
+          });
+          parcelLayer.addLayer(m);
+        }
+      }
+    }
+    map.on("moveend", loadParcels);
+
     function setOverlay(row, on) {
       overlayOn.set(row.id, on);
       store.set(`fw-mo-${row.id}`, on ? "1" : "0");
+      if (row.id === "property-ids" && !parcelFallback) {
+        parcelRow = row;
+        if (on) { parcelLayer.addTo(map); loadParcels(); } else { map.removeLayer(parcelLayer); parcelLayer.clearLayers(); }
+        return;
+      }
       let layer = overlayLayers.get(row.id);
       if (on && !layer) {
         // A daily picture's tiles are asked for by date, so yesterday's never come from the browser's cache.
@@ -400,7 +791,7 @@
       out.push({
         title: "Building ages", color: "#d97706", checked: buildingsOn,
         count: buildingsOn && buildRows.length ? `${buildRows.length} in view` : "",
-        note: buildNote || `Every building in Helsinki, Espoo, Vantaa and Kauniainen as a dot coloured by the year it was finished, from zoom 13. Tap one for its year, use, floors and address. From HSY's building register. ${failingNote("buildings")}`.trim(),
+        note: buildNote || `Every building as a dot coloured by the year it was finished, from zoom 13. Tap one for its year, use and floors. The capital region from HSY's register (with addresses), the rest of Finland from the national building register (Ryhti). ${failingNote("buildings")}`.trim(),
         extra: buildingsOn ? ageLegend() : null,
         onChange: async (on) => { setBuildings(on); },
       });
@@ -419,6 +810,8 @@
         const res = await api("api/mapsources");
         catalogue = res.layers || [];
         sources = res.sources || [];
+        coversPending = res.covers_pending || 0;
+        if (res.covers_rev) await loadCovers(res.covers_rev);
       } catch (err) {
         console.warn("map sources", err);
       }

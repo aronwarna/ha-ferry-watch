@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.69.0
+
+- **Kirkkonummi and Porkkala in Historic maps**: the municipality's own photo flights from 1944
+  (just before the Soviet lease), 1954-56 (just after it was handed back), 1976-77, 1983,
+  1992-93, 1998-99, 2005-06, 2011 and 2017, and its old maps: King's map 1776, the 1840s parish
+  maps, Senate atlas 1870, parish map 1932-43 and basic map 1960.
+- **Sipoo 1987** aerial photo.
+- New switch in Layers: **Porkkala lease area 1944-56**, the border of the Soviet naval base.
+
+## 0.68.0
+
+- **Then & now is now Historic maps**, with a calmer, clearer bar: Aerial photos and Old maps
+  tabs that count what covers the place you're looking at, big previous/next buttons round the
+  year, and a timeline drawn to scale where each available photo is a tick and each map series a
+  bar across the years it was drawn. Drag the knob or tap a tick to jump.
+- **Only what covers your view**: previous/next and the timeline offer just the photos and maps
+  that actually have a picture in the middle of the screen at this zoom. Where nothing fits you
+  get the nearest places that have something, and a dashed line shows where the shown year ends.
+- **No more white boxes or black frames**: the photo and map services' white backgrounds and the
+  black collars baked into the photo mosaics are cut away on the add-on, so old pictures blend
+  into today's map instead of sitting in rectangles.
+- **Compare with what you like**: Satellite, Map or Terrain today, or any other year here.
+  Side by side puts a slider between the two; Fade blends them.
+- **Much more coverage**: the Land Survey's old maps for all of Finland (Senate atlas 1871-1919,
+  parish maps, Russian topographic maps, basic maps per decade 1947-1997 and more, Kirkkonummi
+  and Porkkala included), Vantaa's King's map 1776 and old Vantaa photos and maps, more Helsinki
+  maps, Turku photos back to 1939 and its address and office maps, and Estonia's old maps and
+  photos (Soviet maps and sea charts, 1993 on photos), reprojected from the Estonian grid.
+- Old tiles from earlier versions are cleared once, so nothing is shown with the old frames.
+
 ## 0.67.3
 
 - **Blue-green algae switch on at once**: the switches answer straight away and can be switched
@@ -49,6 +79,30 @@
   conditions are open.
 - Computers: the ship chips stop short of the +/− zoom buttons (they slid under them with the
   menu open); the app's name no longer wraps in the top bar.
+
+## 0.66.0
+
+- **Then & now reaches the whole country.** Two satellite archives now fill every place the
+  cities' own photo flights don't cover: Esri's imagery archive (one release per year since 2014,
+  down to house level) and Sentinel-2 cloud-free yearly pictures (2018 on, 10 m). The cities'
+  sharper photos lie on top where they exist.
+- More photo flights: the Helsinki region's joint flights (also Kirkkonummi with Porkkala, Kerava,
+  Tuusula, Nurmijärvi, Sipoo; 2015 on), Turku (2005 on, older if the service lists them), Tampere
+  (1946, 1966 … if its service lists them), Oulu, the Land Survey's older orthophotos where
+  Paituli draws them, and Estonia's orthophotos since 1993 with its old maps back to the 1800s.
+  Each service's layers are read from its own list once a day; Settings shows what was found.
+
+- **Property ids** are now written by the app from the Land Survey's id points: sharp at every
+  zoom, one size, never cut off or piled up, from zoom 15; tap one to copy it. (The old picture
+  tiles only stand in if the id points can't be had.) Property boundaries are a little lighter.
+- **Building ages for all of Finland**: outside the capital region the dots come from the
+  national building register (Ryhti); the capital region keeps HSY's register with addresses.
+- **Satellite today (NASA)** did nothing when the one satellite it asked had no picture. It now
+  tries five satellites (NOAA-20, NOAA-21, Suomi NPP, Terra, Aqua), today's picture and then
+  yesterday's. Best zoomed out; in midwinter the sun is too low for a picture this far north.
+- **OpenStreetMap layers** (harbours, places ashore, nature reserves): when the main server is
+  busy, three other servers are tried, twice round; a first download that fails is tried again
+  in five minutes; Layers shows a short plain message instead of the server's error text.
 
 ## 0.65.1
 

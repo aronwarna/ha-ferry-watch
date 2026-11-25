@@ -53,9 +53,11 @@ class TileCache:
     def max_age(self, source: str) -> float:
         return self.max_ages.get(_top(source), MAX_AGE)
 
-    async def get(self, source: str, z: int, x: int, y: int, url: str) -> Path | None:
+    async def get(self, source: str, z: int, x: int, y: int, url: str, transform=None) -> Path | None:
         """Path to the tile on disk, fetching it first if missing or old. None if the
-        tile doesn't exist upstream (sea marks have no tile where there are no marks)."""
+        tile doesn't exist upstream (sea marks have no tile where there are no marks).
+        ``transform`` (bytes -> bytes, run in a thread) changes a fetched tile before it's
+        kept; b"" from it means "nothing here"."""
         path = self.path(source, z, x, y)
         try:
             if time.time() - path.stat().st_mtime < self.max_age(source):
@@ -68,7 +70,7 @@ class TileCache:
         future = asyncio.get_running_loop().create_future()
         self._pending[path] = future
         try:
-            result = await self._fetch(source, path, url)
+            result = await self._fetch(source, path, url, transform)
         except BaseException:
             future.cancel()
             raise
@@ -78,7 +80,7 @@ class TileCache:
         finally:
             del self._pending[path]
 
-    async def _fetch(self, source: str, path: Path, url: str) -> Path | None:
+    async def _fetch(self, source: str, path: Path, url: str, transform=None) -> Path | None:
         try:
             async with self._limit, self.session.get(
                 url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=30)
@@ -94,6 +96,13 @@ class TileCache:
             _LOGGER.debug("Tile %s failed: %s", url, err)
             self.failing[_top(source)] = str(err) or type(err).__name__
             return path if path.exists() and path.stat().st_size else None  # an old copy beats none
+        if transform is not None and body:
+            try:
+                body = await asyncio.to_thread(transform, body)
+            except Exception as err:  # noqa: BLE001 - a picture we can't read isn't kept
+                _LOGGER.debug("Tile %s couldn't be read: %s", url, err)
+                self.failing[_top(source)] = f"unreadable picture: {err}"
+                return None
         self.failing.pop(_top(source), None)
         tmp = path.with_suffix(".tmp")
         for _ in range(2):  # twice: prune() may remove the folder between the two steps

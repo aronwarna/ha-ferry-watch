@@ -457,18 +457,8 @@ class Reserves:
         self.error: str | None = None
 
     async def _get(self, query: str) -> Any:
-        async with self.session.post(OVERPASS, data={"data": query}, headers={"User-Agent": USER_AGENT},
-                                     timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
-            if resp.status != 200:
-                text = (await resp.content.read(400)).decode("utf-8", "replace")
-                raise ValueError(f"HTTP {resp.status}: {re.sub(r'<[^>]+>', ' ', text).strip()[:200]}")
-            chunks, size = [], 0
-            async for chunk in resp.content.iter_chunked(65536):
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError("answer too big")
-                chunks.append(chunk)
-        return json.loads(b"".join(chunks))
+        from .overpass import fetch
+        return await fetch(self.session, query, timeout=TIMEOUT, max_bytes=MAX_BYTES)
 
     async def _get_wfs(self, params: dict[str, str]) -> bytes:
         async with self.session.get(SYKE_WFS, params=params, headers={"User-Agent": USER_AGENT},
@@ -588,9 +578,11 @@ class Reserves:
                 self.error = None
                 _LOGGER.debug("Nature reserves for cell %s: %s", cell, len(reserves))
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as err:
+                from .overpass import plain_error
                 if self.error is None:
-                    _LOGGER.warning("Could not download nature reserves from OpenStreetMap (Overpass): %s", err)
-                self.error = str(err) or type(err).__name__
+                    _LOGGER.warning("Could not download nature reserves from OpenStreetMap (Overpass): %s",
+                                    getattr(err, "detail", None) or err)
+                self.error = plain_error(err)
                 self._failed[cell] = time.time()
             finally:
                 if self._queue and self._queue[0] == cell:
