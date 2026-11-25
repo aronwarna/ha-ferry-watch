@@ -68,6 +68,8 @@
     let coversRev = -1;
     let coversPending = 0;
     const covers = new Map();  // layer id -> {w, h, bits, mb}
+    const tones = new Map();   // photo layer id -> {w, h, g, t, s, lo, hi, mb}: brightness across it, for Enhance
+    let enhance = store.get("fw-hist-enhance") !== "0";
 
     map.createPane(PANE).style.zIndex = 250;
     map.createPane(BASE_PANE).style.zIndex = 240;
@@ -152,6 +154,9 @@
         <button type="button" class="hb-split" aria-pressed="false" title="Side by side: drag the divider">
           <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 2v16" stroke="currentColor" stroke-width="1.6"/></svg>
           <span>Side by side</span></button>
+        <button type="button" class="hb-split hb-enhance" aria-pressed="false" title="Even out the old photos' patchy frames, stretch their contrast and sharpen a little (your originals stay as they are)">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 17 13 7m-2-2 1.5-3L14 5l3 1.5L14 8l-1.5 3L11 8 8 6.5zM15 12l.7 1.3L17 14l-1.3.7L15 16l-.7-1.3L13 14l1.3-.7z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span>Enhance</span></button>
         <label class="hb-op" title="See today's picture through the old one"><span class="muted">Fade</span><input type="range" class="player-range hb-opacity" min="15" max="100" step="5" aria-label="Opacity"></label>
         <button type="button" class="hb-savebtn" aria-expanded="false" title="Keep this area's old pictures on the NAS, to see them even if a service is down">
           <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 3v9m-4-4 4 4 4-4M4 15h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -197,6 +202,13 @@
       swipe = !swipe;
       store.set("fw-hist-swipe", swipe ? "1" : "0");
       renderSwipe();
+    });
+    $b(".hb-enhance").setAttribute("aria-pressed", String(enhance));
+    $b(".hb-enhance").addEventListener("click", () => {
+      enhance = !enhance;
+      store.set("fw-hist-enhance", enhance ? "1" : "0");
+      $b(".hb-enhance").setAttribute("aria-pressed", String(enhance));
+      redraw();
     });
     $b(".hb-base").addEventListener("change", (e) => {
       store.set(`fw-hist-base-${kind}`, e.target.value);
@@ -493,12 +505,89 @@
       }
       return { w, h, bits, mb: boxMerc(row.box) };
     }
+    // --- Enhance: old photos evened out, stretched and sharpened while drawn ---------------
+    // The NAS measured each photo mosaic's brightness across its area once (histclean.tone);
+    // each pixel is scaled towards the usual brightness (frames and dark corners even out),
+    // the levels stretched to full range and edges sharpened a little. Originals stay as kept.
+    function toneGrid(row, w, h, g64, t, s, lo, hi) {
+      const raw = atob(g64);
+      const gain = new Float32Array(w * h);
+      for (let i = 0; i < w * h; i++) gain[i] = Math.min(1.6, Math.max(0.6, (t / Math.max(1, raw.charCodeAt(i))) ** s));
+      // The stretch keeps the middle where it was: the picture gets crisper, not darker or lighter.
+      return { w, h, gain, mid: (lo + hi) / 2, k: Math.min(1.6, 215 / Math.max(24, hi - lo)), mb: boxMerc(row.box) };
+    }
+    const SHARPEN = 0.35;
+    function enhanceTile(canvas, img, c, T) {
+      const n = img.naturalWidth || 256, m = img.naturalHeight || 256;
+      canvas.width = n;
+      canvas.height = m;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const im = ctx.getImageData(0, 0, n, m);
+      const d = im.data;
+      const span = (2 * HALF) / 2 ** c.z;
+      const x0 = -HALF + c.x * span, y0 = HALF - c.y * span;
+      const cw = (T.mb[2] - T.mb[0]) / T.w, ch = (T.mb[3] - T.mb[1]) / T.h;
+      const gx = new Float32Array(n), gy = new Float32Array(m);
+      for (let i = 0; i < n; i++) gx[i] = Math.min(T.w - 1, Math.max(0, (x0 + ((i + 0.5) * span) / n - T.mb[0]) / cw - 0.5));
+      for (let j = 0; j < m; j++) gy[j] = Math.min(T.h - 1, Math.max(0, (T.mb[3] - (y0 - ((j + 0.5) * span) / m)) / ch - 0.5));
+      const L1 = new Float32Array(n * m * 3);
+      for (let j = 0; j < m; j++) {
+        const y = gy[j], yi = Math.min(T.h - 2, Math.floor(y)), fy = T.h > 1 ? y - yi : 0;
+        for (let i = 0; i < n; i++) {
+          const x = gx[i], xi = Math.min(T.w - 2, Math.floor(x)), fx = T.w > 1 ? x - xi : 0;
+          const a = yi * T.w + xi;
+          const g = T.w > 1 && T.h > 1
+            ? (T.gain[a] * (1 - fx) + T.gain[a + 1] * fx) * (1 - fy) + (T.gain[a + T.w] * (1 - fx) + T.gain[a + T.w + 1] * fx) * fy
+            : T.gain[0];
+          const p = (j * n + i) * 4, q = (j * n + i) * 3;
+          for (let k = 0; k < 3; k++) L1[q + k] = 128 + (d[p + k] * g - T.mid) * T.k;
+        }
+      }
+      for (let j = 0; j < m; j++) {
+        for (let i = 0; i < n; i++) {
+          const p = (j * n + i) * 4, q = (j * n + i) * 3;
+          if (!d[p + 3]) continue;
+          const up = j ? q - n * 3 : q, dn = j < m - 1 ? q + n * 3 : q, lf = i ? q - 3 : q, rt = i < n - 1 ? q + 3 : q;
+          for (let k = 0; k < 3; k++) {
+            const v = L1[q + k];
+            d[p + k] = v + SHARPEN * (4 * v - L1[up + k] - L1[dn + k] - L1[lf + k] - L1[rt + k]);
+          }
+        }
+      }
+      ctx.putImageData(im, 0, 0);
+    }
+    const EnhancedTiles = L.TileLayer.extend({
+      createTile(coords, done) {
+        const tile = document.createElement("canvas");
+        tile.setAttribute("role", "presentation");
+        const img = new Image();
+        img.onload = () => {
+          try {
+            enhanceTile(tile, img, coords, this.options.tone);
+          } catch (err) {
+            console.warn("enhance", err);
+          }
+          done(null, tile);
+        };
+        img.onerror = (err) => done(err, tile);
+        img.src = this.getTileUrl(coords);
+        return tile;
+      },
+    });
     async function loadCovers(rev) {
       if (rev === coversRev) return;
       try {
         const res = await api(`api/mapcovers?v=${rev}`);
         const byId = new Map(catalogue.map((r) => [r.id, r]));
         for (const [id, c] of Object.entries(res.covers || {})) if (byId.has(id)) covers.set(id, decode(byId.get(id), c));
+        let newTones = false;
+        for (const [id, [w, h, g, t, s, lo, hi]] of Object.entries(res.tones || {})) {
+          if (!byId.has(id) || tones.has(id)) continue;
+          tones.set(id, toneGrid(byId.get(id), w, h, g, t, s, lo, hi));
+          newTones = true;
+        }
+        if (newTones && enhance) redraw();
         coversRev = rev;
       } catch (err) {
         console.warn("map covers", err);
@@ -661,11 +750,26 @@
     function tileLayers(entry, paneName, alpha) {
       // Whole-country pictures go under the cities' own, sharper ones.
       const area = (r) => (r.box[2] - r.box[0]) * (r.box[3] - r.box[1]);
-      return [...entry.rows].sort((a, b) => area(b) - area(a)).map((r, i) => L.tileLayer(
-        `api/maptile/${encodeURIComponent(r.id)}/{z}/{x}/{y}.png`, {
+      return [...entry.rows].sort((a, b) => area(b) - area(a)).map((r, i) => {
+        const tone = enhance && r.group === "photo" ? tones.get(r.id) : null;
+        const opts = {
           zIndex: i + 1, pane: paneName, minZoom: 0, maxZoom: 20, minNativeZoom: r.min_zoom, maxNativeZoom: r.max_zoom,
           bounds: boxBounds(r.box), opacity: alpha, attribution: r.attribution, className: "hist-tile",
-        }));
+        };
+        const url = `api/maptile/${encodeURIComponent(r.id)}/{z}/{x}/{y}.png`;
+        return tone ? new EnhancedTiles(url, { ...opts, tone }) : L.tileLayer(url, opts);
+      });
+    }
+    // Show the current year and the comparison again (after Enhance is switched, or brightness arrives).
+    function redraw() {
+      if (!active) return;
+      baseKey = null;
+      refreshBase();
+      const i = entries.indexOf(current);
+      if (i >= 0) {
+        current = null;
+        pick(i, true);
+      }
     }
 
     function pick(i, quiet) {
