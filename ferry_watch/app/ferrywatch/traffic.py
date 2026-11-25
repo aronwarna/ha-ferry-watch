@@ -123,6 +123,33 @@ class Traffic:
             del inside[MAX_ROWS:]
         return inside
 
+    async def locate(self, mmsi: int) -> list[Any] | None:
+        """Where one ship is now, as a row like around()'s, or None when it hasn't been heard
+        from lately (for search). The wide-view snapshot when it is fresh; else Digitraffic
+        is asked for this one ship."""
+        now = time.time()
+        if self._all and now - self._all[0] < 5 * 60:
+            hit = next((r for r in self._all[1] if r[0] == mmsi), None)
+            if hit:
+                return hit
+        if self.fetch != self._get:  # the simulator: its snapshot has every ship
+            rows = await self.in_view(-90, -180, 90, 180)
+            return next((r for r in rows if r[0] == mmsi), None)
+        try:
+            async with self.session.get(f"{REST}/locations", params={"mmsi": mmsi}, headers=HEADERS,
+                                        timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+            self.error = str(err) or type(err).__name__
+            return None
+        # A tracked ship isn't left out here: search may ask for any.
+        ships = [s for s in parse_locations(data, now, set()) if s[0] == mmsi]
+        if not ships:  # heard from, but not in the last quarter hour
+            ships = [s for s in parse_locations(data, 0, set()) if s[0] == mmsi]
+        rows = self._join(ships[:1])
+        return rows[0] if rows else None
+
     async def around(self, lat: float, lon: float, radius_km: float) -> list[list[Any]]:
         """[mmsi, lat, lon, sog, cog, heading, name, type, length, destination] rows."""
         # Rounded, so nearby views share an answer.
