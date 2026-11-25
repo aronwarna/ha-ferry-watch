@@ -16,6 +16,28 @@
   sites, saunas, drinking water, toilets), remembered in this browser.
 - Simulator: FW_FAKE_ASHORE_N and FW_FAKE_HARBOURS_N fill the coast for testing this.
 
+## 0.72.0
+
+- **Enhance** switch in the Historic bar (on by default) for old aerial photos:
+  - Evens out the patchwork of lighter and darker photo frames.
+  - Stretches the flat grey contrast, keeping the overall brightness.
+  - Sharpens a little.
+  - Your browser does the work while drawing, so the NAS does nothing extra and the stored
+    originals stay as they are. Switch it off to see the photos untouched.
+- The NAS measures each photo's brightness across its area once, the first time after the
+  update. Enhance applies to each photo as soon as its measurement is done.
+
+## 0.71.1
+
+- **Ice chart shows on the zoomed-out map again**: the ice was cut to the drawn chart's water,
+  and where the drawn chart had no water yet (zoomed out, or still downloading) the whole tile
+  was cut away, so nothing showed and no error either. Zoomed out (below zoom 9) the ice chart's
+  own 1 km land mask is used, and closer in it's shown uncut whenever the drawn chart's water
+  would leave almost none of it.
+- **The day line says how much ice that day has**, for example "Showing Wed, 14 Jan 2026: ice
+  on 12 % of the sea, up to 60 cm thick", "no ice in this chart", or in red why it couldn't be
+  read.
+
 ## 0.71.0
 
 - **Old photos and maps are kept for good on the NAS**, so they keep working if a

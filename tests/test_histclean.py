@@ -60,3 +60,24 @@ def test_encode_picks_format():
     data = hc.encode(see, photo=True)
     assert data[:4] == b"RIFF" and data[8:12] == b"WEBP"
     assert Image.open(io.BytesIO(data)).mode in ("RGBA", "RGB")
+
+
+def test_tone_evens_out_frames():
+    from PIL import Image, ImageDraw
+
+    from ferrywatch.histclean import tone
+
+    img = Image.new("RGB", (512, 256), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for i in range(4):  # four photo frames, each darker than the last
+        d.rectangle((i * 128, 0, i * 128 + 127, 255), fill=(200 - i * 40,) * 3)
+    mask = Image.new("L", (512, 256), 0)
+    ImageDraw.Draw(mask).rectangle((0, 0, 511, 200), fill=255)  # the bottom has no picture
+    t = tone(img, mask)
+    g = t["g"]
+    assert len(g) == t["w"] * t["h"] and t["w"] == 64
+    left, right = g[t["w"] * 5 + 2], g[t["w"] * 5 + 61]
+    assert left > right + 60  # bright frame on the left, dark on the right
+    assert g[t["w"] * (t["h"] - 1) + 2] > 100  # no picture: takes the neighbours', not black
+    assert 0 <= t["lo"] < t["hi"] <= 255 and 0 < t["s"] <= 1
+    assert tone(img, Image.new("L", (512, 256), 0)) is None

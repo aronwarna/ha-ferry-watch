@@ -92,6 +92,12 @@ LABEL_Z = 7  # thickness numbers from this zoom
 LABEL_STEP = 160  # world pixels between them (at every zoom, so they stay apart on screen)
 OUT = 512  # pixels a side of a drawn tile (sharp on phones; shown at 256 CSS px)
 
+# Below this zoom the 1 km grid is finer than the screen (its own land mask is enough), so it
+# isn't cut to the drawn chart's water, which zoomed out may not be made yet or have no depths.
+CUT_Z = 9
+
+KEEP_SHARE = 0.1  # under this share of the ice left by the water cut, it's shown uncut
+
 PENDING = object()  # the chart's water for a tile isn't there yet
 
 Get = Callable[[str], Awaitable[bytes]]
@@ -235,6 +241,22 @@ class Grids:
 
     def _path(self, day: int) -> Path:
         return self.dir / iso(day)[:10]
+
+    def read_days(self) -> dict[str, list[float]]:
+        """The days read so far: {ts: [share of the sea with ice, thickest cm]}."""
+        out: dict[str, list[float]] = {}
+        try:
+            folders = [p for p in self.dir.iterdir() if p.is_dir() and not p.name.endswith(".tmp")]
+        except OSError:
+            return out
+        for p in folders:
+            try:
+                meta = json.loads((p / "meta.json").read_text())
+                day = calendar.timegm(time.strptime(p.name, "%Y-%m-%d"))
+            except (OSError, ValueError):
+                continue
+            out[str(day)] = [meta.get("share", 0), meta.get("max_cm", 0)]
+        return out
 
     def meta(self, day: int) -> dict[str, Any] | None:
         try:
@@ -496,6 +518,16 @@ def _font(px: int) -> Any:
     return _FONT[px]
 
 
+def _painted(png: bytes | None) -> int:
+    """Pixels with any colour in a drawn tile."""
+    if not png:
+        return 0
+    from PIL import Image
+
+    hist = Image.open(io.BytesIO(png)).getchannel("A").histogram()
+    return sum(hist[1:])
+
+
 def draw_tile(conc: Any, thick: Any, z: int, x: int, y: int, water: Any | None, size: int = OUT) -> bytes | None:
     """One map tile of a day's chart; `water` an L mask of the tile's water, or None."""
     from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -643,7 +675,7 @@ class IceChart:
 
     async def _water(self, z: int, x: int, y: int) -> tuple[Any | None, bool]:
         """The tile's water mask and whether it's final (the chart may still be downloading)."""
-        if self.water is None or z < 5:
+        if self.water is None or z < CUT_Z:
             return None, True
         wz = min(z, 12)
         k = 2 ** (z - wz)
@@ -655,8 +687,11 @@ class IceChart:
         if got is None:
             return PENDING, False
         water, complete = got
-        if not water.get("water") and not complete:
-            return None, False  # the chart has nothing here yet: drawn uncut for now
+        if not water.get("water"):
+            # No water in the drawn chart here (not made yet, or a zoomed-out tile without
+            # depth areas): the ice chart's own land mask is trusted rather than cutting
+            # everything away.
+            return None, complete
         crop = ((x % k) / k, (y % k) / k, 1 / k)
         return await asyncio.to_thread(water_mask, water, OUT, crop), complete
 
@@ -672,8 +707,17 @@ class IceChart:
             return None, True
         water, final = await self._water(z, x, y)
         if water is PENDING:
-            return None, False  # the chart is still coming: the panel asks again shortly
+            water = None  # the chart is still coming: drawn uncut now, cut when asked again
         body = await asyncio.to_thread(draw_tile, conc, thick, z, x, y, water)
+        if water is not None:
+            # The drawn chart's water should keep most of the ice (the ice chart has its own
+            # 1 km land mask). If it keeps hardly any, the two disagree (the chart may be
+            # missing depths here): the ice is shown uncut rather than not at all.
+            uncut = await asyncio.to_thread(draw_tile, conc, thick, z, x, y, None)
+            if uncut is not None and _painted(body) < KEEP_SHARE * _painted(uncut):
+                _LOGGER.info("Ice chart tile %d/%d/%d: the drawn chart's water left little of the ice, drawn uncut",
+                             z, x, y)
+                body = uncut
         return body, final
 
     async def value(self, lat: float, lon: float, ts: int) -> dict[str, Any] | None:
@@ -711,7 +755,8 @@ class IceChart:
         default = peak if has_ice is False and peak else latest
         return {"latest": latest, "latest_ice": has_ice, "latest_share": meta.get("share") if meta else None,
                 "max_cm": meta.get("max_cm") if meta else None, "peak": peak, "default": default,
-                "season_start": season_start(now)}
+                "season_start": season_start(now), "read": self.grids.read_days(),
+                "failed": {str(d): str(err) or type(err).__name__ for d, (_t, err) in self.grids.failed.items()}}
 
 
 def overlay(chart: IceChart, **changes: Any) -> Overlay:

@@ -48,6 +48,7 @@ backups (*/maps).
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -67,7 +68,7 @@ import aiohttp
 from PIL import Image
 
 from .config import USER_AGENT
-from .histclean import Cover, box_merc, clean_tile, encode, footprint, lest_box_for, overview_size, reproject_lest, tile_merc
+from .histclean import Cover, box_merc, clean_tile, encode, footprint, lest_box_for, overview_size, reproject_lest, tile_merc, tone
 from .tilecache import TileCache
 
 _LOGGER = logging.getLogger(__name__)
@@ -669,6 +670,9 @@ class MapSources:
         self._layers: dict[str, dict] = {}
         # Where each old photo or map really has picture (histclean.Cover), worked out once.
         self.cover: dict[str, Cover] = {}
+        # How bright each old photo mosaic is across its area (histclean.tone), for Enhance.
+        self.tones: dict[str, dict] = {}
+        self.tone_failed: dict[str, float] = {}
         self.cover_failed: dict[str, float] = {}
         self._cover_pending: dict[str, asyncio.Future] = {}
         self._cover_limit = asyncio.Semaphore(2)
@@ -732,7 +736,9 @@ class MapSources:
         """Every known coverage grid: {layer id: [width, height, run lengths]} (cells over
         the layer's box in web mercator, row 0 north)."""
         return {"rev": self.covers_rev,
-                "covers": {lid: [c.w, c.h, c.rle()] for lid, c in self.cover.items() if lid in self._layers}}
+                "covers": {lid: [c.w, c.h, c.rle()] for lid, c in self.cover.items() if lid in self._layers},
+                "tones": {lid: [t["w"], t["h"], base64.b64encode(t["g"]).decode(), t["t"], t["s"], t["lo"], t["hi"]]
+                          for lid, t in self.tones.items() if lid in self._layers}}
 
     def sources(self) -> list[dict]:
         """Settings' rows: each service, how many layers it gave, and whether it fails."""
@@ -885,12 +891,18 @@ class MapSources:
                 self.cover[lid] = Cover.from_rle(box_merc(box), w, h, rle)
             except (TypeError, ValueError):
                 continue
-        self.covers_rev = len(self.cover)
+        for lid, t in (data.get("tones") or {}).items():
+            try:
+                self.tones[lid] = {**t, "g": base64.b64decode(t["g"])}
+            except (TypeError, ValueError, KeyError):
+                continue
+        self.covers_rev = len(self.cover) + len(self.tones)
 
     def _save_covers(self) -> None:
         rows = {lid: [self._layers[lid]["box"] if lid in self._layers else None, c.w, c.h, c.rle()]
                 for lid, c in self.cover.items()}
-        data = {"rev": COVER_REV, "covers": {k: v for k, v in rows.items() if v[0]}}
+        data = {"rev": COVER_REV, "covers": {k: v for k, v in rows.items() if v[0]},
+                "tones": {k: {**t, "g": base64.b64encode(t["g"]).decode()} for k, t in self.tones.items()}}
         tmp = self._covers_path().with_suffix(".tmp")
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
@@ -908,6 +920,28 @@ class MapSources:
             _LOGGER.info("Map coverage: working out %s old photos and maps", len(todo))
         for row in todo:
             await self.ensure_cover(row)
+            await asyncio.sleep(0.2)
+        # Photos whose coverage came before Enhance (0.72): their brightness, once.
+        todo = [r for r in self._layers.values() if r["group"] == "photo" and r["id"] in self.cover
+                and r["id"] not in self.tones and time.time() - self.tone_failed.get(r["id"], 0) > COVER_RETRY]
+        for row in todo:
+            try:
+                async with self._cover_limit:
+                    src = _source(row["source"])
+                    mbox = box_merc(row["box"])
+                    img = await self._render(row, src, mbox, overview_size(mbox), overview=True)
+                    mask = await asyncio.to_thread(footprint, img, bool(src.get("opaque")))
+                    t = await asyncio.to_thread(tone, img, mask)
+            except Exception as err:  # noqa: BLE001 - the photo still shows, just not evened out
+                _LOGGER.info("Brightness of %s %s: %s", row["where"], row["year"], err)
+                self.tone_failed[row["id"]] = time.time()
+                continue
+            if t is None:
+                self.tone_failed[row["id"]] = time.time()
+                continue
+            self.tones[row["id"]] = t
+            self.covers_rev += 1
+            self._save_covers()
             await asyncio.sleep(0.2)
 
     async def ensure_cover(self, row: dict) -> Cover | None:
@@ -945,6 +979,10 @@ class MapSources:
         img = await self._render(row, src, mbox, size, overview=True)
         mask = await asyncio.to_thread(footprint, img, bool(src.get("opaque")))
         cover = Cover.from_mask(mask, mbox)
+        if row["group"] == "photo":
+            t = await asyncio.to_thread(tone, img, mask)
+            if t is not None:
+                self.tones[row["id"]] = t
         _LOGGER.info("Map coverage of %s %s %s: %.0f%% of its box", row["where"], row["year"] or "", row["label"],
                      cover.share() * 100)
         return cover
