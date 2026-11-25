@@ -103,18 +103,29 @@ def test_cut_to_the_water(tmp_path):
     async def run():
         chart = _chart(tmp_path, water)
         await chart.times(None, NOW)
-        body, final = await chart.tile(PEAK, 7, 73, 36)
+        body, final = await chart.tile(PEAK, 9, 293, 147)
         a = Image.open(io.BytesIO(body)).getchannel("A")
         assert final
         assert a.getpixel((400, 400)) == 0  # the dry half
-        assert a.getpixel((200, 200)) == 0  # the island
-        # Still downloading: nothing yet, asked again.
+        assert a.getpixel((100, 100)) == 0  # the island
+        assert a.getpixel((200, 300)) > 0  # the water
+        # Zoomed out the ice chart's own land mask is enough: not cut.
+        body, final = await chart.tile(PEAK, 7, 73, 36)
+        assert final and Image.open(io.BytesIO(body)).getchannel("A").getpixel((400, 400)) > 0
+        # Still downloading: drawn uncut for now, asked again.
         state["water"] = None
-        assert await chart.tile(PEAK, 8, 147, 73) == (None, False)
-        # The chart has nothing here yet: drawn uncut, not kept.
-        state["water"], state["complete"] = {"e": e, "water": [], "lake": []}, False
-        body, final = await chart.tile(PEAK, 8, 147, 73)
+        body, final = await chart.tile(PEAK, 9, 293, 147)
         assert body and not final
+        # The chart has nothing here (not made yet, or no depths): drawn uncut.
+        for complete in (False, True):
+            state["water"], state["complete"] = {"e": e, "water": [], "lake": []}, complete
+            body, final = await chart.tile(PEAK, 9, 293, 147)
+            assert body and final == complete
+        # Water that misses all the ice: drawn uncut rather than nothing.
+        corner = [[[0, 0, 10, 0, 10, 10, 0, 10]]]
+        state["water"], state["complete"] = {"e": e, "water": corner, "lake": []}, True
+        body, final = await chart.tile(PEAK, 9, 293, 147)
+        assert Image.open(io.BytesIO(body)).getchannel("A").getpixel((400, 400)) > 0
     asyncio.run(run())
 
 
@@ -131,8 +142,9 @@ def test_listing_and_partial_tiles(tmp_path):
         # z4 is drawn without water; the path is a kept one.
         path = await reg.tile(ic.ID, PEAK, 4, 9, 4)
         assert path and not path.name.endswith(".partial.png")
-        # Waiting for the water: no tile.
-        assert await reg.tile(ic.ID, PEAK, 7, 73, 36) is None
+        # Waiting for the water: drawn uncut and not kept (made again next time).
+        path = await reg.tile(ic.ID, PEAK, 9, 293, 147)
+        assert path and path.name.endswith(".partial.png")
     asyncio.run(run())
 
 
