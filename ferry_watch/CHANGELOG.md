@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.67.2
+## 0.67.3
 
 - **Blue-green algae switch on at once**: the switches answer straight away and can be switched
   off again at once. The reports used to hold the switch (and the whole weather list) until a
