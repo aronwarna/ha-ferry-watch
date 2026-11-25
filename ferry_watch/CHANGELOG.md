@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.72.2
+
+- **Harbours are just small dots when zoomed out** (below zoom 13): blue on the map and
+  satellite views, the chart's red on the chart. The sailboat symbol comes back from zoom
+  13 (small, with the name) and full size from zoom 14. Tap a dot for the harbour's card.
+
 ## 0.72.1
 
 - **Places ashore and harbours no longer clutter the map.** Each kind of place ashore now
