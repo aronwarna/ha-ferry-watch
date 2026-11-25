@@ -258,6 +258,7 @@ class Web:
         self.sockets: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
         self._fleet_pushed: dict[int, float] = {}  # mmsi -> when its last position went out
         self._fleet_pending: set[int] = set()
+        self._finder = None  # search (find.py), made on first use
         self.app = web.Application(middlewares=[ingress_only], client_max_size=10 * 1024 * 1024)
         r = self.app.router
         r.add_get("/", self.index)
@@ -298,6 +299,8 @@ class Web:
         r.add_get("/api/pins.gpx", self.pins_gpx)
         r.add_post("/api/pins/import", self.import_pins)
         r.add_get("/api/places", self.places)
+        r.add_get("/api/find", self.find)
+        r.add_get("/api/find/vessel/{mmsi}", self.find_vessel)
         r.add_get("/api/maptile/{layer}/{z}/{x}/{y}", self.map_tile)
         r.add_get("/api/buildings/{x}/{y}", self.buildings_tile)
         r.add_get("/api/parcels/{x}/{y}", self.parcels_tile)
@@ -604,6 +607,33 @@ class Web:
         coords = parse_coords(q)
         rows = [] if coords else await self.fw.places.search(q)
         return web.json_response({"coords": coords, "places": rows, "error": self.fw.places.error})
+
+    async def find(self, request: web.Request) -> web.Response:
+        """Search everything the app knows (find.py): ships, harbours, lights and marks,
+        reserves, stations, bridges and locks. near=lat,lon puts the nearest first."""
+        if self._finder is None:
+            from .find import Finder
+            self._finder = Finder(self.fw)
+        near = None
+        try:
+            lat, lon = (float(v) for v in request.query.get("near", "").split(","))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                near = (lat, lon)
+        except ValueError:
+            pass
+        out = await self._finder.find(request.query.get("q", ""), near)
+        return web.json_response(out, headers={"Cache-Control": "no-store"})
+
+    async def find_vessel(self, request: web.Request) -> web.Response:
+        """Where a ship picked in search is now: {"row": [mmsi, lat, lon, sog, cog, heading,
+        name, type, length, destination]} or {"row": null} when it hasn't been heard lately."""
+        try:
+            mmsi = int(request.match_info["mmsi"])
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        row = await self.fw.traffic.locate(mmsi)
+        return web.json_response({"row": row, "error": None if row else self.fw.traffic.error},
+                                 headers={"Cache-Control": "no-store"})
 
     async def mapsources(self, request: web.Request) -> web.Response:
         """The extra layers (old photos and maps, overlays) the panel can show."""

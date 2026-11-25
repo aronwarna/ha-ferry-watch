@@ -511,7 +511,7 @@ class Store:
         if not norm:
             return []
         like = norm.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        sql = "SELECT mmsi, name, type, length, destination FROM vessels WHERE norm LIKE ? ESCAPE '!'"
+        sql = "SELECT mmsi, name, type, length, destination, imo FROM vessels WHERE norm LIKE ? ESCAPE '!'"
         args: list[Any] = [f"%{like}%"]
         if norm.isdigit():
             sql += " OR CAST(mmsi AS TEXT) LIKE ?"
@@ -519,6 +519,12 @@ class Store:
         sql += " ORDER BY norm = ? DESC, norm LIKE ? ESCAPE '!' DESC, norm LIMIT ?"
         args += [norm, f"{like}%", limit]
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def vessels_by_imo(self, imo: int) -> list[dict[str, Any]]:
+        """Directory rows with this IMO number (one ship, sometimes under an old MMSI too)."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT mmsi, name, type, length, destination, imo FROM vessels WHERE imo = ? ORDER BY updated DESC LIMIT 3",
+            (imo,)).fetchall()]
 
     def vessels_named(self, norm: str) -> list[int]:
         return [r[0] for r in self.db.execute("SELECT mmsi FROM vessels WHERE norm = ?", (norm,))]
