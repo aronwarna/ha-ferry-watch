@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.70.0
+
+- **Search finds everything, and says what each result is**: the map's search box now finds
+  ships (your own, the ones you follow, and any ship in Digitraffic's list by name, MMSI or IMO
+  number), named lights, lighthouses, buoys and marks from the drawn chart, harbours, places to
+  go ashore, nature reserves, weather stations, opening bridges, locks and canals, your pins and
+  saved routes, island and village names, coordinates, and even the app's own layers, weather
+  layers, map types and menu tabs. Every suggestion has a coloured icon and a label (Ship,
+  Lighthouse, Spar buoy, Harbour, Nature reserve, Weather station, Layer…), with the ship's
+  type and length or the distance from the map's middle beside it.
+- Picking one does the right thing: a ship opens its card where it is now (another ship shows
+  where Digitraffic last heard it, with its photo and links), a station opens its readings, a
+  reserve its outline and card, a layer is shown in Layers, a weather layer is switched on.
+- Lights and marks are found in the chart areas already downloaded; the first search after
+  the update indexes them in the background (a few minutes on the NAS, then only new areas).
+- Arrow keys move through the suggestions on a computer; the night-sky note no longer covers
+  the search box.
+
+## 0.69.0
+
+- **Kirkkonummi and Porkkala in Historic maps**: the municipality's own photo flights from 1944
+  (just before the Soviet lease), 1954-56 (just after it was handed back), 1976-77, 1983,
+  1992-93, 1998-99, 2005-06, 2011 and 2017, and its old maps: King's map 1776, the 1840s parish
+  maps, Senate atlas 1870, parish map 1932-43 and basic map 1960.
+- **Sipoo 1987** aerial photo.
+- New switch in Layers: **Porkkala lease area 1944-56**, the border of the Soviet naval base.
+
+## 0.68.0
+
+- **Then & now is now Historic maps**, with a calmer, clearer bar: Aerial photos and Old maps
+  tabs that count what covers the place you're looking at, big previous/next buttons round the
+  year, and a timeline drawn to scale where each available photo is a tick and each map series a
+  bar across the years it was drawn. Drag the knob or tap a tick to jump.
+- **Only what covers your view**: previous/next and the timeline offer just the photos and maps
+  that actually have a picture in the middle of the screen at this zoom. Where nothing fits you
+  get the nearest places that have something, and a dashed line shows where the shown year ends.
+- **No more white boxes or black frames**: the photo and map services' white backgrounds and the
+  black collars baked into the photo mosaics are cut away on the add-on, so old pictures blend
+  into today's map instead of sitting in rectangles.
+- **Compare with what you like**: Satellite, Map or Terrain today, or any other year here.
+  Side by side puts a slider between the two; Fade blends them.
+- **Much more coverage**: the Land Survey's old maps for all of Finland (Senate atlas 1871-1919,
+  parish maps, Russian topographic maps, basic maps per decade 1947-1997 and more, Kirkkonummi
+  and Porkkala included), Vantaa's King's map 1776 and old Vantaa photos and maps, more Helsinki
+  maps, Turku photos back to 1939 and its address and office maps, and Estonia's old maps and
+  photos (Soviet maps and sea charts, 1993 on photos), reprojected from the Estonian grid.
+- Old tiles from earlier versions are cleared once, so nothing is shown with the old frames.
+
+## 0.67.3
+
+- **Blue-green algae switch on at once**: the switches answer straight away and can be switched
+  off again at once. The reports used to hold the switch (and the whole weather list) until a
+  whole summer of reports had come from SYKE, which takes over a minute; now they load in the
+  background with "Loading…" under the switch and show up by themselves.
+- The reports come several weeks at a time (about three times faster the first time), are read
+  as they come so a summer's raw records never sit in memory together, and are kept on the
+  disk: last summer is fetched once and never again, and in season only the newest days are
+  asked for.
+- Switched off, a layer's requests still on their way are dropped. A paused time bar no longer
+  loads a second, unseen frame (the algae map used to load the first day of summer as well).
+- Any weather layer whose source is slow no longer holds up the others.
+
+## 0.67.2
+
+- **Ice chart says when it can't load**: if the NAS can't download FMI's ice chart, the
+  layer's switch now keeps saying why (it used to say it once and then show nothing at all),
+  the app's log says how many of the chart's pieces failed and why, and it tries again after
+  two minutes instead of ten.
+- **Much smaller download for the ice layers' day list**: the ice chart and sea ice now ask
+  Copernicus for their own product's list of days (about 0.2 MB). They used to get the list of
+  every Copernicus layer, over 80 MB, every three hours.
+- A day whose chart comes back without any sea in it is no longer kept as "no ice"; it's read
+  again later.
+
 ## 0.67.1
 
 - **Tidier map buttons on the phone**: one even column of square buttons down the right side
@@ -23,6 +97,30 @@
   conditions are open.
 - Computers: the ship chips stop short of the +/− zoom buttons (they slid under them with the
   menu open); the app's name no longer wraps in the top bar.
+
+## 0.66.0
+
+- **Then & now reaches the whole country.** Two satellite archives now fill every place the
+  cities' own photo flights don't cover: Esri's imagery archive (one release per year since 2014,
+  down to house level) and Sentinel-2 cloud-free yearly pictures (2018 on, 10 m). The cities'
+  sharper photos lie on top where they exist.
+- More photo flights: the Helsinki region's joint flights (also Kirkkonummi with Porkkala, Kerava,
+  Tuusula, Nurmijärvi, Sipoo; 2015 on), Turku (2005 on, older if the service lists them), Tampere
+  (1946, 1966 … if its service lists them), Oulu, the Land Survey's older orthophotos where
+  Paituli draws them, and Estonia's orthophotos since 1993 with its old maps back to the 1800s.
+  Each service's layers are read from its own list once a day; Settings shows what was found.
+
+- **Property ids** are now written by the app from the Land Survey's id points: sharp at every
+  zoom, one size, never cut off or piled up, from zoom 15; tap one to copy it. (The old picture
+  tiles only stand in if the id points can't be had.) Property boundaries are a little lighter.
+- **Building ages for all of Finland**: outside the capital region the dots come from the
+  national building register (Ryhti); the capital region keeps HSY's register with addresses.
+- **Satellite today (NASA)** did nothing when the one satellite it asked had no picture. It now
+  tries five satellites (NOAA-20, NOAA-21, Suomi NPP, Terra, Aqua), today's picture and then
+  yesterday's. Best zoomed out; in midwinter the sun is too low for a picture this far north.
+- **OpenStreetMap layers** (harbours, places ashore, nature reserves): when the main server is
+  busy, three other servers are tried, twice round; a first download that fails is tried again
+  in five minutes; Layers shows a short plain message instead of the server's error text.
 
 ## 0.65.1
 
@@ -103,6 +201,7 @@
 - All these layers come from one list on the NAS (mapsources.py), which reads each service's
   layer list once a day, so new years appear by themselves. Settings › Copy diagnostics lists
   what each service gave.
+
 ## 0.55.1
 
 - Places to check: short brushes past the shore (under 150 m) are no longer listed, and
@@ -256,6 +355,7 @@
 - New, in both: a second way for alerts, through ntfy. When it is set up and Home
   Assistant doesn't answer, the alert goes out through ntfy instead (without checking
   where your phone is, which only Home Assistant knows). As an add-on this is off.
+
 ## 0.47.1
 
 - Stats › Times past Porkkala: the "Show the lines on the map" link turns into "Hide the
@@ -1177,6 +1277,7 @@ Fixes from the NAS log of 23 to 25 October:
   limit, as in Traficom's symbol key.
 - The routeing part of the chart is downloaded once more, in the background,
   to pick up dredged depths.
+
 ## 0.16.2
 
 - Settings: chart problems name only the service, so the long web address

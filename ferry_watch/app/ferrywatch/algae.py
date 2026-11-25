@@ -17,7 +17,8 @@ Two layers:
   reports of that day and the WINDOW_DAYS - 1 before, the older ones fainter.
 
 Blooms come in summer. Out of season (October to May) both layers show the last season,
-so it can still be looked at (and the reports aren't fetched again for a week).
+so it can still be looked at. The reports are kept on the disk as they come, so last
+season's are only ever fetched once and in season only the newest days are asked for.
 """
 
 from __future__ import annotations
@@ -214,6 +215,8 @@ SERVICE = "algaebloom_service_code_201808151546171"
 LEVEL_KEY = "Ecology_algaebloom_singlevaluelist_201808151546174"
 CAP = 1000  # records an answer holds at most: a chunk that hits it is split
 CHUNK_DAYS = 7
+FETCH_AT_ONCE = 3  # weeks asked for together
+STORE_V = 2  # the kept reports' format on the disk
 WINDOW_DAYS = 3  # a day on the bar shows its reports and those of the two days before
 SHORE_M = 2000  # reports this close to Natural Earth's sea count as the sea's
 LEVELS = {0: "No algae", 1: "Some algae", 2: "Plenty of algae", 3: "Very much algae"}
@@ -288,44 +291,69 @@ def _in_rings(x: float, y: float, rings: list) -> bool:
     return inside
 
 
-async def fetch_reports(get_json: Callable[[str, Any], Awaitable[Any]], start: int, end: int) -> list[dict[str, Any]]:
-    """Every report from `start` to `end` (s), a week at a time; a week that hits the API's
-    cap is asked for again in halves."""
-    out: dict[Any, dict[str, Any]] = {}
+async def fetch_reports(get_json: Callable[[str, Any], Awaitable[Any]], start: int, end: int,
+                        keep: Callable[[dict[str, Any]], Any] | None = None,
+                        at_once: int = FETCH_AT_ONCE) -> list[Any]:
+    """Every report from `start` to `end` (s), a week at a time, newest first, `at_once`
+    weeks asked together (SYKE takes a few seconds per answer); a week that hits the API's
+    cap is asked for again in halves. With `keep`, each answer's records are turned into
+    what is kept (None drops one) as soon as they come, so a whole summer's raw records
+    (half a megabyte a week) never sit in memory together."""
+    out: dict[Any, Any] = {}
+    slots = asyncio.Semaphore(at_once)
+
+    def kept(rows: list[Any]) -> list[tuple[Any, Any]]:
+        pairs = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            item = keep(r) if keep else r
+            if item is not None:
+                pairs.append((r.get("service_request_id") or (r.get("lat"), r.get("long"), r.get("requested_datetime")),
+                              item))
+        return pairs
 
     async def span(a: int, b: int) -> None:
         fmt = "%Y-%m-%dT%H:%M:%SZ"
         params = {"service_code": SERVICE, "start_date": time.strftime(fmt, time.gmtime(a)),
                   "end_date": time.strftime(fmt, time.gmtime(b))}
-        rows = await get_json(OPEN311, params)
+        async with slots:
+            rows = await get_json(OPEN311, params)
         if not isinstance(rows, list):
             raise ValueError("reports: not a list")
         if len(rows) >= CAP and b - a > 3600:
+            del rows
             mid = (a + b) // 2
-            await span(a, mid)
-            await span(mid, b)
+            await asyncio.gather(span(mid, b), span(a, mid))
             return
-        for r in rows:
-            if isinstance(r, dict):
-                out[r.get("service_request_id") or (r.get("lat"), r.get("long"), r.get("requested_datetime"))] = r
+        out.update(await asyncio.to_thread(kept, rows) if keep else kept(rows))
 
-    a = start
-    while a < end:
-        b = min(end, a + CHUNK_DAYS * DAY)
-        await span(a, b)
-        a = b
+    spans = []
+    b = end
+    while b > start:
+        a = max(start, b - CHUNK_DAYS * DAY)
+        spans.append((a, b))
+        b = a
+    tasks = [asyncio.ensure_future(span(a, b)) for a, b in spans]
+    try:
+        await asyncio.gather(*tasks)
+    finally:  # one failed: the rest aren't waited for (nor left asking)
+        for t in tasks:
+            t.cancel()
     return list(out.values())
 
 
-def build_reports_run(rows: list[dict[str, Any]], days: list[int], sea: Callable[[float, float], bool] = at_sea
-                      ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def keep_at_sea(r: dict[str, Any]) -> dict[str, Any] | None:
+    """A record as a report if it is usable and at sea or on its shore."""
+    p = parse_report(r)
+    return p if p and at_sea(p["lat"], p["lon"]) else None
+
+
+def build_run(reports: list[dict[str, Any]], days: list[int]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The binary run (fields level, kind, age in days; a report only on the days whose
-    window holds it) and the reports themselves, in the run's point order."""
-    reports = [p for p in (parse_report(r) for r in rows) if p]
+    window holds it) from reports already kept, and those in it, in the run's point order."""
     lo, hi = (days[0] - (WINDOW_DAYS - 1) * DAY, days[-1] + DAY) if days else (0, 0)
-    reports = [p for p in reports if lo <= p["ts"] < hi]
-    reports = [p for p in reports if sea(p["lat"], p["lon"])]
-    reports.sort(key=lambda p: (p["ts"], p["lat"]))
+    reports = sorted((p for p in reports if lo <= p["ts"] < hi), key=lambda p: (p["ts"], p["lat"]))
     b = RunBuilder(days, ["level", "kind", "age"], [(p["lat"], p["lon"]) for p in reports], scale=[1, 1, 10])
     for i, p in enumerate(reports):
         day = p["ts"] // DAY * DAY
@@ -340,8 +368,25 @@ def build_reports_run(rows: list[dict[str, Any]], days: list[int], sea: Callable
     return run, reports
 
 
+def build_reports_run(rows: list[dict[str, Any]], days: list[int], sea: Callable[[float, float], bool] = at_sea
+                      ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """build_run from raw Open311 records: the usable ones at sea."""
+    reports = [p for p in (parse_report(r) for r in rows) if p and sea(p["lat"], p["lon"])]
+    return build_run(reports, days)
+
+
+def max_age_at(now: float) -> float:
+    """How long a reports run is good for: an hour while reports come (May to September);
+    out of season last summer's don't change, and they are on the disk anyway."""
+    return 3600 if 5 <= time.gmtime(now).tm_mon <= 9 else 7 * DAY
+
+
 class Reports:
-    """The reports overlay: its run, and the reports' details (notes) for a tap."""
+    """The reports overlay: its run, and the reports' details (notes) for a tap.
+
+    The season's reports at sea are kept on the disk as they were parsed ({"v", "year",
+    "from", "to", "reports"}), so each refresh only asks SYKE for the days since the last
+    one (and the day before it, for reports sent late), and last summer is asked for once."""
 
     def __init__(self, directory: Path, fetch_json: Callable[[str, Any], Awaitable[Any]] | None = None):
         self.path = directory / "points" / f"{REPORTS_ID}-details.json"
@@ -349,28 +394,47 @@ class Reports:
         self.details: list[dict[str, Any]] | None = None
         self.overlay: Overlay | None = None
 
-    async def points(self, session: aiohttp.ClientSession | None, now: float) -> dict[str, Any]:
-        get = self.fetch_json
-        if get is None:
-            text = _getter(session, None)
+    def _get(self, session: aiohttp.ClientSession | None) -> Callable[[str, Any], Awaitable[Any]]:
+        if self.fetch_json is not None:
+            return self.fetch_json
+        text = _getter(session, None)
 
-            async def get(url: str, params: Any) -> Any:
-                return json.loads(await text(url, params))
+        async def get(url: str, params: Any) -> Any:
+            body = await text(url, params)
+            return await asyncio.to_thread(json.loads, body)  # half a megabyte: not on the loop
+        return get
+
+    async def points(self, session: aiohttp.ClientSession | None, now: float) -> dict[str, Any]:
         start, end = season_window(now)
         days = list(range(start, min(end, int(now // DAY * DAY)) + 1, DAY))
-        rows = await fetch_reports(get, start - (WINDOW_DAYS - 1) * DAY, min(now, end + DAY))
-        run, reports = await asyncio.to_thread(build_reports_run, rows, days)
-        if self.overlay:  # out of season the last season doesn't change: a week before asking again
-            self.overlay.max_age = 3600 if 5 <= time.gmtime(now).tm_mon <= 9 else 7 * DAY
+        lo, hi = start - (WINDOW_DAYS - 1) * DAY, int(min(now, end + DAY))
+        year = time.gmtime(start).tm_year
+        store = await asyncio.to_thread(_read_json, self.path)
+        if (not isinstance(store, dict) or store.get("v") != STORE_V or store.get("year") != year
+                or store.get("from", hi) > lo):
+            store = {"v": STORE_V, "year": year, "from": lo, "to": lo, "reports": []}
+        asked = 0
+        if store["to"] < hi - 60:
+            a = max(lo, store["to"] - DAY)
+            new = await fetch_reports(self._get(session), a, hi, keep=keep_at_sea)
+            asked = len(new)
+            seen = {(p["ts"], p["lat"], p["lon"]) for p in new}
+            store["reports"] = sorted([p for p in store["reports"] if (p["ts"], p["lat"], p["lon"]) not in seen] + new,
+                                      key=lambda p: p["ts"])
+            store["to"] = hi
+            await asyncio.to_thread(_write_json, self.path, store)
+        run, reports = await asyncio.to_thread(build_run, store["reports"], days)
+        if self.overlay:
+            self.overlay.max_age = max_age_at(now)
         self.details = reports
-        await asyncio.to_thread(_write_json, self.path, reports)
-        _LOGGER.debug("Algae reports: %s at sea of %s, %s days", len(reports), len(rows), len(days))
+        _LOGGER.debug("Algae reports: %s in the run, %s new at sea, %s days", len(reports), asked, len(days))
         return run
 
     async def value(self, lat: float, lon: float, ts: int) -> dict[str, Any] | None:
         """The reports at a place (the panel sends a drawn report's own place), newest first."""
         if self.details is None:
-            self.details = await asyncio.to_thread(_read_json, self.path) or []
+            store = await asyncio.to_thread(_read_json, self.path)
+            self.details = store.get("reports", []) if isinstance(store, dict) else []
         day = ts // DAY * DAY
         lo, hi = day - (WINDOW_DAYS - 1) * DAY, day + DAY
         near = [p for p in self.details if abs(p["lat"] - lat) < 2e-4 and abs(p["lon"] - lon) < 4e-4
@@ -403,7 +467,7 @@ def register(overlays: Overlays, fetch: Getter | None = None,
     reports = Reports(overlays.dir, fetch_json)
     o = Overlay(
         id=REPORTS_ID, title="Blue-green algae (reports)", kind="points", points=reports.points,
-        value=reports.value, max_age=3600, refresh=3600, color="#16a34a", icon="algae", group="top",
+        value=reports.value, max_age=max_age_at(time.time()), refresh=3600, color="#16a34a", icon="algae", group="top",
         opacity=1.0, min_zoom=4, bounds=(59.0, 19.0, 66.0, 31.0), valid_for=DAY, frame_ms=700,
         sparse=True, attribution=REPORTS_ATTRIBUTION,
         note="Algae seen on the shore and at sea: SYKE's monitoring sites and people's reports, the "

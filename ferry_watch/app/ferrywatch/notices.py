@@ -522,6 +522,7 @@ class Notices:
         self.nautical = _Kept("nautical warnings", NAUTICAL_KEEP, self._nautical, parse_nautical)
         self.weather = _Kept("marine weather warnings", WEATHER_KEEP, self._cap, parse_cap)
         self._structures: list[dict[str, Any]] | None = None
+        self._structures_task: asyncio.Task | None = None
         self._structures_at = 0.0
         self.structures_error: str | None = None
         self._slock = asyncio.Lock()
@@ -565,6 +566,14 @@ class Notices:
         if bbox:
             params["bbox"] = ",".join(f"{v:.1f}" for v in bbox) + ",EPSG:3857"
         return await self._json(VAYLA_WFS, params)
+
+    def structures_cached(self) -> list[dict[str, Any]]:
+        """The bridges, locks and canals already read (for search), never waiting for a
+        download: the first call reads them from disk, or starts reading them."""
+        if self._structures is None or time.time() - self._structures_at >= STRUCTURES_KEEP:
+            if not (self._structures_task and not self._structures_task.done()):
+                self._structures_task = asyncio.create_task(self.structures())
+        return self._structures or []
 
     async def structures(self) -> list[dict[str, Any]]:
         """Opening bridges, locks and lock canals: all of Finland's, a few hundred at most,

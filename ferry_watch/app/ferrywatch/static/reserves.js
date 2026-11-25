@@ -175,7 +175,7 @@
           }
         }
         note = data.pending ? "Downloading the nature reserves here from OpenStreetMap…"
-          : data.error === "zoom in" ? "Zoom in to see them." : data.error ? `Couldn't reach OpenStreetMap just now (${data.error}).` : "";
+          : data.error === "zoom in" ? "Zoom in to see them." : data.error ? `Couldn't get them from OpenStreetMap just now: ${data.error}. Trying again by itself${data.reserves.length ? "; showing the saved ones" : ""}.` : "";
         if (data.pending) timer = setTimeout(load, 4000);
         else if (!data.error) box = pad;
       } catch (err) {
@@ -328,6 +328,24 @@
       return true;
     }
 
+    // A reserve picked in search: its outline and card, on any map and zoom. False when the
+    // NAS no longer has it.
+    async function show(id, bbox) {
+      let r = known.get(id);
+      if (!r) {
+        const f = (v) => Number(v).toFixed(4);
+        try {
+          const data = await api(`api/reserves?bbox=${f(bbox[0])},${f(bbox[1])},${f(bbox[2])},${f(bbox[3])}`);
+          for (const o of data.reserves || []) known.set(o.id, o);
+        } catch (err) { console.error(err); }
+        r = known.get(id);
+      }
+      if (!r) return false;
+      map.fitBounds(bounds(r), { padding: [30, 30], maxZoom: 14 });
+      pick(r, L.latLng(...labelPoint(r)), [r]);
+      return true;
+    }
+
     function setAll(on) {
       all = on;
       store.set("fw-reserves-all", on ? "1" : "0");
@@ -340,7 +358,7 @@
     load();
 
     return {
-      tap, setAll, load, clear,
+      tap, show, setAll, load, clear,
       get all() { return all; },
       get note() { return note; },
       get count() { return inView; },

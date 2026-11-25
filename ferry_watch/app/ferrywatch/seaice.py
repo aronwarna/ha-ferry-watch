@@ -59,8 +59,9 @@ def times_from_capabilities(xml: str, layer: str = CHART_LAYER, limit: int = DAY
 async def list_times(session: aiohttp.ClientSession | None, now: float) -> list[float]:
     if session is not None:
         try:
-            params = {"SERVICE": "WMTS", "REQUEST": "GetCapabilities", "VERSION": "1.0.0", "layer": CHART_LAYER}
-            async with session.get(CHART_URL, params=params, headers={"User-Agent": USER_AGENT},
+            # The product alone (about 0.2 MB, not every Copernicus layer: over 80 MB).
+            params = {"SERVICE": "WMTS", "REQUEST": "GetCapabilities", "VERSION": "1.0.0"}
+            async with session.get(f"{CHART_URL}/{CHART_LAYER.split('/')[0]}", params=params, headers={"User-Agent": USER_AGENT},
                                    timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
                 resp.raise_for_status()
                 found = times_from_capabilities(await resp.text())

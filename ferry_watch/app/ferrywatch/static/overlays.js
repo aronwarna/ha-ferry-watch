@@ -143,7 +143,7 @@
     pane.style.pointerEvents = "none";
 
     const entries = new Map(); // id -> { ov, on, opacity, frames, current, ... }
-    let loading = null, refreshTimer = 0, infoTimer = 0, menuShows = "";
+    let loading = null, refreshTimer = 0, infoTimer = 0, slowTimer = 0, menuShows = "";
     let skew = 0; // the add-on's clock minus this browser's, in seconds
     let t = null; // the time bar's time
     let playing = false, playTimer = 0;
@@ -215,12 +215,19 @@
           }
           render();
           // The menu is drawn again only when what it shows changed (not under a dragged slider).
-          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error, ov.check, ov.info]));
+          const shown = JSON.stringify(data.overlays.map((ov) => [ov.id, ov.title, ov.note, ov.error, ov.check, ov.info,
+            Boolean(ov.loading), Boolean(ov.times?.length)]));
           if (shown !== menuShows) { menuShows = shown; onChange(); }
           // A day picker whose newest day is still being read on the NAS: asked again soon.
           if (data.overlays.some((ov) => ov.info && ov.info.latest_ice === null && entries.get(ov.id)?.on)) {
             clearTimeout(infoTimer);
             infoTimer = setTimeout(() => load(), 8000);
+          }
+          // A slow source (a summer of algae reports) is still being fetched on the NAS: the
+          // list came without it, so the switch never waits; asked again until it is there.
+          clearTimeout(slowTimer);
+          if (data.overlays.some((ov) => ov.loading && entries.get(ov.id)?.on)) {
+            slowTimer = setTimeout(() => { if (!document.hidden) load(); }, 3000);
           }
           // The first list shows which switches this browser had on; their times come next.
           return [...entries.values()].some((e) => e.on && !e.ov.times);
@@ -289,13 +296,16 @@
     // drawn chart has no water (FerryFields.cutTileToWater). Past the source's deepest zoom
     // the tile is cut from its ancestor's picture, so the coast stays sharp however close.
     const SEA_RETRY_MS = 15000;
-    const pictures = new Map(); // url -> Promise<canvas|null>, the recoloured source tiles
-    function picture(src, id) {
-      let p = pictures.get(src);
-      if (!p) {
-        p = new Promise((resolve) => {
-          const img = new Image();
+    const pictures = new Map(); // url -> { p: Promise<canvas|null>, img, users: Set<layer> }, the recoloured source tiles
+    function picture(src, id, user) {
+      let entry = pictures.get(src);
+      if (!entry) {
+        const img = new Image();
+        entry = { img, users: new Set(), done: false };
+        entry.p = new Promise((resolve) => {
+          entry.resolve = resolve;
           img.onload = () => {
+            entry.done = true;
             const c = document.createElement("canvas");
             c.width = img.naturalWidth;
             c.height = img.naturalHeight;
@@ -307,22 +317,43 @@
               recolour(data);
               cx.putImageData(data, 0, 0);
             }
+            entry.img = null;
             resolve(c);
           };
-          img.onerror = () => resolve(null);
-          img.src = src;
+          img.onerror = () => { entry.done = true; entry.img = null; resolve(null); };
         });
-        pictures.set(src, p);
+        img.src = src;
+        pictures.set(src, entry);
         for (const k of pictures.keys()) {
           if (pictures.size <= 64) break;
-          pictures.delete(k);
+          if (pictures.get(k).done) pictures.delete(k);
+          else break;
         }
       }
-      return p;
+      entry.users.add(user);
+      return entry.p;
+    }
+    // A frame switched off or let go: the pictures only it was still waiting for are dropped
+    // (the browser stops fetching them) and not drawn.
+    function dropPictures(user) {
+      for (const [src, entry] of pictures) {
+        if (!entry.users.delete(user) || entry.done || entry.users.size) continue;
+        entry.img.onload = entry.img.onerror = null;
+        entry.img.src = "";
+        entry.done = true;
+        entry.resolve(null);
+        pictures.delete(src);
+      }
     }
     function seaTiles(url, opts, ov) {
       const native = ov.max_zoom;
+      let gone = false;
       const Layer = L.GridLayer.extend({
+        onRemove(map) {
+          gone = true;
+          dropPictures(this);
+          L.GridLayer.prototype.onRemove.call(this, map);
+        },
         createTile(coords, done) {
           const tile = document.createElement("canvas");
           const px = Math.min(3, Math.ceil(window.devicePixelRatio || 1)) * opts.tileSize;
@@ -330,7 +361,8 @@
           const draw = async () => {
             const d = 2 ** Math.max(0, coords.z - native), z = coords.z - Math.log2(d);
             const sx = Math.floor(coords.x / d), sy = Math.floor(coords.y / d);
-            const src = await picture(url.replace("{z}", z).replace("{x}", sx).replace("{y}", sy), ov.id);
+            const src = await picture(url.replace("{z}", z).replace("{x}", sx).replace("{y}", sy), ov.id, this);
+            if (gone) return "none";
             const ctx = tile.getContext("2d");
             ctx.clearRect(0, 0, px, px);
             if (!src) return "none";
@@ -344,7 +376,7 @@
             done(null, tile);
             // Chart data still downloading there: drawn again when it may have come.
             const again = (n) => setTimeout(() => {
-              if (tile.isConnected) draw().then((st) => { if (st === "pending" && n < 8) again(n + 1); });
+              if (!gone && tile.isConnected) draw().then((st) => { if (st === "pending" && n < 8) again(n + 1); });
             }, SEA_RETRY_MS * Math.min(4, n));
             if (state === "pending") again(1);
           }, (err) => done(err, tile));
@@ -382,10 +414,12 @@
 
     function pointsData(e, ft) {
       if (!e.data.has(ft)) {
-        e.data.set(ft, fetch(`api/overlay/${e.ov.id}/${ft}`)
+        // Switched off, the requests still on their way are dropped (see hide).
+        const ctl = e.abort || (e.abort = new AbortController());
+        e.data.set(ft, fetch(`api/overlay/${e.ov.id}/${ft}`, { signal: ctl.signal })
           .then((res) => (res.ok ? res.json() : null))
           .catch(() => null)
-          .then((data) => { e.loaded.add(ft); return data; }));
+          .then((data) => { if (!ctl.signal.aborted) e.loaded.add(ft); return data; }));
         for (const old of e.data.keys()) {
           if (e.data.size <= 4) break;
           if (old !== ft) { e.data.delete(old); e.loaded.delete(old); }
@@ -413,6 +447,7 @@
     function hide(e) {
       trim(e, []);
       e.current = e.visible = null;
+      if (e.abort) { e.abort.abort(); e.abort = null; e.data.clear(); e.loaded.clear(); }
       if (e.group) {
         e.group.remove();
         e.group = null;
@@ -504,7 +539,9 @@
 
     function render() {
       const times = barTimes();
-      const next = times.length ? nextTime(times) : null;
+      // The next frame loads out of sight only while playing: a paused bar (an algae
+      // summer shown at its last day) doesn't fetch and draw a second, unseen map.
+      const next = playing && times.length ? nextTime(times) : null;
       for (const e of entries.values()) {
         if (!e.on || !e.ov.times?.length) { hide(e); continue; }
         const vf = e.ov.valid_for;
@@ -605,6 +642,7 @@
       toggle.innerHTML = ICONS.pause;
       toggle.setAttribute("aria-label", "Pause");
       if (indexAt(times, t) === times.length - 1) setTime(times[0]);
+      else render(); // and the next frame starts loading
       tick();
     }
 
@@ -633,7 +671,7 @@
 
     // --- switches ---
 
-    async function setOn(id, on) {
+    function setOn(id, on) {
       const e = entries.get(id);
       if (!e) return;
       e.on = on;
@@ -655,7 +693,9 @@
         scheduleRefresh();
         return;
       }
-      await load(); // its times, and the bar's start
+      // Its times and the bar's start come in the background: the switch is never held
+      // (and can be switched off again at once) while a slow source loads.
+      load();
     }
 
     function setOpacity(id, value) {
@@ -706,7 +746,9 @@
         title: e.ov.title, color: e.ov.color, checked: e.on,
         note: e.on && e.ov.error
           ? `Couldn't reach it just now (${e.ov.error}). It tries again in a few minutes.`
-          : e.ov.note,
+          : e.on && !e.ov.times?.length && (e.ov.loading || e.ov.times == null)
+            ? "Loading… it shows up on the map by itself when it's here."
+            : e.ov.note,
         extra: e.on ? extras(e) : null,
         onChange: async (on) => { await setOn(e.ov.id, on); onChange(); },
       }));
@@ -823,7 +865,7 @@
     }
 
     load();
-    return { rows, fieldChips, problems, checks, load, setTime, play, pause, get time() { return t; }, entries };
+    return { rows, fieldChips, problems, checks, load, setTime, play, pause, setOn, get time() { return t; }, entries };
   }
 
   return { union, frameAt, indexAt, startTime, timeLabel, relative, renderers, create };

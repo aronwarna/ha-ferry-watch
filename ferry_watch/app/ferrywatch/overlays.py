@@ -45,6 +45,7 @@ MAX_BYTES = 80 * 1024 * 1024  # overlay tiles on disk, apart from the chart's 30
 MAX_TIMES = 500  # times listed per overlay (the newest)
 RETRY = 120  # s before a failed time list or points run is asked for again
 PRUNE_EVERY = 1800  # s between removals of expired frames while overlays are in use
+LIST_WAIT = 1.5  # s the list waits for a slow source before answering without its new times
 RUN_KEPT = 60  # s a points run stays parsed in memory after it was last asked for
 MISSING = -32768  # no value, in a binary run
 
@@ -221,6 +222,7 @@ class Overlays:
         self._locks: dict[str, asyncio.Lock] = {}
         self._pruned = time.time()  # housekeeping prunes at start; this is for in between
         self._prune_task: asyncio.Task | None = None
+        self._loads: dict[str, asyncio.Task] = {}  # time lists being fetched for the list
 
     def register(self, overlay: Overlay) -> None:
         if overlay.kind == "tiles" and (not overlay.url or not overlay.times):
@@ -291,12 +293,12 @@ class Overlays:
         now = now or time.time()
         shown = [o for o in self.registry.values() if not o.hidden and (not o.season or o.season(now))]
 
-        async def times(o: Overlay) -> list[int] | None:
-            return await self.times(o, now) if o.id in with_times else None
+        async def times(o: Overlay) -> tuple[list[int] | None, bool]:
+            return await self._times_soon(o, now) if o.id in with_times else (None, False)
 
-        all_times = await asyncio.gather(*(times(o) for o in shown))
+        got = await asyncio.gather(*(times(o) for o in shown))
         out = []
-        for o, times in zip(shown, all_times):
+        for o, (times, loading) in zip(shown, got):
             check = None
             run = self._runs.get(self._source(o).id) if o.check and times is not None else None
             if run and run.get("binary"):
@@ -320,10 +322,39 @@ class Overlays:
                 "refresh": o.refresh, "times": times, "error": self.error(o), "check": check,
                 "group": o.group, "icon": o.icon, "static": o.static, "has_value": o.value is not None,
                 "pickable": o.pickable, "info": info,
-                "sea": o.sea,
+                "sea": o.sea, "loading": loading,
                 "forecast_from": o.future_from() if o.future_from and times is not None else None,
             })
         return out
+
+    async def _times_soon(self, o: Overlay, now: float) -> tuple[list[int], bool]:
+        """The overlay's times within LIST_WAIT, else the ones known so far (none the first
+        time) and True: a slow source (a summer of algae reports) never holds up the list,
+        and so the panel's switch; its fetch goes on and the panel asks again shortly."""
+        task = self._loads.get(o.id)
+        if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+            task = asyncio.ensure_future(self.times(o, now))
+            self._loads[o.id] = task
+            task.add_done_callback(lambda t, i=o.id: self._loaded(i, t))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), LIST_WAIT), False
+        except asyncio.TimeoutError:
+            return await self._known_times(o), True
+
+    def _loaded(self, overlay_id: str, task: asyncio.Task) -> None:
+        if self._loads.get(overlay_id) is task:
+            del self._loads[overlay_id]
+        if not task.cancelled() and task.exception():  # times() keeps its own errors; this is a bug
+            _LOGGER.warning("Times of the %s overlay failed", overlay_id, exc_info=task.exception())
+
+    async def _known_times(self, o: Overlay) -> list[int]:
+        """What the overlay had before the fetch now running (a stale run on the disk too)."""
+        if o.kind != "points":
+            cached = self._times.get(o.id)
+            return cached[1] if cached else []
+        src = self._source(o)
+        run = self._runs.get(src.id) or await asyncio.to_thread(_read_run, self._run_path(src))
+        return list(run["times"]) if run else []
 
     async def _check_view(self, o: Overlay, run: dict[str, Any], now: float) -> dict[str, Any] | None:
         """A shared binary run as a check expects it: the overlay's fields, the hours
