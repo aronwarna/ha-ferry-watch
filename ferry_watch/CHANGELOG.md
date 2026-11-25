@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.67.2
+
+- **Ice chart says when it can't load**: if the NAS can't download FMI's ice chart, the
+  layer's switch now keeps saying why (it used to say it once and then show nothing at all),
+  the app's log says how many of the chart's pieces failed and why, and it tries again after
+  two minutes instead of ten.
+- **Much smaller download for the ice layers' day list**: the ice chart and sea ice now ask
+  Copernicus for their own product's list of days (about 0.2 MB). They used to get the list of
+  every Copernicus layer, over 80 MB, every three hours.
+- A day whose chart comes back without any sea in it is no longer kept as "no ice"; it's read
+  again later.
+
 ## 0.67.1
 
 - **Tidier map buttons on the phone**: one even column of square buttons down the right side

@@ -46,6 +46,9 @@ ID = "ice-chart"
 PRODUCT = "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_004"
 CONC_LAYER = f"{PRODUCT}/FMI-BAL-SEAICE_CONC-L4-NRT-OBS/ice_concentration"
 THICK_LAYER = f"{PRODUCT}/FMI-BAL-SEAICE_THICK-L4-NRT-OBS/ice_thickness"
+# The product's own capabilities (about 0.2 MB): the service's ?layer= is ignored, and
+# without the product in the path it lists every Copernicus layer (over 80 MB).
+CAPS_URL = f"{CHART_URL}/{PRODUCT}"
 ATTRIBUTION = "Ice chart: Finnish Ice Service (FMI) via E.U. Copernicus Marine Service"
 
 # The grid: zoom-6 web mercator tiles over the product's area (53-66 N, 9-31 E), about
@@ -71,6 +74,7 @@ CALIBRATE_N = 8  # point readings a day's grey is checked against
 TIMEOUT = 30
 PARALLEL = 4
 KEEP_DAYS = 40  # day grids kept on disk (two small PNGs each), the newest used first
+RETRY_S = 120  # a day that couldn't be read is asked for again after this
 
 # Drift ice classes as on the ice chart (WMO colour code for total concentration):
 # (from %, name, short, RGB). Below the first, open water: not coloured.
@@ -217,7 +221,7 @@ class Grids:
         self._locks: dict[int, asyncio.Lock] = {}
         self._open: dict[int, tuple[Any, Any, dict[str, Any]]] = {}  # day -> (conc, thick, meta), last two
         self.models: dict[str, str] = {}
-        self.failed: dict[int, float] = {}
+        self.failed: dict[int, tuple[float, Exception]] = {}  # day -> (when, why) of the last failed read
 
     async def _get(self, url: str) -> bytes:
         if self.session is None:
@@ -250,13 +254,15 @@ class Grids:
                 return hit
             path = self._path(day)
             if not (path / "meta.json").exists():
-                if time.time() - self.failed.get(day, 0) < 600:
-                    return None
+                when, why = self.failed.get(day, (0.0, None))
+                if why is not None and time.time() - when < RETRY_S:
+                    raise why  # still failing: said again (the panel shows it) without asking again
                 try:
                     await self._build(day)
-                except Exception:
-                    self.failed[day] = time.time()
+                except Exception as err:
+                    self.failed[day] = (time.time(), err)
                     raise
+                self.failed.pop(day, None)
             loaded = await asyncio.to_thread(_load, path)
             if loaded is None:
                 return None
@@ -270,16 +276,24 @@ class Grids:
         sem = asyncio.Semaphore(PARALLEL)
         style = GREY.format(top=top)
 
+        errors: list[str] = []
+
         async def one(col: int, row: int) -> tuple[tuple[int, int], bytes | None]:
             url = TILE_URL.format(layer=layer, style=style, z=GRID_Z, x=col, y=row, time=iso(day))
             async with sem:
                 try:
                     return (col, row), await self.get(url)
                 except Exception as err:  # noqa: BLE001 - one missing tile leaves a hole, no more
+                    errors.append(f"{type(err).__name__}: {err}" if str(err) else type(err).__name__)
                     _LOGGER.debug("Ice chart tile %s %d/%d failed: %s", name, col, row, err)
                     return (col, row), None
-        got = await asyncio.gather(*(one(c, r) for r in ROWS for c in COLS))
-        return dict(got)
+        got = dict(await asyncio.gather(*(one(c, r) for r in ROWS for c in COLS)))
+        if errors:
+            _LOGGER.warning("Ice chart %s for %s: %d of %d tiles failed (%s)", name, iso(day)[:10],
+                            len(errors), len(got), errors[0])
+        if errors and len(errors) == len(got):
+            raise ConnectionError(f"Copernicus didn't answer: {errors[0]}")
+        return got
 
     async def _calibrate(self, name: str, day: int, tiles: dict[tuple[int, int], bytes | None]) -> str:
         """Which grey model fits: a few pixels with different greys, read as numbers from
@@ -316,6 +330,10 @@ class Grids:
             model = await self._calibrate(name, day, tiles)
             out[name] = await asyncio.to_thread(decode_tiles, tiles, lut(model, LAYERS[name][1]))
         meta = {"day": iso(day)[:10], "made": int(time.time()), **await asyncio.to_thread(stats, out["conc"], out["thick"])}
+        if not meta["sea_px"]:
+            # Pictures came but held no sea at all: something is off with the answer, so the
+            # day is not kept as "no ice" for good; asked again later.
+            raise ValueError(f"the ice chart for {meta['day']} came back empty")
         path = self._path(day)
         tmp = path.with_name(path.name + ".tmp")
         await asyncio.to_thread(_write_day, tmp, path, out, meta)
@@ -578,10 +596,10 @@ async def list_days(session: aiohttp.ClientSession | None, now: float, get: Get 
     """The days the service has, of this and last winter."""
     try:
         if get is not None:
-            xml = (await get(CHART_URL + "?SERVICE=WMTS&REQUEST=GetCapabilities&VERSION=1.0.0&layer=" + PRODUCT)).decode()
+            xml = (await get(CAPS_URL + "?SERVICE=WMTS&REQUEST=GetCapabilities&VERSION=1.0.0")).decode()
         elif session is not None:
-            params = {"SERVICE": "WMTS", "REQUEST": "GetCapabilities", "VERSION": "1.0.0", "layer": PRODUCT}
-            async with session.get(CHART_URL, params=params, headers={"User-Agent": USER_AGENT},
+            params = {"SERVICE": "WMTS", "REQUEST": "GetCapabilities", "VERSION": "1.0.0"}
+            async with session.get(CAPS_URL, params=params, headers={"User-Agent": USER_AGENT},
                                    timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as resp:
                 resp.raise_for_status()
                 xml = await resp.text()

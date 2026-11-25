@@ -142,3 +142,35 @@ def test_sim_capabilities_parse():
     info = json.loads(asyncio.run(fake_icechart_get(
         ic.INFO_URL.format(layer=ic.CONC_LAYER, style="x", z=6, x=36, y=18, i=10, j=10, time="2026-02-25T00:00:00Z"))))
     assert "value" in info["features"][0]["properties"]
+
+
+def test_unreachable_service_keeps_saying_why(tmp_path):
+    """No tile at all (the NAS can't reach Copernicus): the error is raised, and raised again
+    while waiting to retry, so the layer's switch keeps showing it instead of nothing."""
+    asked = []
+
+    async def down(url: str) -> bytes:
+        asked.append(url)
+        raise OSError("Cannot connect to host wmts.marine.copernicus.eu:443")
+
+    chart = ic.IceChart(tmp_path, None, None, down)
+    day = 1767916800  # 9 Jan 2026
+    for _ in range(2):
+        try:
+            asyncio.run(chart.tile(day, 6, 36, 16))
+        except ConnectionError as err:
+            assert "Cannot connect" in str(err)
+        else:
+            raise AssertionError("expected an error")
+    assert len(asked) == len(ic.COLS) * len(ic.ROWS)  # the second time not asked again
+
+
+def test_capabilities_asked_for_the_product_only():
+    asked = []
+
+    async def get(url: str) -> bytes:
+        asked.append(url)
+        return b""
+
+    asyncio.run(ic.list_days(None, 1767916800, get))
+    assert asked[0].startswith(f"{ic.CHART_URL}/{ic.PRODUCT}?")
