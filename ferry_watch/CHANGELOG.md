@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.68.0
+
+- **Then & now is now Historic maps**, with a calmer, clearer bar: Aerial photos and Old maps
+  tabs that count what covers the place you're looking at, big previous/next buttons round the
+  year, and a timeline drawn to scale where each available photo is a tick and each map series a
+  bar across the years it was drawn. Drag the knob or tap a tick to jump.
+- **Only what covers your view**: previous/next and the timeline offer just the photos and maps
+  that actually have a picture in the middle of the screen at this zoom. Where nothing fits you
+  get the nearest places that have something, and a dashed line shows where the shown year ends.
+- **No more white boxes or black frames**: the photo and map services' white backgrounds and the
+  black collars baked into the photo mosaics are cut away on the add-on, so old pictures blend
+  into today's map instead of sitting in rectangles.
+- **Compare with what you like**: Satellite, Map or Terrain today, or any other year here.
+  Side by side puts a slider between the two; Fade blends them.
+- **Much more coverage**: the Land Survey's old maps for all of Finland (Senate atlas 1871-1919,
+  parish maps, Russian topographic maps, basic maps per decade 1947-1997 and more, Kirkkonummi
+  and Porkkala included), Vantaa's King's map 1776 and old Vantaa photos and maps, more Helsinki
+  maps, Turku photos back to 1939 and its address and office maps, and Estonia's old maps and
+  photos (Soviet maps and sea charts, 1993 on photos), reprojected from the Estonian grid.
+- Old tiles from earlier versions are cleared once, so nothing is shown with the old frames.
+
 ## 0.67.1
 
 - **Tidier map buttons on the phone**: one even column of square buttons down the right side

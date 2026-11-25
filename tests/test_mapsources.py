@@ -55,14 +55,25 @@ def test_rules_pick_years_and_one_photo_per_year(tmp_path: Path):
 def test_known_layers_work_without_capabilities():
     rows = mapsources.known_layers(ESPOO)
     years = sorted(r["year"] for r in rows if r["group"] == "photo")
-    assert years[0] == 1969 and years[-1] == 2026 and len(years) == 16
+    assert years[0] == 1950 and years[-1] == 2026 and len(years) == 17
 
 
-def test_old_map_rule_reads_titles():
-    found = [{"name": "paituli:x1", "title": "Pitäjänkartta 1935"}, {"name": "paituli:corine", "title": "Corine"},
-             {"name": "paituli:y", "title": "Peruskartta 1:20 000 (1960)"}]
-    rows = mapsources.layers_from_names(MML, found)
-    assert {(r["label"], r["year"]) for r in rows} == {("Parish map", 1935), ("Basic map", 1960)}
+def test_old_map_series_match_exact_names():
+    found = [{"name": "mml_pitajakartta_20k_1912-1968", "title": "x"}, {"name": "corine", "title": "Corine"},
+             {"name": "mml_topo_20k_1960-1969", "title": "y"}, {"name": "mml_yleiskartta_400k_1863-1879", "title": "z"}]
+    rows = {r["label"]: r for r in mapsources.layers_from_names(MML, found)}
+    assert set(rows) == {"Parish map 1:20 000", "Basic map 1:20 000", "General map 1:400 000"}
+    assert (rows["Parish map 1:20 000"]["year"], rows["Parish map 1:20 000"]["year_to"]) == (1912, 1968)
+    assert rows["General map 1:400 000"]["max_zoom"] < rows["Parish map 1:20 000"]["max_zoom"]
+    # every known series name has its own rule, so the fallback lists all of them
+    assert len(mapsources.known_layers(MML)) == len(MML["known"])
+
+
+def test_years_and_base_names():
+    assert mapsources._years("x", "Pitäjänkartta 1912-1968") == (1912, 1968)
+    assert mapsources._years("avoindata:Ortoilmakuva_2019_20cm", "") == (2019, None)  # 20 cm is not a year
+    assert mapsources._years("a", "Senaatinkartta 192x") == (1920, 1929)
+    assert mapsources._base("avoindata:Ortoilmakuva_2019_20cm") == mapsources._base("avoindata:Ortoilmakuva_1932")
 
 
 def test_tile_urls_and_coverage(tmp_path):
@@ -79,7 +90,12 @@ def test_tile_urls_and_coverage(tmp_path):
     assert ms.covers(lid, 14, 9300, 4790) is False      # far south at sea
     assert ms.covers("nope", 14, 1, 1) is None
     url = ms.tile_urls(ms._layers[lid], 14, 9318, 4739)[0]
-    assert "LAYERS=Ortokartta_1969" in url and "SRS=EPSG:3857" in url and "FORMAT=image/jpeg" in url
+    assert "LAYERS=Ortokartta_1969" in url and "SRS=EPSG:3857" in url and "FORMAT=image/png" in url
+    assert "TRANSPARENT=TRUE" in url
+    hel = ms.tile_urls(ms._layers["helsinki-ortoilmakuva-1932"], 14, 9318, 4739)[0]
+    assert "FORMAT=image/vnd.jpeg-png" in hel  # see-through outside the photo, not white
+    est = next(r for r in ms._layers.values() if r["source"] == "estonia-old" and r["group"] == "photo")
+    assert "SRS=EPSG:3301" in ms.tile_urls(est, 12, 2312, 1170)[0]
     prop = ms.tile_urls(ms._layers["property"], 15, 18640, 9480)
     assert "api-key=KEY" in prop[0] and "kapsi" in prop[1]
     names = {r["id"] for r in ms.listing()["layers"]}
@@ -118,17 +134,15 @@ def test_daily_and_latest_only():
 def test_wider_photo_sources():
     from ferrywatch import simmaps
     got = {}
-    for sid in ("hsy-region", "turku", "tampere", "oulu", "estonia-old", "mml-old"):
+    for sid in ("hsy-region", "turku", "oulu", "estonia-old", "vantaa"):
         src = next(s for s in mapsources.SOURCES if s["id"] == sid)
         rows = mapsources.layers_from_names(src, simmaps.fake_capabilities(src))
         got[sid] = sorted((r["group"], r["year"]) for r in rows)
     assert got["hsy-region"] == [("photo", 2015), ("photo", 2019), ("photo", 2023)]  # no false-colour
-    assert ("photo", 1939) in got["turku"] and len(got["turku"]) == 3
-    assert got["tampere"] == [("photo", 1946), ("photo", 1966)]
-    assert got["estonia-old"] == [("map", 1900), ("map", 1930), ("photo", 1993), ("photo", 2005)]
-    assert ("photo", 2009) in got["mml-old"] and sum(1 for g in got["mml-old"] if g[0] == "photo") == 1
-    turku = next(s for s in mapsources.SOURCES if s["id"] == "turku")
-    assert len(mapsources.known_layers(turku)) == 7
+    assert ("photo", 1939) in got["turku"] and ("map", 1950) in got["turku"]
+    assert ("photo", 1993) in got["estonia-old"] and ("map", 1894) in got["estonia-old"]
+    assert ("map", 1776) in got["vantaa"] and ("photo", 1954) in got["vantaa"]
+    assert not any(s["id"] == "tampere" for s in mapsources.SOURCES)
 
 
 def test_wayback_and_yearly_sources():

@@ -11,14 +11,22 @@ Each source is one of:
   from its GetCapabilities once a day: every layer whose name matches one of the
   source's rules becomes a layer here, with the year the rule reads from its name or
   title. `known` lists layers to offer even before (or without) a GetCapabilities
-  answer, so a service whose list can't be read still works.
+  answer, so a service whose list can't be read still works. `format` is what to ask
+  for (GeoServer's image/vnd.jpeg-png keeps tiles small and see-through at the edges),
+  `opaque` marks a service that answers white outside its pictures, and `crs`
+  EPSG:3301 one that draws only in Estonia's grid (the NAS warps its pictures).
 - "xyz": a plain tile template ({z}/{x}/{y}, {key} for the Land Survey's API key).
   A list of templates is tried in order (the first that answers wins).
 - "arcgis": an ArcGIS MapServer, drawn through its export call.
 
 Layers come in three groups, which decide where the panel shows them:
-"photo" (old aerial photos) and "map" (old maps) are the years of the Then & now
+"photo" (old aerial photos) and "map" (old maps) are the years of the Historic
 map type; "overlay" layers are switches in Layers, on top of any map type.
+
+Old photos and maps get two more steps (histclean.py): once per layer, where it really
+has picture (its coverage, which the panel uses to offer only the years that show
+where you look); and for each tile, the white or black "no picture" areas at its edges
+made see-through.
 
 Historical pictures don't change, so tiles are kept for half a year, in their own
 folder with their own size limit (they never push chart tiles out).
@@ -27,10 +35,13 @@ folder with their own size limit (they never push chart tiles out).
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import logging
 import math
 import os
 import re
+import shutil
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -40,7 +51,10 @@ from urllib.parse import quote
 
 import aiohttp
 
+from PIL import Image
+
 from .config import USER_AGENT
+from .histclean import Cover, box_merc, clean_tile, encode, footprint, lest_box_for, overview_size, reproject_lest, tile_merc
 from .tilecache import TileCache
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,144 +64,211 @@ TILE_MAX_AGE = 182 * 86400
 CACHE_BYTES = 600 * 1024 * 1024
 DISCOVER_EVERY = 86400
 CAPS_MAX_BYTES = 40 * 1024 * 1024  # a GetCapabilities answer larger than this is cut off
+TILE_REV = "h2"        # old photo and map tiles as cleaned by histclean (0.68)
+COVER_REV = 1
+COVER_RETRY = 6 * 3600  # a layer whose coverage couldn't be worked out is tried again after this
 
 # Year ranges a rule's year must fall in (anything else in a name is not a year).
 YEAR_RE = re.compile(r"(?<!\d)(1[5-9]\d\d|20[0-4]\d)(?!\d)")
 
-ESPOO_BOX = (60.04, 24.47, 60.37, 24.86)     # south, west, north, east
-HELSINKI_BOX = (60.06, 24.78, 60.31, 25.27)
-VANTAA_BOX = (60.24, 24.68, 60.42, 25.20)
+ESPOO_BOX = (60.04, 24.47, 60.41, 24.91)     # south, west, north, east
+HELSINKI_BOX = (60.01, 24.76, 60.32, 25.29)
+VANTAA_BOX = (60.21, 24.64, 60.43, 25.36)
 FINLAND_BOX = (59.3, 19.0, 70.2, 31.7)
 NORTH_BOX = (53.0, 9.0, 71.0, 33.0)          # Finland, the Baltic and its other shores
+ESTONIA_BOX = (57.5, 21.7, 59.75, 28.3)
+
+GEOSERVER = "image/vnd.jpeg-png"  # GeoServer: JPEG where the picture is whole, PNG with see-through at its edges
+
+
+def _series(name: str, label: str, y0: int, y1: int | None, z0: int, z1: int, group: str = "map") -> dict:
+    """A rule for one named layer that is a whole map series (several years of sheets)."""
+    return {"match": f"^{re.escape(name)}$", "group": group, "label": label, "year": y0, "year_to": y1,
+            "min_zoom": z0, "max_zoom": z1}
+
 
 # fmt: off
 SOURCES: list[dict[str, Any]] = [
     {
+        # Layer names and areas checked against the service's own list, Nov 2026. It can't draw
+        # see-through: outside its pictures it answers white, which histclean removes.
         "id": "espoo", "name": "Espoo", "kind": "wms",
         "url": "https://kartat.espoo.fi/TeklaOgcWeb/WMS.ashx",
         "attribution": "© Espoon kaupunki (CC BY 4.0)",
-        "box": ESPOO_BOX, "max_zoom": 19,
+        "box": ESPOO_BOX, "max_zoom": 19, "format": "image/png", "opaque": True,
         "rules": [
-            # Ortokartta_1969 … Ortokartta_2024; plain "Ortokartta" is the newest (2026).
-            {"match": r"^Ortokartta_(\d{4})$", "group": "photo", "format": "image/jpeg"},
-            {"match": r"^Ortokartta$", "group": "photo", "year": 2026, "format": "image/jpeg"},
-            # Guide maps of 1958, 1973, 1976 (names not known yet: any guide map with a year).
-            {"match": r"(?i)opas.*\d{4}|\d{4}.*opas|kartta.*_19\d\d", "group": "map"},
-            {"match": r"^Opaskartta$", "group": "map", "year": 2026, "label": "Guide map"},
+            # Ortokartta_1950 … Ortokartta_2024; plain "Ortokartta" is the newest (2026).
+            {"match": r"^Ortokartta_(\d{4})$", "group": "photo"},
+            {"match": r"^Ortokartta$", "group": "photo", "year": 2026},
+            {"match": r"^Opaskartta_(19\d\d)$", "group": "map", "label": "Guide map of Espoo"},
+            {"match": r"^Kartta_1958$", "group": "map", "label": "Map of Espoo"},
         ],
         "known": ["Ortokartta", "Ortokartta_2024", "Ortokartta_2023", "Ortokartta_2021", "Ortokartta_2019",
                   "Ortokartta_2017", "Ortokartta_2015", "Ortokartta_2013", "Ortokartta_2011", "Ortokartta_2009",
                   "Ortokartta_2007", "Ortokartta_2005", "Ortokartta_2001", "Ortokartta_1996", "Ortokartta_1976",
-                  "Ortokartta_1969", "Opaskartta"],
+                  "Ortokartta_1969", "Ortokartta_1950", "Opaskartta_1973", "Opaskartta_1976", "Kartta_1958"],
     },
     {
         "id": "helsinki", "name": "Helsinki", "kind": "wms",
         "url": "https://kartta.hel.fi/ws/geoserver/avoindata/wms",
         "attribution": "© Helsingin kaupunki (CC BY 4.0)",
-        "box": HELSINKI_BOX, "max_zoom": 19,
+        "box": HELSINKI_BOX, "max_zoom": 19, "format": GEOSERVER,
         "rules": [
             # One picture per year: plain names first, then the coarsest resolution.
-            {"match": r"^(?:avoindata:)?Ortoilmakuva_(\d{4})(?:_(\d+)cm)?$", "group": "photo", "format": "image/jpeg"},
-            {"match": r"(?i)^(?:avoindata:)?(Pitajakuvauskartta|Rekognosointikartta|Senaatinkartta|Plan_af_Helsingfors"
-                      r"|Kartta_Helsingin|Helsingin_kaupunki_19|Helsingin_kaupungin_kartta)", "group": "map"},
-            {"match": r"(?i)^(?:avoindata:)?.*opaskartta.*_(19\d\d)$", "group": "map"},
+            {"match": r"^avoindata:Ortoilmakuva_(\d{4})(?:_(\d+)cm)?$", "group": "photo"},
+            {"match": r"^avoindata:Plan_ofver_Helsingfors_stad_i_borjan_af_1800_talet$", "group": "map", "year": 1800,
+             "label": "Plan of Helsingfors"},
+            {"match": r"^avoindata:(Pitajakuvauskartta_1749|Rekognosointikartta_1780_1782|Asemakaavakartta_\d{4}"
+                      r"|Senaatinkartta_1870|Plan_af_Helsingfors_1900|Kartta_Helsingin_kaupungista_ja_sen_alueista_1909"
+                      r"|Helsingin_kaupunki_1917_1918|Helsingin_kaupungin_kartta_1925|Helsinki_1940"
+                      r"|Helsingin_matkailijakartta_1952|Helsingin_keskustan_kartta_1962|Opaskartta_19\d\d)$", "group": "map"},
         ],
         "known": ["avoindata:Ortoilmakuva_" + y for y in (
                       "1932", "1943", "1950", "1954", "1956", "1961", "1964", "1969", "1972", "1976", "1987",
-                      "1988", "1991", "1993", "1995", "1996", "1997", "1998", "2001", "2005", "2010", "2012",
-                      "2014", "2016", "2018", "2020")]
+                      "1988", "1991", "1993", "1995", "1996", "1997", "1998", "2001", "2005", "2010", "2011",
+                      "2012", "2013", "2014", "2016", "2018", "2020")]
                  + ["avoindata:" + n for n in (
-                      "Pitajakuvauskartta_1749", "Rekognosointikartta_1780_1782", "Senaatinkartta_1870",
-                      "Plan_af_Helsingfors_1900", "Kartta_Helsingin_kaupungista_ja_sen_alueista_1909",
-                      "Helsingin_kaupunki_1917_1918", "Helsingin_kaupungin_kartta_1925")],
+                      "Pitajakuvauskartta_1749", "Rekognosointikartta_1780_1782", "Asemakaavakartta_1820",
+                      "Asemakaavakartta_1838", "Senaatinkartta_1870", "Asemakaavakartta_1878", "Plan_af_Helsingfors_1900",
+                      "Kartta_Helsingin_kaupungista_ja_sen_alueista_1909", "Helsingin_kaupunki_1917_1918",
+                      "Helsingin_kaupungin_kartta_1925", "Helsinki_1940", "Helsingin_matkailijakartta_1952",
+                      "Helsingin_keskustan_kartta_1962", "Opaskartta_1965", "Opaskartta_1971", "Opaskartta_1977",
+                      "Opaskartta_1983", "Opaskartta_1989", "Opaskartta_1999")],
     },
     {
         "id": "vantaa", "name": "Vantaa", "kind": "wms",
         "url": "https://gis.vantaa.fi/geoserver/ows",
         "attribution": "© Vantaan kaupunki (CC BY 4.0)",
-        "box": VANTAA_BOX, "max_zoom": 19, "discover_only": True,
+        "box": VANTAA_BOX, "max_zoom": 19, "format": GEOSERVER,
         "rules": [
-            {"match": r"(?i)orto.*(?:19\d\d|200\d)", "group": "photo", "format": "image/jpeg"},
-            {"match": r"(?i)(kartta|map|kartasto).*1[789]\d\d", "group": "map"},
+            {"match": r"^historia:orto_(\d{4})$", "group": "photo"},
+            {"match": r"^historia:kuninkaankartta$", "group": "map", "year": 1776, "year_to": 1805, "label": "King's map"},
+            {"match": r"^historia:(?:pitajankartta|peruskartta|osoitekartta|opaskartta|senaattikartta)_?(\d{4})$",
+             "group": "map"},
         ],
+        "known": ["historia:orto_" + y for y in (
+                      "1954", "1976", "1986", "1996", "1998", "2001", "2004", "2007", "2009", "2011", "2013", "2015",
+                      "2017", "2019", "2021", "2023")]
+                 + ["historia:" + n for n in (
+                      "kuninkaankartta", "pitajankartta_1749", "senaattikartta_1872", "pitajankartta_1933",
+                      "osoitekartta1958", "peruskartta_1958", "peruskartta_1967", "opaskartta1969", "opaskartta1976",
+                      "opaskartta1982", "opaskartta1988", "opaskartta1996", "opaskartta2004")],
     },
     {
-        # The Land Survey's old printed maps (1860s to 2020, ~30,000 sheets, CC BY 4.0),
-        # georeferenced and published through CSC's Paituli. Which of them Paituli's WMS
-        # draws is read from its GetCapabilities.
+        # The Land Survey's old printed map series (1860s on), georeferenced and served by
+        # CSC's Paituli: the whole country, so also Kirkkonummi, Porkkala and the archipelago.
         "id": "mml-old", "name": "Land Survey old maps", "kind": "wms",
         "url": "https://paituli.csc.fi/geoserver/paituli/wms",
         "attribution": "Old maps © Maanmittauslaitos (CC BY 4.0), via CSC Paituli",
-        "box": FINLAND_BOX, "max_zoom": 17, "discover_only": True,
+        "box": FINLAND_BOX, "max_zoom": 17, "format": GEOSERVER,
         "rules": [
-            {"match": r"(?i)(vanha|old_?map|histor|senaat|pitajan|pitäjän|venal|venäl|russian|kalmberg"
-                      r"|yleiskart|peruskart|taloudellinen|topografinen)", "group": "map",
-             "title_too": True, "need_year": True},
-            # Older vintages of the Land Survey's own orthophotos, where Paituli's WMS draws them.
-            {"match": r"(?i)orto", "exclude": r"(?i)vaara|vääräv|cir|infra|index|ruudu|lehtijako", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
+            _series("mml_ven_topo_21k_1871_1919", "Senate atlas 1:21 000", 1871, 1919, 9, 17),
+            _series("mml_ven_topo_42k_1870_1944", "Russian topographic map 1:42 000", 1870, 1944, 8, 15),
+            _series("mml_ven_topo_42k_192x", "Russian topographic map 1:42 000", 1920, 1929, 8, 15),
+            _series("mml_ven_topo_84k_1916-1917", "Russian topographic map 1:84 000", 1916, 1917, 7, 14),
+            _series("mml_yleiskartta_400k_1863-1879", "General map 1:400 000", 1863, 1879, 5, 11),
+            _series("mml_yleiskartta_400k_1880-1899", "General map 1:400 000", 1880, 1899, 5, 11),
+            _series("mml_yleiskartta_400k_1900-1919", "General map 1:400 000", 1900, 1919, 5, 11),
+            _series("mml_yleiskartta_400k_1920-1939", "General map 1:400 000", 1920, 1939, 5, 11),
+            _series("mml_yleiskartta_400k_1940-1972", "General map 1:400 000", 1940, 1972, 5, 11),
+            _series("mml_taloudellinen_100k_1911-1970", "Economic map 1:100 000", 1911, 1970, 7, 14),
+            _series("mml_pitajakartta_20k_1912-1968", "Parish map 1:20 000", 1912, 1968, 9, 17),
+            _series("mml_topo_50k_1922-1946", "Topographic map 1:50 000", 1922, 1946, 8, 15),
+            _series("mml_topo_20k_1924-1948", "Topographic map 1:20 000", 1924, 1948, 9, 17),
+            _series("mml_topo_100k_1928_1947", "Topographic map 1:100 000", 1928, 1947, 7, 14),
+            _series("mml_sverige-finland_100k_1944", "Sverige-Finland map 1:100 000", 1944, None, 7, 14),
+            _series("mml_topo_20k_1947-1959", "Basic map 1:20 000", 1947, 1959, 9, 17),
+            _series("mml_topo_100k_1948_1989", "Topographic map 1:100 000", 1948, 1989, 7, 14),
+            _series("mml_topo_20k_1960-1969", "Basic map 1:20 000", 1960, 1969, 9, 17),
+            _series("mml_topo_50k_1964-2006", "Terrain map 1:50 000", 1964, 2006, 8, 15),
+            _series("mml_topo_20k_1970-1979", "Basic map 1:20 000", 1970, 1979, 9, 17),
+            _series("mml_perus_50k_1972-1991", "Basic map 1:50 000", 1972, 1991, 8, 15),
+            _series("mml_topo_20k_1980-1997", "Basic map 1:20 000", 1980, 1997, 9, 17),
+            _series("mml_maastor_20k_1993-2006", "Terrain map 1:20 000", 1993, 2006, 9, 17),
+            _series("mml_peruskartta_2010", "Basic map 1:20 000", 2010, None, 9, 17),
         ],
+        "known": ["mml_ven_topo_21k_1871_1919", "mml_ven_topo_42k_1870_1944", "mml_ven_topo_42k_192x",
+                  "mml_ven_topo_84k_1916-1917", "mml_yleiskartta_400k_1863-1879", "mml_yleiskartta_400k_1880-1899",
+                  "mml_yleiskartta_400k_1900-1919", "mml_yleiskartta_400k_1920-1939", "mml_yleiskartta_400k_1940-1972",
+                  "mml_taloudellinen_100k_1911-1970", "mml_pitajakartta_20k_1912-1968", "mml_topo_50k_1922-1946",
+                  "mml_topo_20k_1924-1948", "mml_topo_100k_1928_1947", "mml_sverige-finland_100k_1944",
+                  "mml_topo_20k_1947-1959", "mml_topo_100k_1948_1989", "mml_topo_20k_1960-1969", "mml_topo_50k_1964-2006",
+                  "mml_topo_20k_1970-1979", "mml_perus_50k_1972-1991", "mml_topo_20k_1980-1997",
+                  "mml_maastor_20k_1993-2006", "mml_peruskartta_2010"],
     },
     {
         # The capital region's joint photo flights (HSY): also Kirkkonummi with Porkkala, Kerava,
-        # Järvenpää, Tuusula, Nurmijärvi and Sipoo, 2015 onwards. Layer names are read from the list.
+        # Järvenpää, Tuusula, Nurmijärvi and Sipoo, 2015 onwards.
         "id": "hsy-region", "name": "Helsinki region", "kind": "wms",
         "url": "https://kartta.hsy.fi/geoserver/wms",
         "attribution": "Orthophoto © the region's municipalities, HSY, HSL and the Defence Forces (CC BY 4.0)",
-        "box": (59.90, 24.20, 60.65, 25.50), "max_zoom": 19, "discover_only": True,
+        "box": (59.87, 24.22, 60.61, 25.54), "max_zoom": 19, "format": GEOSERVER,
         "rules": [
-            {"match": r"(?i)orto.*(20\d\d)", "exclude": r"(?i)cir|vaara|vääräv|infra|nir", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
+            {"match": r"(?i)^taustakartat_ja_aluejaot:ortoilmakuva_?(20\d\d)$", "group": "photo"},
         ],
+        "known": ["taustakartat_ja_aluejaot:ortoilmakuva2015", "taustakartat_ja_aluejaot:Ortoilmakuva_2017",
+                  "taustakartat_ja_aluejaot:Ortoilmakuva_2019", "taustakartat_ja_aluejaot:Ortoilmakuva_2021",
+                  "taustakartat_ja_aluejaot:Ortoilmakuva_2023"],
     },
     {
         "id": "turku", "name": "Turku", "kind": "wms",
         "url": "https://turku.asiointi.fi/teklaogcweb/wms.ashx",
         "attribution": "© Turun kaupunki (CC BY 4.0)",
-        "box": (60.28, 21.90, 60.62, 22.75), "max_zoom": 19,
+        "box": (60.19, 21.50, 60.91, 23.18), "max_zoom": 19, "format": "image/png", "opaque": True,
         "rules": [
-            {"match": r"(?i)ilmakuva.*\d{4}|orto.*\d{4}", "exclude": r"(?i)vaara|vääräv|cir", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
-            {"match": r"(?i)(kartta|opas|asemakaava).*1[6-9]\d\d", "group": "map", "title_too": True, "year_required": True},
+            {"match": r"(?i)ilmakuva", "exclude": r"(?i)vaaravari|vääräväri", "group": "photo", "year_required": True},
+            {"match": r"(?i)^Turun Osoitekartta (\d{4})$", "group": "map", "label": "Address map of Turku"},
+            {"match": r"(?i)^Virastokartta (\d{4})-(\d\d)$", "group": "map", "label": "Office map of Turku"},
         ],
-        "known": ["Ilmakuva 2025", "Ilmakuva 2023", "Ilmakuva 2021", "Turunseutu ilmakuva 2018",
-                  "Turunseutu ilmakuva 2013", "Turku ilmakuva 2010", "Turku ilmakuva 2005"],
-    },
-    {
-        "id": "tampere", "name": "Tampere", "kind": "wms",
-        "url": "https://geodata.tampere.fi/geoserver/ows",
-        "attribution": "© Tampereen kaupunki (CC BY 4.0)",
-        "box": (61.35, 23.45, 61.85, 24.15), "max_zoom": 19, "discover_only": True,
-        "rules": [
-            {"match": r"(?i)(ilmakuva|orto).*(19|20)\d\d", "exclude": r"(?i)vaara|vääräv|cir|index|ruudu", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
-            {"match": r"(?i)(kartta|opas|asemakaava).*1[6-9]\d\d", "group": "map", "title_too": True, "year_required": True},
-        ],
+        "known": ["Ilmakuva 2025", "Ilmakuva 2023", "Ilmakuva 2022 True ortho", "Kaarina Paimio Lieto ilmakuva 2022",
+                  "Ilmakuva 2021", "Turunseutu ilmakuva 2018", "Turunseutu ilmakuva 2013", "Turku ilmakuva Ruissalo 2011",
+                  "Turku ilmakuva 2010", "Piikkio ilmakuva 2008", "Kaarina ilmakuva 2007", "Turku ilmakuva 2005",
+                  "Turunseutu ilmakuva 2002", "Turku ilmakuva 1998", "Turku ilmakuva 1986", "Turku ilmakuva 1976",
+                  "Turku ilmakuva 1973", "Turku ilmakuva 1967", "Turku ilmakuva 1958", "Turku ilmakuva 1956",
+                  "Turku ilmakuva 1948", "Turku ilmakuva 1939", "Turun Osoitekartta 1945", "Turun Osoitekartta 1950",
+                  "Turun Osoitekartta 1954", "Turun Osoitekartta 1958", "Turun Osoitekartta 1962",
+                  "Turun Osoitekartta 1968", "Turun Osoitekartta 1972", "Turun Osoitekartta 1979",
+                  "Turun Osoitekartta 1984", "Virastokartta 1950-54", "Virastokartta 1958-61", "Virastokartta 1980-89"],
     },
     {
         "id": "oulu", "name": "Oulu", "kind": "wms",
         "url": "https://e-kartta.ouka.fi/TeklaOgcWebOpen/WMS.ashx",
         "attribution": "© Oulun kaupunki (CC BY 4.0)",
-        "box": (64.80, 24.90, 65.60, 26.80), "max_zoom": 19,
+        "box": (64.80, 24.90, 65.60, 26.80), "max_zoom": 19, "format": "image/png", "opaque": True,
         "rules": [
             {"match": r"(?i)ilmakuva.*\d{4}|orto.*\d{4}", "exclude": r"(?i)vaara|vääräv|cir", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
+             "title_too": True, "year_required": True},
         ],
         "known": ["Ilmakuva 2024", "Ilmakuva 2018 re", "Ilmakuva 2012 Oulu"],
     },
     {
-        # Estonia's Land Board: every orthophoto flight since 1993 and old maps back to the
-        # 1800s (verst maps, 1920s-30s Estonian and Soviet topographic maps), free with credit.
-        "id": "estonia-old", "name": "Estonia", "kind": "wms",
+        # Estonia's Land Board: every national photo flight since 1993 and old maps back to
+        # the 1860s. The service draws only in Estonia's own grid (EPSG:3301), so the NAS
+        # warps each picture onto the web map (histclean.reproject_lest).
+        "id": "estonia-old", "name": "Estonia", "kind": "wms", "crs": "EPSG:3301",
         "url": "https://kaart.maaamet.ee/wms/ajalooline",
         "attribution": "© Maa- ja Ruumiamet (Estonian Land and Spatial Development Board)",
-        "box": (57.5, 21.7, 59.75, 28.3), "max_zoom": 18, "discover_only": True,
+        "box": ESTONIA_BOX, "max_zoom": 18, "format": "image/png", "opaque": True,
         "rules": [
-            {"match": r"(?i)orto|foto", "exclude": r"(?i)nir|cir|infra|ruudu|index|lehed", "group": "photo",
-             "format": "image/jpeg", "title_too": True, "year_required": True},
-            {"match": r"(?i)verst|topo|kaart|map|schmidt|r[üu]cker|heeres|kataster", "exclude": r"(?i)ruudu|index|lehed",
-             "group": "map", "title_too": True, "year_required": True},
+            _series("of1993-2000_10k", "Aerial photo", 1993, 2000, 9, 17, "photo"),
+            {"match": r"^of(2002|2005)$", "group": "photo", "min_zoom": 9},
+            {"match": r"^of(20\d\d)aero$", "group": "photo", "min_zoom": 9},
+            _series("kolmeverstakaart", "Three-verst map 1:126 000", 1866, 1915, 7, 13),
+            _series("yheverstakaart", "One-verst map 1:42 000", 1894, 1922, 8, 15),
+            _series("kaheverstakaart", "Two-verst map 1:84 000", 1895, 1918, 7, 14),
+            _series("ew_25T", "Estonian topographic map 1:25 000", 1923, 1935, 9, 16),
+            _series("ew_50T", "Estonian topographic map 1:50 000", 1935, 1939, 8, 15),
+            _series("kk1940", "Cadastral map", 1930, 1944, 10, 17),
+            _series("heereskarte", "German army map 1:300 000", 1943, 1944, 6, 12),
+            _series("nltopo_vanem_25T", "Soviet topographic map 1:25 000 (early)", 1946, 1959, 9, 16),
+            _series("nltopo_keskmine_25T", "Soviet topographic map 1:25 000 (middle)", 1960, 1974, 9, 16),
+            _series("nltopo_uuem_25T", "Soviet topographic map 1:25 000 (late)", 1975, 1989, 9, 16),
+            _series("nl_merekaart", "Soviet sea chart 1:50 000", 1981, 1991, 8, 15),
+            _series("pohi_vr", "Basic map 1:20 000", 1996, 2007, 9, 17),
         ],
+        "known": ["of1993-2000_10k", "of2002", "of2005"] + [f"of{y}aero" for y in range(2007, 2026)]
+                 + ["kolmeverstakaart", "yheverstakaart", "kaheverstakaart", "ew_25T", "ew_50T", "kk1940", "heereskarte",
+                    "nltopo_vanem_25T", "nltopo_keskmine_25T", "nltopo_uuem_25T", "nl_merekaart", "pohi_vr"],
     },
     {
         # Sentinel-2 cloudless (EOX): one cloud-free satellite picture of the whole region per
@@ -313,20 +394,26 @@ def _pretty(name: str) -> str:
 
 MAP_NAMES = {  # nicer English titles for well-known old maps
     "pitajakuvauskartta": "Parish map", "rekognosointikartta": "Reconnaissance map",
-    "senaatinkartta": "Senate map", "plan af helsingfors": "Plan of Helsingfors",
-    "kartta helsingin kaupungista": "Map of Helsinki", "helsingin kaupunki": "Map of Helsinki",
-    "helsingin kaupungin kartta": "Map of Helsinki", "opaskartta": "Guide map",
-    "espoon kartta": "Map of Espoo", "senaatin": "Senate map", "pitajan": "Parish map", "pitäjän": "Parish map",
-    "peruskartta": "Basic map", "yleiskartta": "General map", "venal": "Russian topographic map",
-    "venäl": "Russian topographic map", "russian": "Russian topographic map", "kalmberg": "Kalmberg's map",
-    "taloudellinen": "Economic map", "topografinen": "Topographic map",
+    "senaatinkartta": "Senate map", "senaattikartta": "Senate map", "plan af helsingfors": "Plan of Helsingfors",
+    "asemakaavakartta": "Town plan map", "kartta helsingin kaupungista": "Map of Helsinki",
+    "helsingin kaupunki": "Map of Helsinki", "helsingin kaupungin kartta": "Map of Helsinki", "helsinki 1940": "Map of Helsinki",
+    "matkailijakartta": "Tourist map of Helsinki", "keskustan kartta": "Map of central Helsinki",
+    "osoitekartta": "Address map", "kuninkaankart": "King's map",
+    "opaskartta": "Guide map", "espoon kartta": "Map of Espoo", "senaatin": "Senate map", "pitajankartta": "Parish map",
+    "pitajan": "Parish map", "pitäjän": "Parish map", "peruskartta": "Basic map", "yleiskartta": "General map",
+    "venal": "Russian topographic map", "venäl": "Russian topographic map", "russian": "Russian topographic map",
+    "kalmberg": "Kalmberg's map", "taloudellinen": "Economic map", "topografinen": "Topographic map",
 }
+
+# A span of years in a layer's name: "1780_1782", "1912-1968", "1950-54", "192x" (the 1920s).
+RANGE_RE = re.compile(r"(?<!\d)(1[5-9]\d\d|20[0-4]\d)\s*[-–_]\s*(1[5-9]\d\d|20[0-4]\d|\d\d)(?!\d|\s*cm)", re.I)
+DECADE_RE = re.compile(r"(?<!\d)(1[5-9]\d|20[0-4])x(?![a-z])", re.I)
 
 
 def _label(name: str, title: str, group: str) -> str:
     if group == "photo":
         return "Aerial photo"
-    text = (title or _pretty(name)).lower()
+    text = _pretty(name).lower()
     for key, label in MAP_NAMES.items():
         if key in text:
             return label
@@ -334,10 +421,36 @@ def _label(name: str, title: str, group: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" -–_,") or "Old map"
 
 
+def _years(name: str, title: str) -> tuple[int | None, int | None]:
+    """The year (or first year) and last year a layer's name or title gives."""
+    for text in (name, title):
+        m = RANGE_RE.search(text or "")
+        if m:
+            y0, y1 = int(m.group(1)), m.group(2)
+            y1 = int(y1) if len(y1) == 4 else y0 // 100 * 100 + int(y1)
+            if y1 > y0:
+                return y0, y1
+        m = DECADE_RE.search(text or "")
+        if m:
+            return int(m.group(1)) * 10, int(m.group(1)) * 10 + 9
+        years = YEAR_RE.findall(text or "")
+        if years:
+            return int(years[0]), None
+    return None, None
+
+
+def _base(name: str) -> str:
+    """A layer's name without its years and resolution: two layers with the same base and
+    year are the same picture at two resolutions."""
+    text = RANGE_RE.sub("", name.split(":")[-1].lower())
+    text = re.sub(r"_?\d+\s*cm|true ?ortho|tosi", "", YEAR_RE.sub("", text))
+    return re.sub(r"[\s_-]+", " ", text).strip()
+
+
 def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
     """Turn a source's service layers ({name, title, box}) into our layers, by its rules.
-    One layer per (group, year) per source: a photo given at several resolutions is
-    taken once, at its plainest name or else its coarsest resolution (faster to draw)."""
+    One layer per (group, years, base name) per source: a photo given at several
+    resolutions is taken once, at its plainest name or else its coarsest resolution."""
     picked: dict[tuple, tuple] = {}
     for entry in found:
         name, title = entry["name"], entry.get("title") or ""
@@ -346,10 +459,9 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
             m = re.search(rule["match"], text)
             if not m:
                 continue
-            year = rule.get("year")
+            year, year_to = rule.get("year"), rule.get("year_to")
             if year is None:
-                years = YEAR_RE.findall(name) or YEAR_RE.findall(title)
-                year = int(years[0]) if years else None
+                year, year_to = _years(name, title if rule.get("title_too") or not YEAR_RE.search(name) else "")
             if rule.get("exclude") and re.search(rule["exclude"], text):
                 continue
             if rule.get("year_required") and year is None:
@@ -359,18 +471,19 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
             group = rule["group"]
             label = rule.get("label") or _label(name, title, group)
             # Prefer the plain name, then larger cm per pixel (two groups in the photo rule).
-            cm = m.group(2) if group == "photo" and m.re.groups >= 2 and m.group(2) else None
+            cm = m.group(2) if group == "photo" and m.re.groups >= 2 and m.group(2) and m.group(2).isdigit() else None
             rank = (0 if cm is None else 1, -(int(cm) if cm else 0))
-            key = (group, year, label if group != "photo" else "")
+            key = (group, year, year_to, _base(name) if group == "photo" else label)
             if key in picked and picked[key][0] <= rank:
                 break
             box = entry.get("box") or source["box"]
             picked[key] = (rank, {
                 "id": f"{source['id']}-{_slug(name.split(':')[-1])}",
-                "source": source["id"], "where": source["name"], "group": group, "year": year,
+                "source": source["id"], "where": source["name"], "group": group, "year": year, "year_to": year_to,
                 "label": label, "title": title or _pretty(name), "layer": name,
-                "format": rule.get("format", "image/png"), "box": [round(v, 4) for v in box],
-                "min_zoom": source.get("min_zoom", 8), "max_zoom": source.get("max_zoom", 18),
+                "format": rule.get("format", source.get("format", "image/png")), "box": [round(v, 4) for v in box],
+                "min_zoom": rule.get("min_zoom", source.get("min_zoom", 8)),
+                "max_zoom": rule.get("max_zoom", source.get("max_zoom", 18)),
                 "attribution": source["attribution"], "info": rule.get("info", ""),
                 "opacity": rule.get("opacity", 1),
             })
@@ -378,7 +491,7 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
     # Rules that want only the newest year (e.g. yearly traffic maps) keep one layer.
     for rule in source["rules"]:
         if rule.get("latest_only"):
-            same = [k for k in picked if k[0] == rule["group"] and k[2] == (rule.get("label") or "")]
+            same = [k for k in picked if k[0] == rule["group"] and k[3] == (rule.get("label") or "")]
             newest = max(same, key=lambda k: k[1] or 0, default=None)
             for k in same:
                 if k != newest:
@@ -431,7 +544,7 @@ def parse_capabilities(path: Path) -> list[dict]:
 def _wide_row(source: dict, year: int, **more: Any) -> dict:
     return {"id": f"{source['id']}-{year}", "source": source["id"], "where": source["name"], "group": source["group"],
             "year": year, "label": source["title"], "title": f"{source['title']} {year}", "box": list(source["box"]),
-            "min_zoom": source.get("min_zoom", 0), "max_zoom": source.get("max_zoom", 18), "wide": True,
+            "min_zoom": source.get("min_zoom", 0), "max_zoom": source.get("max_zoom", 18), "wide": True, "year_to": None,
             "attribution": source["attribution"], **more}
 
 
@@ -468,6 +581,13 @@ class MapSources:
         self.found: dict[str, list[dict]] = self.store.kv_get("mapsources_found", {}) or {}
         self.checked: dict[str, dict] = {}
         self._layers: dict[str, dict] = {}
+        # Where each old photo or map really has picture (histclean.Cover), worked out once.
+        self.cover: dict[str, Cover] = {}
+        self.cover_failed: dict[str, float] = {}
+        self._cover_pending: dict[str, asyncio.Future] = {}
+        self._cover_limit = asyncio.Semaphore(2)
+        self.covers_rev = 0
+        self._load_covers()
         self._rebuild()
 
     # --- the list ---------------------------------------------------------------------
@@ -498,6 +618,11 @@ class MapSources:
                 if s.get("daily"):
                     layers[s["id"]]["daily"] = True
         self._layers = layers
+        # A layer whose area changed in the service's list needs its coverage again.
+        for lid, cover in list(self.cover.items()):
+            row = layers.get(lid)
+            if row and any(abs(a - b) > 1 for a, b in zip(box_merc(row["box"]), cover.mbox)):
+                del self.cover[lid]
 
     def row(self, layer_id: str) -> dict | None:
         return self._layers.get(layer_id)
@@ -505,12 +630,23 @@ class MapSources:
     def listing(self) -> dict:
         key = bool(self.store.kv_get("mml_api_key", ""))
         rows = []
+        pending = 0
         for row in self._layers.values():
-            src = next(s for s in SOURCES if s["id"] == row["source"])
+            src = _source(row["source"])
             if src.get("needs_key") and not key and not self.fake:
                 continue
-            rows.append({**row, "daily": daily_date()} if row.get("daily") else row)
-        return {"layers": rows, "sources": self.sources()}
+            out = {**row, "daily": daily_date()} if row.get("daily") else dict(row)
+            if _needs_cover(row):
+                out["cover"] = row["id"] in self.cover
+                pending += not out["cover"] and row["id"] not in self.cover_failed
+            rows.append(out)
+        return {"layers": rows, "sources": self.sources(), "covers_rev": self.covers_rev, "covers_pending": pending}
+
+    def covers_payload(self) -> dict:
+        """Every known coverage grid: {layer id: [width, height, run lengths]} (cells over
+        the layer's box in web mercator, row 0 north)."""
+        return {"rev": self.covers_rev,
+                "covers": {lid: [c.w, c.h, c.rle()] for lid, c in self.cover.items() if lid in self._layers}}
 
     def sources(self) -> list[dict]:
         """Settings' rows: each service, how many layers it gave, and whether it fails."""
@@ -525,7 +661,9 @@ class MapSources:
 
     # --- finding layers ---------------------------------------------------------------
     async def run(self) -> None:
-        """Read each WMS's layer list at start and once a day."""
+        """Read each WMS's layer list at start and once a day, then work out where each
+        old photo and map has picture (once per layer)."""
+        await asyncio.to_thread(self._drop_old_tiles)
         while True:
             for s in SOURCES:
                 if s["kind"] == "wms":
@@ -533,7 +671,20 @@ class MapSources:
                 elif s["kind"] == "wayback":
                     await self.discover_wayback(s)
             self._rebuild()
+            await self.find_covers()
             await asyncio.sleep(DISCOVER_EVERY)
+
+    def _drop_old_tiles(self) -> None:
+        """Tiles kept before 0.68 were stored as the services sent them (white boxes, black
+        borders): they go, once."""
+        tiles = self.dir / "tiles"
+        mark = tiles / f".{TILE_REV}"
+        if mark.exists():
+            return
+        if tiles.exists():
+            shutil.rmtree(tiles, ignore_errors=True)
+        tiles.mkdir(parents=True, exist_ok=True)
+        mark.touch()
 
     async def discover_wayback(self, s: dict) -> None:
         try:
@@ -574,6 +725,8 @@ class MapSources:
         if not rows and s.get("rules"):
             names = ", ".join(e["name"] for e in found[:60])
             _LOGGER.info("Map layers from %s: none matched; the service has: %s", s["name"], names)
+            if s.get("known"):
+                return  # keep offering the layers we know (a changed list shouldn't empty the year bar)
         self.found[s["id"]] = [{k: v for k, v in e.items() if k in ("name", "title", "box")}
                                for e in found if layers_from_names(s, [e])]
         self.store.kv_set("mapsources_found", self.found)
@@ -597,25 +750,137 @@ class MapSources:
         finally:
             path.unlink(missing_ok=True)
 
+    # --- where each layer has picture -------------------------------------------------
+    def _covers_path(self) -> Path:
+        return self.dir / "covers.json"
+
+    def _load_covers(self) -> None:
+        try:
+            data = json.loads(self._covers_path().read_text())
+        except (OSError, ValueError):
+            return
+        if data.get("rev") != COVER_REV:
+            return
+        for lid, (box, w, h, rle) in (data.get("covers") or {}).items():
+            try:
+                self.cover[lid] = Cover.from_rle(box_merc(box), w, h, rle)
+            except (TypeError, ValueError):
+                continue
+        self.covers_rev = len(self.cover)
+
+    def _save_covers(self) -> None:
+        rows = {lid: [self._layers[lid]["box"] if lid in self._layers else None, c.w, c.h, c.rle()]
+                for lid, c in self.cover.items()}
+        data = {"rev": COVER_REV, "covers": {k: v for k, v in rows.items() if v[0]}}
+        tmp = self._covers_path().with_suffix(".tmp")
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(data, separators=(",", ":")))
+            os.replace(tmp, self._covers_path())
+        except OSError as err:
+            _LOGGER.warning("Couldn't save the map coverage: %s", err)
+
+    async def find_covers(self) -> None:
+        """Work out the coverage of every old photo and map that hasn't got one yet, one
+        layer at a time (a few seconds each, once per layer)."""
+        todo = [r for r in self._layers.values() if _needs_cover(r) and r["id"] not in self.cover
+                and time.time() - self.cover_failed.get(r["id"], 0) > COVER_RETRY]
+        if todo:
+            _LOGGER.info("Map coverage: working out %s old photos and maps", len(todo))
+        for row in todo:
+            await self.ensure_cover(row)
+            await asyncio.sleep(0.2)
+
+    async def ensure_cover(self, row: dict) -> Cover | None:
+        """The layer's coverage, worked out now if not yet known (once at a time per layer)."""
+        lid = row["id"]
+        if lid in self.cover or not _needs_cover(row):
+            return self.cover.get(lid)
+        if time.time() - self.cover_failed.get(lid, 0) < COVER_RETRY:
+            return None
+        if lid in self._cover_pending:
+            return await asyncio.shield(self._cover_pending[lid])
+        future = asyncio.get_running_loop().create_future()
+        self._cover_pending[lid] = future
+        cover = None
+        try:
+            async with self._cover_limit:
+                cover = await self._make_cover(row)
+        except Exception as err:  # noqa: BLE001 - a layer without coverage still shows (by its box)
+            _LOGGER.warning("Map coverage of %s %s (%s): %s", row["where"], row["year"], row["layer"], err)
+            self.cover_failed[lid] = time.time()
+        finally:
+            del self._cover_pending[lid]
+            future.set_result(cover)
+        if cover is not None:
+            self.cover[lid] = cover
+            self.cover_failed.pop(lid, None)
+            self.covers_rev += 1
+            self._save_covers()
+        return cover
+
+    async def _make_cover(self, row: dict) -> Cover:
+        src = _source(row["source"])
+        mbox = box_merc(row["box"])
+        size = overview_size(mbox)
+        img = await self._render(row, src, mbox, size, overview=True)
+        mask = await asyncio.to_thread(footprint, img, bool(src.get("opaque")))
+        cover = Cover.from_mask(mask, mbox)
+        _LOGGER.info("Map coverage of %s %s %s: %.0f%% of its box", row["where"], row["year"] or "", row["label"],
+                     cover.share() * 100)
+        return cover
+
+    async def _render(self, row: dict, src: dict, mbox, size: tuple[int, int], overview: bool = False) -> Image.Image:
+        """A picture of the layer over a web-mercator box (for coverage)."""
+        if self.fake:
+            from .simmaps import fake_render
+            return await asyncio.to_thread(fake_render, row, src, mbox, size)
+        if src.get("crs") == "EPSG:3301":
+            lbox = lest_box_for(mbox)
+            lsize = overview_size(lbox, max(size))
+            body = await self._get(self._wms_url(src, row, lbox, lsize, "EPSG:3301"), 120)
+            return await asyncio.to_thread(lambda: reproject_lest(Image.open(io.BytesIO(body)), lbox, mbox, size))
+        body = await self._get(self._wms_url(src, row, mbox, size), 120)
+        return await asyncio.to_thread(lambda: Image.open(io.BytesIO(body)).convert("RGBA"))
+
+    async def _get(self, url: str, timeout: float) -> bytes:
+        async with self.session.get(url, headers={"User-Agent": USER_AGENT},
+                                    timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            resp.raise_for_status()
+            if not resp.content_type.startswith("image/"):
+                text = (await resp.text())[:200]
+                raise ValueError(f"not a picture ({resp.content_type}): {text}")
+            return await resp.read()
+
     # --- tiles ------------------------------------------------------------------------
     def covers(self, layer_id: str, z: int, x: int, y: int) -> bool | None:
-        """True if the layer may have a picture here, False if never (outside its area or
-        zooms), None if there's no such layer."""
+        """True if the layer may have a picture here, False if never (outside its area,
+        zooms or real coverage), None if there's no such layer."""
         row = self._layers.get(layer_id)
         if not row:
             return None
         if not (row["min_zoom"] <= z <= row["max_zoom"] and 0 <= x < 2**z and 0 <= y < 2**z):
             return False
-        return overlaps(tile_box(z, x, y), tuple(row["box"]))
+        if not overlaps(tile_box(z, x, y), tuple(row["box"])):
+            return False
+        cover = self.cover.get(layer_id)
+        if cover is not None and not cover.any_in(tile_merc(z, x, y), margin=1):
+            return False
+        return True
+
+    def _wms_url(self, src: dict, row: dict, bbox, size: tuple[int, int], srs: str = "EPSG:3857") -> str:
+        fmt = row.get("format") or src.get("format", "image/png")
+        return (f"{src['url']}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={quote(row['layer'], safe=':,')}"
+                f"&STYLES=&SRS={srs}&BBOX={','.join(f'{v:.3f}' for v in bbox)}&WIDTH={size[0]}&HEIGHT={size[1]}"
+                f"&FORMAT={quote(fmt, safe='/')}&TRANSPARENT=TRUE")
 
     def tile_urls(self, row: dict, z: int, x: int, y: int) -> list[str]:
-        src = next(s for s in SOURCES if s["id"] == row["source"])
+        src = _source(row["source"])
         if src["kind"] == "wms":
-            bbox = ",".join(f"{v:.3f}" for v in mercator_bbox(z, x, y))
-            fmt = row["format"]
-            return [f"{src['url']}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={quote(row['layer'], safe=':,')}&STYLES="
-                    f"&SRS=EPSG:3857&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT={fmt}"
-                    f"&TRANSPARENT={'FALSE' if fmt == 'image/jpeg' else 'TRUE'}"]
+            if src.get("crs") == "EPSG:3301":
+                lbox = lest_box_for(tile_merc(z, x, y))
+                return [self._wms_url(src, row, lbox, overview_size(lbox, 288), "EPSG:3301")]
+            return [self._wms_url(src, row, mercator_bbox(z, x, y), (256, 256))]
         if src["kind"] == "arcgis":
             bbox = ",".join(f"{v:.3f}" for v in mercator_bbox(z, x, y))
             return [f"{src['url']}?bbox={bbox}&bboxSR=3857&imageSR=3857&size=256,256&format=png32"
@@ -629,10 +894,38 @@ class MapSources:
         return [t.format(z=z, x=x, y=y, key=key, date=date, date1=date1) for t in src["templates"]
                 if key or "{key}" not in t]
 
+    def _processor(self, row: dict, src: dict, z: int, x: int, y: int, cover: Cover | None):
+        """What's done to an old photo or map tile before it's kept: warped (Estonia),
+        then its "no picture" areas made see-through, then packed small."""
+        mb = tile_merc(z, x, y)
+        zone = cover.edge_zone(mb) if cover is not None else None
+        everywhere = cover is None  # coverage unknown: clean the whole tile
+        opaque = bool(src.get("opaque"))
+        photo = row["group"] == "photo"
+        lbox = lest_box_for(mb) if src.get("crs") == "EPSG:3301" else None
+
+        def run(body: bytes) -> bytes:
+            img = Image.open(io.BytesIO(body))
+            img = reproject_lest(img, lbox, mb, (256, 256)) if lbox else img.convert("RGBA")
+            if zone is not None or everywhere:
+                img = clean_tile(img, zone, opaque)
+            return b"" if img is None else encode(img, photo)
+        return run
+
     async def tile(self, layer_id: str, z: int, x: int, y: int) -> Path | None:
         row = self._layers.get(layer_id)
         if not row or not self.covers(layer_id, z, x, y):
             return None
+        src = _source(row["source"])
+        if _needs_cover(row):
+            cover = await self.ensure_cover(row)
+            if cover is not None and not cover.any_in(tile_merc(z, x, y), margin=1):
+                return None
+            folder = f"{row['source']}/{TILE_REV}/{row['id']}"
+            process = self._processor(row, src, z, x, y, cover)
+            if self.fake:
+                return await self._fake_tile(folder, row, src, z, x, y, process)
+            return await self.cache.get(folder, z, x, y, self.tile_urls(row, z, x, y)[0], transform=process)
         if self.fake:
             from .simmaps import fake_tile
             path = self.cache.path(f"{row['source']}/{row['id']}", z, x, y)
@@ -660,5 +953,33 @@ class MapSources:
                 return None  # answered, just nothing here (a daily picture: try the next satellite)
         return None
 
+    async def _fake_tile(self, folder, row, src, z, x, y, process) -> Path | None:
+        """Simulator: the made-up service's picture, through the same cleaning as real ones."""
+        from .simmaps import fake_render
+        path = self.cache.path(folder, z, x, y)
+        if not path.exists():
+            def make() -> bytes:
+                img = fake_render(row, src, tile_merc(z, x, y), (256, 256))
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+            # Estonia's warp is skipped here: the made-up picture is drawn in mercator already.
+            body = await asyncio.to_thread(make)
+            out = await asyncio.to_thread(self._processor({**row}, {**src, "crs": None}, z, x, y, self.cover.get(row["id"])),
+                                          body)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(out)
+        return path if path.stat().st_size else None
+
     def prune(self) -> int:
         return self.cache.prune()
+
+
+def _source(source_id: str) -> dict:
+    return next(s for s in SOURCES if s["id"] == source_id)
+
+
+def _needs_cover(row: dict) -> bool:
+    """Old photos and maps from WMS services have edges worth finding; the satellite
+    archives cover everything."""
+    return row["group"] in ("photo", "map") and not row.get("wide") and _source(row["source"])["kind"] == "wms"

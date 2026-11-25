@@ -1213,47 +1213,96 @@ table.numbers thead th { color: var(--muted); font-weight: 600; }
 .route-panel { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .route-panel > * { flex-shrink: 0; }
 
-/* --- Then & now (histmaps.js) ------------------------------------------------------- */
+/* --- Historic maps (histmaps.js) --------------------------------------------------- */
 .histbar {
   position: fixed;
   z-index: 1000;
   left: 50%;
   transform: translateX(-50%);
   bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px);
-  width: min(520px, calc(100vw - 20px));
-  padding: 8px 10px 6px;
+  width: min(560px, calc(100vw - 20px));
+  padding: 8px 12px 7px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.histbar .hb-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.histbar .hb-kind button { padding: 4px 10px; font-size: 13px; }
-.histbar .hb-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.histbar .hb-year-row { display: flex; align-items: center; gap: 8px; }
-.histbar .hb-year { font-size: 22px; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: center; letter-spacing: -0.01em; }
-.histbar .hb-range { flex: 1; }
-.histbar .tb-step { width: 34px; height: 34px; flex: none; }
-.histbar .tb-step:disabled { opacity: 0.3; }
-.histbar .hb-ticks { display: flex; justify-content: space-between; margin: -4px 50px 0; }
-.histbar .hb-ticks:empty { display: none; }
-.histbar .hb-opts { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.histbar .hb-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.histbar .hb-op { display: flex; align-items: center; gap: 8px; flex: 0 1 180px; }
-.histbar .hb-op .player-range { flex: 1; }
-.histbar .hb-credit { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.histbar .hb-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.histbar .hb-kind button { padding: 4px 11px; font-size: 13px; font-weight: 600; }
+.histbar .hb-count { font-weight: 500; opacity: 0.65; font-variant-numeric: tabular-nums; }
+.histbar .hb-busy { white-space: nowrap; font-size: 11px; }
+.histbar .hb-head { display: flex; align-items: center; gap: 8px; }
+.histbar .hb-title { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
+.histbar .hb-year { font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.histbar .hb-what { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.histbar .tb-step {
+  width: 36px; height: 36px; flex: none; border-radius: 50%; border: 1px solid var(--border);
+  background: transparent; color: var(--text); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.histbar .tb-step:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.histbar .tb-step:disabled { opacity: 0.25; cursor: default; }
+/* The timeline: a tick for each year there is here, a bar for each map series (in lanes
+   when they overlap), and a knob on the one shown. */
+.histbar .hb-line {
+  --lanes: 0;
+  position: relative; height: calc(22px + var(--lanes) * 5px); margin: 2px 9px 0; cursor: pointer; touch-action: none;
+  outline: none;
+}
+.histbar .hb-line:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; }
+.histbar .hb-track {
+  position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.histbar .hb-mark {
+  position: absolute; top: 5px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 75%, var(--text) 10%); pointer-events: none;
+}
+.histbar .hb-mark.span {
+  top: calc(9px + var(--lane) * 5px); height: 4px; margin-left: 0; border-radius: 2px; min-width: 4px;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.histbar .hb-mark.on { background: var(--accent); }
+.histbar .hb-knob {
+  position: absolute; top: 3px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+  background: #fff; border: 3px solid var(--accent); box-sizing: border-box; pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); transition: left 0.15s ease;
+}
+.histbar .hb-scale { position: relative; height: 13px; margin: -2px 9px 0; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.histbar .hb-scale span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.histbar .hb-opts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 2px; border-top: 1px solid var(--border); }
+.histbar .hb-cmp { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 200px; padding-top: 4px; }
+.histbar .hb-base {
+  flex: 1; min-width: 0; font: inherit; font-size: 12.5px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 6px; cursor: pointer;
+}
+.histbar .hb-split {
+  display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12.5px; color: var(--text);
+  background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; cursor: pointer; margin-top: 4px;
+}
+.histbar .hb-split[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.histbar .hb-op { display: flex; align-items: center; gap: 8px; flex: 0 1 150px; margin-top: 4px; }
+.histbar .hb-op .player-range { flex: 1; min-width: 60px; }
+.histbar .hb-credit { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
 .histbar .hb-credit:empty { display: none; }
-.histbar.is-empty .hb-year-row, .histbar.is-empty .hb-opts, .histbar.is-empty .hb-ticks { display: none; }
+.histbar.is-empty .hb-main, .histbar.is-empty .hb-opts { display: none; }
 .histbar .hb-empty p { margin: 2px 0 6px; }
-.hb-jump { display: flex; gap: 8px; flex-wrap: wrap; }
+.histbar .hb-empty .hb-empty-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.hb-jump { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 .hb-jump button {
-  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 999px; min-height: 34px; cursor: pointer;
+  display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 10px; min-height: 34px; cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px + 150px); }
+.hb-jump button span { font-size: 11px; color: var(--muted); }
+body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area-inset-bottom)) + 64px + 170px); }
 @media (max-width: 560px) {
-  .histbar { left: 8px; right: 8px; width: auto; transform: none; }
-  .histbar .hb-where { font-size: 12px; }
+  .histbar { left: 8px; right: 8px; width: auto; transform: none; gap: 4px; padding: 7px 9px 5px; }
+  .histbar .hb-kind button { padding: 4px 9px; }
+  .histbar .hb-year { font-size: 19px; }
+  .histbar .hb-cmp > span { display: none; }
+  .histbar .hb-split span { display: none; }
+  .histbar .hb-op { flex-basis: 110px; }
+  .histbar .hb-credit { font-size: 10px; }
 }
 @media (min-width: 900px) {
   body.menu-open .histbar { left: calc((100vw - var(--panel-w)) / 2); }
@@ -1272,7 +1321,7 @@ body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); cursor: ew-resize; pointer-events: none;
 }
 .hist-divider .hd-label {
-  position: absolute; top: calc(var(--top) + 110px); padding: 3px 8px; border-radius: 6px;
+  position: absolute; top: calc(var(--top) + 110px); padding: 3px 8px; border-radius: 6px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis;
   background: rgba(17, 24, 39, 0.75); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none;
 }
 .hist-divider .hd-then { right: 10px; }
@@ -1294,7 +1343,6 @@ body:has(.histbar:not([hidden])) .timebar { bottom: calc(max(22px, env(safe-area
   }
   .type-picker.open button { text-align: left; padding: 9px 14px; }
 }
-@media (max-width: 560px) { .histbar .hb-ticks { display: none; } .histbar { gap: 4px; padding: 6px 8px 4px; } .histbar .hb-year { font-size: 19px; } }
 .topbar:has(.type-picker.open) { z-index: 1300; }
 .type-picker button { white-space: nowrap; }
 .nm-scale { background: var(--panel); border-radius: 8px; padding: 3px 7px; box-shadow: var(--shadow); font-size: 11px; color: var(--text); pointer-events: none; margin-bottom: 6px !important; }

@@ -211,9 +211,12 @@ def _mmsi(request: web.Request) -> int:
 
 
 def _image_type(path) -> str:
-    """JPEG or PNG, from the file's first bytes (aerial photos come as either)."""
+    """JPEG, PNG or WebP, from the file's first bytes (aerial photos come as any)."""
     with open(path, "rb") as f:
-        return "image/jpeg" if f.read(3) == b"\xff\xd8\xff" else "image/png"
+        head = f.read(12)
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    return "image/webp" if head[:4] == b"RIFF" and head[8:12] == b"WEBP" else "image/png"
 
 
 LOGBOOK_MAX_BYTES = 200 * 1024 * 1024
@@ -287,6 +290,7 @@ class Web:
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/mapsources", self.mapsources)
+        r.add_get("/api/mapcovers", self.mapcovers)
         r.add_get("/api/here", self.here)
         r.add_get("/api/pins", self.pins)
         r.add_post("/api/pins", self.save_pin)
@@ -604,6 +608,13 @@ class Web:
     async def mapsources(self, request: web.Request) -> web.Response:
         """The extra layers (old photos and maps, overlays) the panel can show."""
         return web.json_response(self.fw.maps.listing(), headers={"Cache-Control": "no-store"})
+
+    async def mapcovers(self, request: web.Request) -> web.Response:
+        """Where each old photo and map has picture (coarse grids), gzipped: the panel asks
+        again with ?v=<rev> whenever the listing says there are more."""
+        body = gzip.compress(json.dumps(self.fw.maps.covers_payload(), separators=(",", ":")).encode(), 6)
+        return web.Response(body=body, content_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Cache-Control": "max-age=86400"})
 
     async def map_tile(self, request: web.Request) -> web.StreamResponse:
         try:

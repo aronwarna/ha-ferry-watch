@@ -209,7 +209,7 @@
     ]),
   };
   if (aerialOn) layers.satellite.addLayer(aerialPhotos);
-  // Then & now: old aerial photos and old maps over today's picture, plus the catalogue's
+  // Historic maps: old aerial photos and old maps over today's picture, plus the catalogue's
   // overlays and building ages (histmaps.js, mapsources.py).
   const hist = FerryHist.create({
     map, api, store,
@@ -225,6 +225,13 @@
         }),
       ]),
       map: streets,
+      terrain: () => L.layerGroup([
+        streets(),
+        L.tileLayer("api/tiles/topo/{z}/{x}/{y}.png", {
+          minZoom: 5, maxZoom: 19, maxNativeZoom: 16, zIndex: 2,
+          attribution: "Terrain map © Maanmittauslaitos (CC BY 4.0)",
+        }),
+      ]),
     },
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
