@@ -6363,6 +6363,19 @@
       const r = this._renderer;
       if (!r._drawing || this._empty() || this.options.hidden) return;
       const p = this._point, ctx = r._ctx, o = this.options;
+      if (o.dot) { // zoomed out: just a small dot (chart red on the chart, blue elsewhere)
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
+        ctx.fillStyle = o.chart ? HARBOUR_RED : "#2563eb";
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255,255,255,0.8)";
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
       const s = o.small ? 0.72 : 1; // smaller when zoomed out
       ctx.save();
       ctx.translate(p.x, p.y);
@@ -6406,12 +6419,12 @@
 
   function harbourStyle() {
     const zoom = map.getZoom();
-    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13, small: zoom < 13 };
+    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13, dot: zoom < 13, small: zoom < 14 };
   }
 
   // Below zoom 14 harbours that would touch on screen show as one: the one with the most
   // services (then a name) wins, and its card lists the others close by.
-  const HARBOUR_GAP_PX = { 11: 26, 12: 24, 13: 22 };
+  const HARBOUR_GAP_PX = { 11: 9, 12: 9, 13: 20 }; // dots below 13 may sit closer
   function declutterHarbours() {
     const zoom = map.getZoom();
     const gap = HARBOUR_GAP_PX[zoom] || 0;
@@ -6437,6 +6450,7 @@
       mark.options.chart = st.chart;
       mark.options.dark = st.dark;
       mark.options.small = st.small;
+      mark.options.dot = st.dot;
       mark.options.label = st.labels ? mark.row[3] : "";
       mark.setRadius(st.small ? 8 : 11);
     }
@@ -6510,7 +6524,7 @@
         harbourMarks.set(row[0], mark);
       }
       mark.row = row;
-      Object.assign(mark.options, { chart: st.chart, dark: st.dark, small: st.small, label: st.labels ? row[3] : "" });
+      Object.assign(mark.options, { chart: st.chart, dark: st.dark, small: st.small, dot: st.dot, label: st.labels ? row[3] : "" });
       mark.setRadius(st.small ? 8 : 11);
     }
     // Keep at most a few hundred: forget those far out of view.
