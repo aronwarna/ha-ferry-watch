@@ -4,6 +4,8 @@ buildings with years, so the Historic maps view and Building ages can be tried o
 
 from __future__ import annotations
 
+import os
+
 import io
 import math
 import random
@@ -224,4 +226,23 @@ async def fake_ashore_fetch(query: str) -> dict:
            (3004, 59.9790, 24.4310, {"leisure": "sauna", "name": "Rantasauna", "fee": "yes"}),
            (3005, 59.9600, 24.4100, {"amenity": "toilets"}),
            (3006, 60.2500, 24.0700, {"leisure": "firepit"})]  # inland: left out
+    els += _dense_ashore(int(os.environ.get("FW_FAKE_ASHORE_N", "0") or 0))
     return {"elements": [{"type": "node", "id": i, "lat": a, "lon": b, "tags": t} for i, a, b, t in els]}
+
+
+def _dense_ashore(n: int) -> list:
+    """FW_FAKE_ASHORE_N=600: as crowded as OpenStreetMap is around Helsinki and Espoo, with
+    clusters (a toilet, a tap and a firepit at one spot) along the Kirkkonummi-Helsinki shore."""
+    import random
+    rnd = random.Random(7)
+    kinds = [({"amenity": "toilets"}, 5), ({"amenity": "drinking_water"}, 3), ({"leisure": "firepit"}, 2),
+             ({"amenity": "shelter", "shelter_type": "lean_to"}, 1), ({"leisure": "sauna"}, 1),
+             ({"tourism": "camp_site"}, 0.3), ({"amenity": "shelter", "shelter_type": "basic_hut"}, 0.3)]
+    pool = [k for k, w in kinds for _ in range(int(w * 10))]
+    out, i = [], 0
+    while len(out) < n:
+        lat, lon = rnd.uniform(59.94, 60.19), rnd.uniform(24.30, 25.05)
+        for _ in range(rnd.choice([1, 1, 1, 2, 3, 4])):
+            i += 1
+            out.append((40000 + i, lat + rnd.gauss(0, 0.0008), lon + rnd.gauss(0, 0.0015), dict(rnd.choice(pool))))
+    return out[:n]

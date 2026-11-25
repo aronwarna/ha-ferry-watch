@@ -115,7 +115,7 @@
     try { await navigator.clipboard.writeText(text); toast("Copied"); } catch { toast(text); }
   }
 
-  function create({ map, api, store, phoneFix, busy, onChange, localRows, onPick }) {
+  function create({ map, api, store, phoneFix, busy, onChange, localRows, onPick, canvas, harbourPoints }) {
     // --- buttons on the map ---------------------------------------------------------
     const fabs = document.createElement("div");
     fabs.className = "map-fabs";
@@ -484,20 +484,108 @@
       else if (r.lat != null) map.setView([r.lat, r.lon], Math.max(map.getZoom(), zoom));
     }
 
-    // --- places ashore (ashore.py, OpenStreetMap), from zoom 11 ---------------------------
-    const ASHORE = {
-      "Lean-to shelter": ["⛺", "#15803d"], "Wilderness hut": ["⌂", "#166534"], "Day hut": ["⌂", "#4d7c0f"],
-      "Campsite": ["▲", "#15803d"], "Campfire site": ["🔥", "#c2410c"], "Sauna": ["♨", "#b45309"],
-      "Toilet": ["WC", "#475569"], "Drinking water": ["💧", "#0284c7"],
+    // --- places ashore (ashore.py, OpenStreetMap) ------------------------------------------
+    // Drawn on the shared marks canvas (under the ships and harbours), small and see-through
+    // like the service symbols on a paper chart. Each kind has its own first zoom (toilets and
+    // taps only close in), places that would touch on screen merge into one mark with little
+    // dots for the other kinds there, and those right by a harbour fold into its card.
+    const ASHORE_KINDS = [
+      // key, OSM kind, label, colour, first zoom
+      ["shelter", "Lean-to shelter", "Lean-to shelters", "#2f7d4a", 12],
+      ["hut", "Wilderness hut", "Huts", "#4d6b2f", 12],
+      ["hut", "Day hut", "Huts", "#4d6b2f", 13],
+      ["camp", "Campsite", "Campsites", "#2f7d4a", 12],
+      ["fire", "Campfire site", "Campfire sites", "#c2410c", 13],
+      ["sauna", "Sauna", "Saunas", "#a16207", 13],
+      ["water", "Drinking water", "Drinking water", "#0e7490", 14],
+      ["wc", "Toilet", "Toilets", "#475569", 15],
+    ];
+    const KIND = new Map(ASHORE_KINDS.map(([key, kind, label, color, minZoom], rank) => [kind, { key, label, color, minZoom, rank }]));
+    const CATS = [...new Map(ASHORE_KINDS.map(([key, , label, color]) => [key, { key, label, color }])).values()];
+    const GLYPH = { // 24-unit drawings, white on the coloured disc
+      shelter: { stroke: new Path2D("M4 18.5L10.5 6.5L20 18.5M10.5 6.5V18.5") },
+      hut: { stroke: new Path2D("M4.5 11.5L12 5L19.5 11.5M7 10V19H17V10M10.5 19v-4.5h3V19") },
+      camp: { stroke: new Path2D("M3.5 19L12 5L20.5 19ZM12 19L9.8 14.2H14.2Z") },
+      fire: { fill: new Path2D("M12 3c.8 3.6 5.5 5.8 5.5 10.5a5.5 5.5 0 0 1-11 0c0-2.3 1.2-4 2.6-5 .1 2.1 1 3.3 2.3 3.6C10.9 9.4 10.6 6 12 3z") },
+      sauna: { stroke: new Path2D("M8 3.5c-1.6 1.9 1.6 3.4 0 5.3M12 3.5c-1.6 1.9 1.6 3.4 0 5.3M16 3.5c-1.6 1.9 1.6 3.4 0 5.3M4.5 12.5h15M6.5 12.5V20M17.5 12.5V20M6.5 16.5h11") },
+      water: { fill: new Path2D("M12 3.2c3.2 4.3 6.3 7.6 6.3 11.3a6.3 6.3 0 0 1-12.6 0C5.7 10.8 8.8 7.5 12 3.2z") },
+      wc: { text: "WC" },
     };
+    const AshoreMark = L.CircleMarker.extend({
+      _updatePath() {
+        const r = this._renderer;
+        if (!r._drawing || this._empty()) return;
+        const p = this._point, ctx = r._ctx, o = this.options, g = o.group;
+        const rad = o.radius;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.globalAlpha = 0.8; // see-through, like the chart's own symbols
+        ctx.beginPath();
+        ctx.arc(0, 0, rad, 0, Math.PI * 2);
+        ctx.fillStyle = g.top.color;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.stroke();
+        ctx.globalAlpha = 0.95;
+        const glyph = GLYPH[g.top.key];
+        const k = (rad * 1.5) / 24;
+        if (glyph.text) {
+          ctx.fillStyle = "#fff";
+          ctx.font = `700 ${Math.round(rad * 0.95)}px system-ui, -apple-system, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(glyph.text, 0, 0.5);
+        } else {
+          ctx.save();
+          ctx.scale(k, k);
+          ctx.translate(-12, -12);
+          if (glyph.fill) { ctx.fillStyle = "#fff"; ctx.fill(glyph.fill); }
+          if (glyph.stroke) {
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2.4;
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
+            ctx.stroke(glyph.stroke);
+          }
+          ctx.restore();
+        }
+        // The other kinds at this spot: a short row of dots under the mark.
+        const more = g.cats.slice(1, 5);
+        if (more.length) {
+          ctx.globalAlpha = 0.9;
+          const step = 5;
+          let x = -((more.length - 1) * step) / 2;
+          for (const c of more) {
+            ctx.beginPath();
+            ctx.arc(x, rad + 3.5, 2.1, 0, Math.PI * 2);
+            ctx.fillStyle = c.color;
+            ctx.fill();
+            ctx.lineWidth = 0.8;
+            ctx.strokeStyle = "rgba(255,255,255,0.9)";
+            ctx.stroke();
+            x += step;
+          }
+        }
+        ctx.restore();
+      },
+    });
+
     const EXTRA = { fire: "fireplace", wood: "firewood", toilet: "toilet", water: "drinking water", free: "free", fee: "fee" };
     let ashoreOn = store.get("fw-ashore") === "1";
+    const ashoreHidden = new Set((store.get("fw-ashore-hide") || "").split(",").filter(Boolean));
     let ashoreNote = "";
     let ashoreCount = 0;
+    let ashoreRows = [];
+    let ashoreFolded = []; // [harbour latlng, places] for harbour cards
     const ashoreLayer = L.layerGroup();
     let ashoreSeq = 0;
+    const ASHORE_FETCH_ZOOM = 12;
+    const ASHORE_MERGE_PX = 20; // marks closer than this on screen become one
+    const ASHORE_HARBOUR_PX = 18; // ... and fold into a harbour this close (below zoom 16)
+
     async function loadAshore() {
-      if (!ashoreOn || map.getZoom() < 11) { ashoreLayer.clearLayers(); ashoreCount = 0; return; }
+      if (!ashoreOn || map.getZoom() < ASHORE_FETCH_ZOOM) { ashoreRows = []; drawAshore(); return; }
       const b = map.getBounds().pad(0.2);
       const f = (v) => v.toFixed(3);
       const my = ++ashoreSeq;
@@ -507,31 +595,125 @@
       if (my !== ashoreSeq) return;
       ashoreNote = data.pending ? "Downloading them from OpenStreetMap…"
         : data.error && !data.harbours.length ? `Couldn't get them from OpenStreetMap just now: ${data.error}. Trying again by itself.` : "";
-      ashoreLayer.clearLayers();
-      ashoreCount = data.harbours.length;
-      for (const [, lat, lon, name, kind, extras] of data.harbours) {
-        const [glyph, color] = ASHORE[kind] || ["•", "#15803d"];
-        const icon = L.divIcon({ className: "ashore-icon", iconSize: [22, 22], iconAnchor: [11, 11],
-          html: `<span style="background:${color}">${glyph}</span>` });
-        const m = L.marker([lat, lon], { icon, title: name || kind, keyboard: false });
-        m.on("click", () => {
-          const box = document.createElement("div");
-          box.className = "here-box";
-          box.innerHTML = `<strong>${esc(name || kind)}</strong><div class="muted small">${esc(kind)}${(extras || []).length ? ` · ${esc(extras.map((x) => EXTRA[x] || x).join(", "))}` : ""}</div>
-            <div class="small muted">From OpenStreetMap: check on site.</div>
-            <div class="here-actions"><button type="button" class="chip-btn">What's here</button></div>`;
-          box.querySelector("button").addEventListener("click", () => whatsHere(L.latLng(lat, lon), name || kind));
-          L.popup({ className: "aid-popup here-popup", maxWidth: 280, offset: [0, -8], ...PAD }).setLatLng([lat, lon]).setContent(box).openOn(map);
-        });
-        ashoreLayer.addLayer(m);
-      }
+      ashoreRows = data.harbours;
+      drawAshore();
       if (data.pending) setTimeout(loadAshore, 10000);
       else if (data.error && !data.harbours.length) setTimeout(loadAshore, 120000);
     }
+
+    // Which places show at this zoom, merged by how close they sit on screen.
+    function ashoreGroups(rows, zoom) {
+      const places = [];
+      for (const [, lat, lon, name, kind, extras] of rows) {
+        const info = KIND.get(kind);
+        if (!info || zoom < info.minZoom || ashoreHidden.has(info.key)) continue;
+        places.push({ lat, lon, name, kind, extras: extras || [], info, pt: map.project([lat, lon], zoom) });
+      }
+      places.sort((a, b) => a.info.rank - b.info.rank);
+      const cell = ASHORE_MERGE_PX;
+      const grid = new Map();
+      const groups = [];
+      for (const pl of places) {
+        const gx = Math.floor(pl.pt.x / cell), gy = Math.floor(pl.pt.y / cell);
+        let best = null, bestD = cell;
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          for (const g of grid.get(`${gx + dx},${gy + dy}`) || []) {
+            const d = g.pt.distanceTo(pl.pt);
+            if (d < bestD) { best = g; bestD = d; }
+          }
+        }
+        if (best) { best.places.push(pl); continue; }
+        const g = { pt: pl.pt, lat: pl.lat, lon: pl.lon, places: [pl] };
+        groups.push(g);
+        const key = `${gx},${gy}`;
+        (grid.get(key) || grid.set(key, []).get(key)).push(g);
+      }
+      for (const g of groups) {
+        const cats = new Map();
+        for (const pl of g.places) if (!cats.has(pl.info.key)) cats.set(pl.info.key, { key: pl.info.key, color: pl.info.color, label: pl.info.label });
+        g.cats = [...cats.values()];
+        g.top = g.cats[0];
+      }
+      return groups;
+    }
+
+    function drawAshore() {
+      ashoreLayer.clearLayers();
+      ashoreFolded = [];
+      ashoreCount = 0;
+      if (!ashoreOn || !ashoreRows.length || map.getZoom() < ASHORE_FETCH_ZOOM) return;
+      const zoom = map.getZoom();
+      const groups = ashoreGroups(ashoreRows, zoom);
+      let harbours = [];
+      try { harbours = (zoom < 16 && harbourPoints?.()) || []; } catch { harbours = []; }
+      const hpts = harbours.map((ll) => [ll, map.project(ll, zoom)]);
+      const renderer = canvas?.();
+      const rad = zoom >= 16 ? 8.5 : zoom >= 14 ? 7.5 : 6.5;
+      for (const g of groups) {
+        ashoreCount += g.places.length;
+        const near = hpts.find(([, hp]) => hp.distanceTo(g.pt) < ASHORE_HARBOUR_PX);
+        if (near) { ashoreFolded.push([near[0], g.places]); continue; }
+        const m = new AshoreMark([g.lat, g.lon], { renderer, radius: rad, group: g, stroke: false, fill: false,
+          bubblingMouseEvents: false, pane: renderer ? undefined : "markerPane" });
+        m.on("click", () => openAshore(g));
+        ashoreLayer.addLayer(m);
+      }
+      // Under the ships, harbours and chart marks on the same canvas.
+      ashoreLayer.eachLayer((m) => m.bringToBack?.());
+    }
+
+    function placeLine(pl) {
+      return `<li><strong>${esc(pl.name || pl.kind)}</strong> <span class="muted">${pl.name ? esc(pl.kind) : ""}${pl.extras.length ? `${pl.name ? " · " : ""}${esc(pl.extras.map((x) => EXTRA[x] || x).join(", "))}` : ""}</span></li>`;
+    }
+
+    function openAshore(g) {
+      const box = document.createElement("div");
+      box.className = "here-box ashore-box";
+      const many = g.places.length > 1;
+      const spread = many && g.places.some((pl) => pl.lat !== g.lat || pl.lon !== g.lon);
+      // Named places one by one; nameless ones of a kind as one line ("Toilet ×3").
+      const lines = [];
+      const unnamed = new Map();
+      for (const pl of g.places) {
+        if (pl.name) { lines.push(placeLine(pl)); continue; }
+        const u = unnamed.get(pl.kind) || unnamed.set(pl.kind, { n: 0, extras: new Set() }).get(pl.kind);
+        u.n++;
+        pl.extras.forEach((x) => u.extras.add(EXTRA[x] || x));
+      }
+      for (const [kind, u] of unnamed) {
+        lines.push(`<li><strong>${esc(kind)}${u.n > 1 ? ` ×${u.n}` : ""}</strong>${u.extras.size ? ` <span class="muted">${esc([...u.extras].join(", "))}</span>` : ""}</li>`);
+      }
+      const shown = lines.slice(0, 8);
+      box.innerHTML = `${many ? `<strong>${g.places.length} places ashore here</strong>` : ""}
+        <ul class="ashore-list">${shown.join("")}</ul>
+        ${lines.length > shown.length ? `<div class="small muted">and more: zoom in to see them.</div>` : ""}
+        <div class="small muted">From OpenStreetMap: check on site.</div>
+        <div class="here-actions">${spread && map.getZoom() < 17 ? '<button type="button" class="chip-btn" data-a="zoom">Zoom in</button>' : ""}<button type="button" class="chip-btn" data-a="here">What's here</button></div>`;
+      const first = g.places[0];
+      box.querySelector('[data-a="here"]').addEventListener("click", () => whatsHere(L.latLng(g.lat, g.lon), many ? "" : (first.name || first.kind)));
+      box.querySelector('[data-a="zoom"]')?.addEventListener("click", () => {
+        map.closePopup();
+        map.fitBounds(L.latLngBounds(g.places.map((pl) => [pl.lat, pl.lon])), { padding: [80, 80], maxZoom: Math.min(18, map.getZoom() + 3) });
+      });
+      L.popup({ className: "aid-popup here-popup", maxWidth: 280, offset: [0, -6], ...PAD }).setLatLng([g.lat, g.lon]).setContent(box).openOn(map);
+    }
+
+    // For a harbour's card: the places ashore folded into it (kinds and names).
+    function ashoreNear(latlng) {
+      const out = [];
+      for (const [ll, places] of ashoreFolded) if (ll.equals(latlng)) out.push(...places);
+      return out.map((pl) => ({ name: pl.name, kind: pl.kind, label: pl.info.label, color: pl.info.color, extras: pl.extras.map((x) => EXTRA[x] || x) }));
+    }
+
     function setAshore(on) {
       ashoreOn = on;
       store.set("fw-ashore", on ? "1" : "0");
-      if (on) { ashoreLayer.addTo(map); loadAshore(); } else { map.removeLayer(ashoreLayer); ashoreLayer.clearLayers(); }
+      if (on) { ashoreLayer.addTo(map); loadAshore(); } else { map.removeLayer(ashoreLayer); ashoreRows = []; drawAshore(); }
+    }
+    function setAshoreCat(key, show) {
+      if (show) ashoreHidden.delete(key); else ashoreHidden.add(key);
+      store.set("fw-ashore-hide", [...ashoreHidden].join(","));
+      drawAshore();
     }
     if (ashoreOn) setAshore(true);
     map.on("moveend", () => { if (ashoreOn) loadAshore().then(() => onChange?.()); });
@@ -560,11 +742,34 @@
         extra: a,
         onChange: async (on) => setPins(on),
       }, {
-        title: "Places to go ashore", color: "#15803d", checked: ashoreOn,
+        title: "Places to go ashore", color: "#2f7d4a", checked: ashoreOn,
         count: ashoreOn && ashoreCount ? `${ashoreCount} in view` : "",
-        note: ashoreNote || "Lean-to shelters, campfire sites, huts, campsites, saunas, toilets and drinking water by the shore, from OpenStreetMap, from zoom 11. Tap one for what's there. Downloaded once a month.",
+        note: ashoreNote || "Lean-to shelters, huts and campsites from zoom 12, campfire sites and saunas from 13, drinking water from 14, toilets from 15, from OpenStreetMap. Places close together share one mark (dots show what else is there); those at a harbour are in the harbour's card. Tap one for what's there. Downloaded once a month.",
+        extra: ashoreChips(),
         onChange: async (on) => setAshore(on),
       }];
+    }
+
+    // Show or hide each kind of place ashore.
+    function ashoreChips() {
+      const box = document.createElement("div");
+      box.className = "ashore-cats";
+      for (const c of CATS) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ashore-cat";
+        b.setAttribute("aria-pressed", String(!ashoreHidden.has(c.key)));
+        b.style.setProperty("--cat", c.color);
+        b.innerHTML = `<i></i>${esc(c.label)}`;
+        b.addEventListener("click", () => {
+          const show = ashoreHidden.has(c.key);
+          b.setAttribute("aria-pressed", String(show));
+          setAshoreCat(c.key, show);
+          onChange?.();
+        });
+        box.append(b);
+      }
+      return box;
     }
 
     // A link with #at=lat,lon,zoom opens the app there with What's here open.
@@ -578,7 +783,7 @@
       return true;
     }
 
-    return { rows, whatsHere, myFix, fromHash, openSearch, TYPES, get found() { return found; } };
+    return { rows, whatsHere, ashoreNear, redrawAshore: () => drawAshore(), myFix, fromHash, openSearch, TYPES, get found() { return found; } };
   }
 
   window.FerryHere = { create, seaCoords, fold, score, parseCoords, TYPES, toast };

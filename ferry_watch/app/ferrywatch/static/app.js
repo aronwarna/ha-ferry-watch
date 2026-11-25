@@ -249,6 +249,10 @@
     },
     localRows: (words, score) => searchRows(words, score),
     onPick: (r) => pickFound(r),
+    // Places ashore draw on the marks canvas, and those right at a shown harbour fold into it.
+    canvas: sharedCanvas,
+    harbourPoints: () => (harbourLayer && map.hasLayer(harbourLayer)
+      ? [...harbourMarks.values()].filter((m) => !m.options.hidden).map((m) => m.getLatLng()) : []),
   });
   FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
   // Phones: the chart style sits under the weather pill (the map buttons run down the right
@@ -6353,32 +6357,38 @@
   }
 
   const HarbourMark = L.CircleMarker.extend({
+    // Hidden ones (decluttered away when zoomed out) take no taps either.
+    _containsPoint(p) { return !this.options.hidden && L.CircleMarker.prototype._containsPoint.call(this, p); },
     _updatePath() {
       const r = this._renderer;
-      if (!r._drawing || this._empty()) return;
+      if (!r._drawing || this._empty() || this.options.hidden) return;
       const p = this._point, ctx = r._ctx, o = this.options;
+      const s = o.small ? 0.72 : 1; // smaller when zoomed out
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.lineJoin = "round";
       if (o.chart) {
-        boatPath(ctx, 1.15);
+        boatPath(ctx, 1.15 * s);
         ctx.strokeStyle = "rgba(255,255,255,0.95)";
         ctx.lineWidth = 3.5;
         ctx.stroke();
         ctx.fillStyle = HARBOUR_RED;
         ctx.fill();
       } else {
-        roundRect(ctx, -10.5, -10.5, 21, 21, 6);
+        const h = 9 * s;
+        ctx.globalAlpha = 0.85; // see-through, so the shore shows
+        roundRect(ctx, -h, -h, 2 * h, 2 * h, 5 * s);
         ctx.fillStyle = "#1d4ed8";
         ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
         ctx.stroke();
-        ctx.translate(0, -1);
-        boatPath(ctx, 0.95);
+        ctx.globalAlpha = 1;
+        ctx.translate(0, -0.8 * s);
+        boatPath(ctx, 0.82 * s);
         ctx.fillStyle = "#fff";
         ctx.fill();
-        ctx.translate(0, 1);
+        ctx.translate(0, 0.8 * s);
       }
       if (o.label) { // names when zoomed in
         ctx.font = "600 12px system-ui, -apple-system, sans-serif";
@@ -6387,8 +6397,8 @@
         ctx.lineWidth = 3;
         ctx.strokeStyle = o.dark ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)";
         ctx.fillStyle = o.dark ? "#fff" : (o.chart ? HARBOUR_RED : "#1e3a8a");
-        ctx.strokeText(o.label, 14, 0);
-        ctx.fillText(o.label, 14, 0);
+        ctx.strokeText(o.label, 12, 0);
+        ctx.fillText(o.label, 12, 0);
       }
       ctx.restore();
     },
@@ -6396,18 +6406,42 @@
 
   function harbourStyle() {
     const zoom = map.getZoom();
-    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13 };
+    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13, small: zoom < 13 };
+  }
+
+  // Below zoom 14 harbours that would touch on screen show as one: the one with the most
+  // services (then a name) wins, and its card lists the others close by.
+  const HARBOUR_GAP_PX = { 11: 26, 12: 24, 13: 22 };
+  function declutterHarbours() {
+    const zoom = map.getZoom();
+    const gap = HARBOUR_GAP_PX[zoom] || 0;
+    const marks = [...harbourMarks.values()];
+    for (const m of marks) { m.options.hidden = false; m.near = null; }
+    if (!gap) return;
+    const score = (m) => (m.row[5]?.length || 0) * 2 + (m.row[3] ? 1 : 0);
+    marks.sort((a, b) => score(b) - score(a));
+    const kept = [];
+    for (const m of marks) {
+      const pt = map.project(m.getLatLng(), zoom);
+      const by = kept.find((k) => k.pt.distanceTo(pt) < gap);
+      if (by) { m.options.hidden = true; (by.m.near ||= []).push(m); continue; }
+      kept.push({ m, pt });
+    }
   }
 
   function restyleHarbours() {
     if (!harbourLayer) return;
     const st = harbourStyle();
+    declutterHarbours();
     for (const mark of harbourMarks.values()) {
       mark.options.chart = st.chart;
       mark.options.dark = st.dark;
+      mark.options.small = st.small;
       mark.options.label = st.labels ? mark.row[3] : "";
+      mark.setRadius(st.small ? 8 : 11);
     }
     if (harbourCanvas?._map) harbourCanvas._redraw();
+    here.redrawAshore();
   }
 
   function setHarbours(on) {
@@ -6476,7 +6510,8 @@
         harbourMarks.set(row[0], mark);
       }
       mark.row = row;
-      Object.assign(mark.options, { chart: st.chart, dark: st.dark, label: st.labels ? row[3] : "" });
+      Object.assign(mark.options, { chart: st.chart, dark: st.dark, small: st.small, label: st.labels ? row[3] : "" });
+      mark.setRadius(st.small ? 8 : 11);
     }
     // Keep at most a few hundred: forget those far out of view.
     if (harbourMarks.size > 800) {
@@ -6487,8 +6522,10 @@
       }
     }
     harbourCount = [...harbourMarks.values()].filter((m) => map.getBounds().contains(m.getLatLng())).length;
+    declutterHarbours();
     showHarbourLayer();
     if (harbourCanvas._map) harbourCanvas._redraw();
+    here.redrawAshore();
   }
 
   function openHarbour(mark) {
@@ -6519,6 +6556,30 @@
       none.className = "small muted hb-none";
       none.textContent = "No services marked in OpenStreetMap.";
       el.append(none);
+    }
+    const ashore = here.ashoreNear(mark.getLatLng());
+    if (ashore.length) {
+      const box = document.createElement("div");
+      box.className = "small hb-ashore";
+      const kinds = [...new Map(ashore.map((a) => [a.label, a.color])).entries()];
+      box.innerHTML = `<span class="muted">Ashore here:</span> ${kinds.map(([label, color]) =>
+        `<span class="hb-ashore-kind"><i style="background:${color}"></i>${esc(label)}</span>`).join(" ")}`;
+      el.append(box);
+    }
+    if (mark.near?.length) {
+      const box = document.createElement("div");
+      box.className = "small hb-near";
+      box.append("Close by: ");
+      mark.near.slice(0, 5).forEach((m, i) => {
+        const a = document.createElement("button");
+        a.type = "button";
+        a.className = "link-like hb-near-btn";
+        a.textContent = m.row[3] || m.row[4];
+        a.addEventListener("click", () => map.setView(m.getLatLng(), Math.max(map.getZoom() + 2, 14)));
+        box.append(...(i ? [", ", a] : [a]));
+      });
+      if (mark.near.length > 5) box.append(` and ${mark.near.length - 5} more`);
+      el.append(box);
     }
     const links = [];
     if (website && /^https?:\/\//.test(website)) {
