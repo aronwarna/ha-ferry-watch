@@ -219,7 +219,9 @@
             Boolean(ov.loading), Boolean(ov.times?.length)]));
           if (shown !== menuShows) { menuShows = shown; onChange(); }
           // A day picker whose newest day is still being read on the NAS: asked again soon.
-          if (data.overlays.some((ov) => ov.info && ov.info.latest_ice === null && entries.get(ov.id)?.on)) {
+          // So is one whose picked day hasn't been read yet (it says how much ice it has once read).
+          if (data.overlays.some((ov) => ov.info && entries.get(ov.id)?.on
+              && (ov.info.latest_ice === null || dayPending(entries.get(ov.id))))) {
             clearTimeout(infoTimer);
             infoTimer = setTimeout(() => load(), 8000);
           }
@@ -479,6 +481,14 @@
       new Date(ts * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", ...opts });
     const isoDay = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
 
+    // A picked day the NAS hasn't read (or failed to read) yet.
+    function dayPending(e) {
+      const info = e.ov.info || {};
+      if (!info.read || !e.ov.times?.length) return false;
+      const d = String(pickFor(e));
+      return !(d in info.read) && !(d in (info.failed || {}));
+    }
+
     // Under a pickable layer's switch: the day shown, a date field, and Newest / Last winter.
     function dayControl(e) {
       const box = document.createElement("div");
@@ -492,6 +502,19 @@
       let text = `Showing ${dayText(shownDay)}`;
       if (shownDay === latest) text += " (the newest chart)";
       else if (info.latest_ice === false) text += `. The newest chart (${dayText(latest, { day: "numeric", month: "short" })}) has no ice yet.`;
+      // How much ice that day's chart has, once read on the NAS, or why it couldn't be.
+      const read = info.read?.[String(shownDay)], failed = info.failed?.[String(shownDay)];
+      if (read) {
+        const [share, cm] = read;
+        text += share > 0
+          ? `: ice on ${share >= 0.01 ? Math.round(share * 100) : "under 1"} % of the sea${cm ? `, up to ${cm} cm thick` : ""}.`
+          : ": no ice in this chart.";
+      } else if (failed) {
+        text += `. Couldn't read it: ${failed}`;
+        status.classList.add("problem");
+      } else if (info.read) {
+        text += " (reading it…)";
+      }
       status.textContent = text;
       const row = document.createElement("div");
       row.className = "ov-days-row";
@@ -501,7 +524,11 @@
       input.max = isoDay(latest);
       input.value = isoDay(shownDay);
       input.setAttribute("aria-label", `${e.ov.title} day`);
-      const choose = (ts) => { e.pick = ts; render(); onChange(); };
+      const choose = (ts) => {
+        e.pick = ts; render(); onChange();
+        // Its tiles start the read on the NAS: asked again shortly for how it went.
+        if (dayPending(e)) { clearTimeout(infoTimer); infoTimer = setTimeout(() => load(), 6000); }
+      };
       input.addEventListener("change", () => {
         if (!input.value) return;
         const want = Date.parse(`${input.value}T00:00:00Z`) / 1000;

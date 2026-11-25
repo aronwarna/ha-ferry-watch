@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.71.1
+
+- **Ice chart shows on the zoomed-out map again**: the ice was cut to the drawn chart's water,
+  and where the drawn chart had no water yet (zoomed out, or still downloading) the whole tile
+  was cut away, so nothing showed and no error either. Zoomed out (below zoom 9) the ice chart's
+  own 1 km land mask is used, and closer in it's shown uncut whenever the drawn chart's water
+  would leave almost none of it.
+- **The day line says how much ice that day has**, for example "Showing Wed, 14 Jan 2026: ice
+  on 12 % of the sea, up to 60 cm thick", "no ice in this chart", or in red why it couldn't be
+  read.
+
 ## 0.71.0
 
 - **Old photos and maps are kept for good on the NAS**, so they keep working if a
