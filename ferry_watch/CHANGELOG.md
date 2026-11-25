@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.67.2
+
+- **Blue-green algae switch on at once**: the switches answer straight away and can be switched
+  off again at once. The reports used to hold the switch (and the whole weather list) until a
+  whole summer of reports had come from SYKE, which takes over a minute; now they load in the
+  background with "Loading…" under the switch and show up by themselves.
+- The reports come several weeks at a time (about three times faster the first time), are read
+  as they come so a summer's raw records never sit in memory together, and are kept on the
+  disk: last summer is fetched once and never again, and in season only the newest days are
+  asked for.
+- Switched off, a layer's requests still on their way are dropped. A paused time bar no longer
+  loads a second, unseen frame (the algae map used to load the first day of summer as well).
+- Any weather layer whose source is slow no longer holds up the others.
+
 ## 0.67.1
 
 - **Tidier map buttons on the phone**: one even column of square buttons down the right side

@@ -113,3 +113,43 @@ def test_big_weeks_are_split():
         return [{"service_request_id": len(calls)}]
     rows = asyncio.run(algae.fetch_reports(get, day("2025-07-01"), day("2025-07-08")))
     assert len(calls) == 3 and len(rows) == 2
+
+
+def test_reports_are_kept_and_only_new_days_asked(tmp_path):
+    asked = []
+
+    async def get(url, params):
+        asked.append(params["start_date"][:10])
+        return await simalgae.fake_reports(url, params)
+    ov = Overlays(tmp_path, None)
+    rep = algae.register(ov, simalgae.fake_get, get)
+    now = parse_instant("2026-08-10T12:00:00Z")
+    first = asyncio.run(rep.points(None, now))
+    n = len(asked)
+    assert n >= 6 and first["times"][-1] == day("2026-08-10")
+    asked.clear()
+    later = asyncio.run(rep.points(None, now + 3600 * 5))
+    assert asked == ["2026-08-09"]  # only since the last time (and the day before it)
+    assert later["points"] == first["points"] or len(later["points"]) >= len(first["points"])
+    # Out of season, last summer comes from the disk: SYKE isn't asked again.
+    asked.clear()
+    asyncio.run(rep.points(None, parse_instant("2026-10-02T12:00:00Z")))
+    assert asked  # September's last weeks
+    asked.clear()
+    run = asyncio.run(rep.points(None, parse_instant("2026-11-25T12:00:00Z")))
+    assert asked == [] and run["times"][-1] == day("2026-09-30")
+    assert ov.registry[algae.REPORTS_ID].max_age == 7 * 86400
+
+
+def test_reports_weeks_asked_together_newest_first():
+    import time as _t
+    calls = []
+
+    async def get(url, params):
+        calls.append(params["start_date"][:10])
+        await asyncio.sleep(0.05)
+        return []
+    t0 = _t.monotonic()
+    asyncio.run(algae.fetch_reports(get, day("2026-06-01"), day("2026-09-28"), keep=algae.keep_at_sea))
+    assert calls[0] == "2026-09-21" and len(calls) == 17
+    assert _t.monotonic() - t0 < 17 * 0.05 * 0.6  # three at a time

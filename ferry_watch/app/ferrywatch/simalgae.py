@@ -110,7 +110,13 @@ SITES = [
 
 
 async def fake_reports(url: str, params: Any) -> list[dict[str, Any]]:
-    """Open311 records like SYKE's, for the asked dates."""
+    """Open311 records like SYKE's, for the asked dates. FW_FAKE_ALGAE_S makes each answer
+    take that many seconds (SYKE's take about 3), FW_FAKE_ALGAE_N repeats each site's
+    reports n times nearby (a real summer week has 300 to over 1000)."""
+    import asyncio
+    import os
+    await asyncio.sleep(float(os.environ.get("FW_FAKE_ALGAE_S") or 0))
+    copies = max(1, int(os.environ.get("FW_FAKE_ALGAE_N") or 1))
     def ts_of(text: str) -> int:
         return int(time.mktime(time.strptime(text, "%Y-%m-%dT%H:%M:%SZ")) - time.timezone)
     a, b = ts_of(params["start_date"]), ts_of(params["end_date"])
@@ -132,11 +138,12 @@ async def fake_reports(url: str, params: Any) -> list[dict[str, Any]]:
             tags = (f"#_jwObservation, #_jwSiteID_{2000 + i}, #_jwMaintainer_expert, "
                     "#_jwMonitoring_Valtakunnallinen-leväseuranta") if weekly else "#_VesiFiObservation"
             note = rnd.choice(["", "", name, "Rannassa sinileväröyhtöjä", "Vesi kirkasta", "Hajanaisia hiutaleita"])
-            out.append({
-                "service_request_id": day * 100 + i, "status": "open", "service_name": "Sinilevätilanne",
-                "service_code": algae.SERVICE, "lat": lat + rnd.uniform(-0.002, 0.002),
-                "long": lon + rnd.uniform(-0.004, 0.004), "requested_datetime": local,
-                "description": f"This observation was saved via Vesi.fi. {tags} "
-                               f"{algae.LEVEL_KEY}:{level},Ecology_additionalinfo:{note}",
-            })
+            for c in range(copies):
+                out.append({
+                    "service_request_id": (day * 100 + i) * 1000 + c, "status": "open", "service_name": "Sinilevätilanne",
+                    "service_code": algae.SERVICE, "lat": lat + rnd.uniform(-0.002, 0.002) * (1 + c),
+                    "long": lon + rnd.uniform(-0.004, 0.004) * (1 + c), "requested_datetime": local,
+                    "description": f"This observation was saved via Vesi.fi. {tags} "
+                                   f"{algae.LEVEL_KEY}:{level},Ecology_additionalinfo:{note}" + " " * 300 * (c > 0),
+                })
     return out
