@@ -8,6 +8,12 @@ and the oldest are removed once the cache passes its size limit.
 The weather overlays use a cache of their own (its own folder and size limit),
 where each source can have a shorter life: a radar frame is fetched again, or
 removed from the disk, after hours rather than a month.
+
+A copy on disk is only ever replaced by a better one: when a refresh fails, or the
+service now answers "nothing here" or something unreadable, the old tile stays (and is
+asked for again only after another max age). So a service that goes away, or breaks,
+never takes away what was already seen. A cache made with ``delete_stale=False`` (old
+photos and maps) never removes tiles for age at all, only the oldest when it's full.
 """
 
 from __future__ import annotations
@@ -35,10 +41,14 @@ def _top(source: str) -> str:
 
 
 class TileCache:
-    def __init__(self, directory: Path, session: aiohttp.ClientSession, max_bytes: int = MAX_BYTES):
+    def __init__(self, directory: Path, session: aiohttp.ClientSession, max_bytes: int = MAX_BYTES,
+                 delete_stale: bool = True):
         self.dir = directory
+        self.delete_stale = delete_stale
+        self.default_age = MAX_AGE  # refresh age of sources not in max_ages (never deleted for age)
         self.session = session
         self.max_bytes = max_bytes
+        self.size_seen: tuple[float, int] = (0.0, 0)  # (when, bytes) from the last prune
         # Sources with a shorter life than MAX_AGE (by their top folder). Their tiles are
         # fetched again when older, and prune() removes them from the disk.
         self.max_ages: dict[str, float] = {}
@@ -51,7 +61,7 @@ class TileCache:
         return self.dir / source / str(z) / str(x) / f"{y}.png"
 
     def max_age(self, source: str) -> float:
-        return self.max_ages.get(_top(source), MAX_AGE)
+        return self.max_ages.get(_top(source), self.default_age)
 
     async def get(self, source: str, z: int, x: int, y: int, url: str, transform=None) -> Path | None:
         """Path to the tile on disk, fetching it first if missing or old. None if the
@@ -80,6 +90,18 @@ class TileCache:
         finally:
             del self._pending[path]
 
+    @staticmethod
+    def _keep_old(path: Path) -> Path | None:
+        """The copy already on disk, if it's a real picture: marked as checked now, so it's
+        asked for again only after another max age."""
+        try:
+            if path.stat().st_size:
+                os.utime(path)
+                return path
+        except FileNotFoundError:
+            pass
+        return None
+
     async def _fetch(self, source: str, path: Path, url: str, transform=None) -> Path | None:
         try:
             async with self._limit, self.session.get(
@@ -102,8 +124,12 @@ class TileCache:
             except Exception as err:  # noqa: BLE001 - a picture we can't read isn't kept
                 _LOGGER.debug("Tile %s couldn't be read: %s", url, err)
                 self.failing[_top(source)] = f"unreadable picture: {err}"
-                return None
+                return self._keep_old(path)
         self.failing.pop(_top(source), None)
+        if not body:
+            old = self._keep_old(path)
+            if old is not None:
+                return old  # "nothing here" now, a picture before: the picture stays
         tmp = path.with_suffix(".tmp")
         for _ in range(2):  # twice: prune() may remove the folder between the two steps
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,37 +145,60 @@ class TileCache:
         """Remove tiles past their source's own max age, then the least recently fetched
         until the cache fits, then folders left empty; returns how many tiles went.
         Tiles of sources without a max age of their own are kept when old: a month-old
-        chart tile is still shown when the chart server is down."""
+        chart tile is still shown when the chart server is down. Memory stays small however
+        many tiles there are (a kept store can hold millions): the first walk only adds up
+        bytes per minute of last fetch, the second removes the oldest minutes."""
         now = now or time.time()
-        files = []
+        minutes: dict[int, int] = {}
         total = 0
         removed = 0
         for root, _, names in os.walk(self.dir):
             rel = Path(root).relative_to(self.dir).parts
-            limit = self.max_ages.get(rel[0]) if rel else None
+            limit = self.max_ages.get(rel[0]) if rel and self.delete_stale else None
             for name in names:
-                p = Path(root) / name
+                p = os.path.join(root, name)
                 try:
-                    st = p.stat()
+                    st = os.stat(p)
                 except FileNotFoundError:
                     continue
                 if limit is not None and now - st.st_mtime >= limit:
-                    p.unlink(missing_ok=True)
+                    _unlink(p)
                     removed += 1
                     continue
-                files.append((st.st_mtime, st.st_size, p))
+                h = int(st.st_mtime // 60)
+                minutes[h] = minutes.get(h, 0) + st.st_size
                 total += st.st_size
-        for _, size, p in sorted(files):
-            if total <= self.max_bytes:
-                break
-            p.unlink(missing_ok=True)
-            total -= size
-            removed += 1
+        if total > self.max_bytes:
+            cutoff, left = None, total
+            for h in sorted(minutes):
+                if left <= self.max_bytes:
+                    break
+                left -= minutes[h]
+                cutoff = h
+            for root, _, names in os.walk(self.dir):
+                for name in names:
+                    p = os.path.join(root, name)
+                    try:
+                        st = os.stat(p)
+                    except FileNotFoundError:
+                        continue
+                    if int(st.st_mtime // 60) <= cutoff:
+                        _unlink(p)
+                        total -= st.st_size
+                        removed += 1
+        self.size_seen = (time.time(), total)
         # Each radar frame leaves a folder tree behind; empty ones go too (rmdir refuses the rest).
-        for top in self.max_ages:
+        for top in self.max_ages if self.delete_stale else ():
             for root, _, _ in os.walk(self.dir / top, topdown=False):
                 try:
                     os.rmdir(root)
                 except OSError:
                     pass
         return removed
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass

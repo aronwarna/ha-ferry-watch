@@ -197,3 +197,127 @@ def test_kirkkonummi_folder_and_sipoo_tiles(tmp_path):
     assert img.size == (300, 400) and 1 < len(asked) <= 24  # its first zoom (11) already needs 20
     alphas = img.getchannel("A").getextrema()
     assert alphas == (0, 255)  # missing tiles stay see-through
+
+
+class _KV:
+    def __init__(self, data=None):
+        self.data = dict(data or {})
+
+    def kv_get(self, k, d=None):
+        return self.data.get(k, d)
+
+    def kv_set(self, k, v):
+        self.data[k] = v
+
+
+def test_kept_store_and_save_plan(tmp_path):
+    ms = mapsources.MapSources(tmp_path, session=None, store=_KV())
+    row = ms._layers["espoo-ortokartta-1969"]
+    assert mapsources._historic(row) and ms.kept.delete_stale is False
+    assert ms.kept.max_age("espoo") == mapsources.KEPT_RECHECK
+    box = (60.15, 24.70, 60.17, 24.74)  # a small piece of Espoo
+    plan = ms.save_plan(box, [row["id"], "property"], 15)  # property isn't an old picture: left out
+    assert plan["layers"] == 1 and plan["tiles"] > 0 and plan["have"] == 0 and not plan["too_big"]
+    tiles = list(ms._save_tiles(box, [row["id"]], 15))
+    assert {z for _, z, _, _ in tiles} == set(range(max(row["min_zoom"], mapsources.SAVE_MIN_ZOOM), 16))
+    _, z, x, y = tiles[-1]
+    p = ms.kept.path(mapsources.kept_folder(row), z, x, y)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"PNG")
+    assert ms.save_plan(box, [row["id"]], 15)["have"] == 1
+    assert ms.save_plan((59.0, 19.0, 61.0, 26.0), [row["id"]], 19)["too_big"] or row["max_zoom"] < 17
+
+
+def test_layers_no_longer_listed_stay_offered(tmp_path):
+    import asyncio
+
+    ms = mapsources.MapSources(tmp_path, session=None, store=_KV())
+    lists = [[{"name": "Ortokartta_1969"}, {"name": "Ortokartta_1988"}], [{"name": "Ortokartta_1988"}]]
+
+    async def caps(url):
+        return lists.pop(0)
+
+    ms._capabilities = caps
+    asyncio.run(ms.discover(ESPOO))
+    asyncio.run(ms.discover(ESPOO))
+    assert {e["name"] for e in ms.found["espoo"]} == {"Ortokartta_1969", "Ortokartta_1988"}
+
+
+def test_home_save_skipped_in_simulator(tmp_path):
+    import asyncio
+
+    fake = mapsources.MapSources(tmp_path / "a", session=None, store=_KV(), fake=True)
+    asyncio.run(fake.start_home_save())
+    assert fake._save_task is None
+
+
+def test_home_save_picks_sharpest_zoom_that_fits(tmp_path, monkeypatch):
+    import asyncio
+
+    from ferrywatch.histclean import Cover
+
+    kv = _KV({"maps_kept_gb": 10})
+    ms = mapsources.MapSources(tmp_path, session=None, store=kv)
+    rows = [r for r in ms._layers.values() if r["source"] == "kirkkonummi" and mapsources._historic(r)]
+    if not rows:  # no folder listing kept: make two layers like the service's
+        kirkko = next(s for s in mapsources.SOURCES if s["id"] == "kirkkonummi")
+        ms.found["kirkkonummi"] = [{"name": "Historia_aineisto/Ilmakuva_1944"},
+                                   {"name": "Historia_aineisto/Pitäjänkartta_1932_1943"}]
+        ms._rebuild()
+        rows = [r for r in ms._layers.values() if r["source"] == "kirkkonummi" and mapsources._historic(r)]
+    assert rows
+
+    class Small:  # picture only in a small piece of Porkkala
+        def any_in(self, m):
+            x0, y0, x1, y1 = m
+            return x1 > 2_710_000 and x0 < 2_716_000 and y1 > 8_405_000 and y0 < 8_411_000
+
+    for r in rows:
+        ms.cover[r["id"]] = Small()
+    box, ids, sizes = ms._home_sizes()
+    assert sizes[18][0] > sizes[17][0] > sizes[14][0] > 0
+    maps = [r for r in rows if r["group"] == "map"]
+    if maps:
+        assert ms._best_zoom(maps[0], 18) == mapsources.BEST_MAP_ZOOM
+    started = []
+
+    async def fake_run(todo, auto=False):
+        started.append(next(iter(todo), None))
+
+    monkeypatch.setattr(ms, "_save_run", fake_run)
+    monkeypatch.setattr(ms, "kept_bytes", lambda: 0)
+    room = mapsources.HOME_FILL * 10 * 1024**3
+    want = max(z for z, (_, b) in sizes.items() if b <= room)
+
+    async def go():
+        await ms.start_home_save()
+        await ms._save_task
+    asyncio.run(go())
+    assert ms.save_state["zoom"] == want and started and started[0][1] == min(max(r["min_zoom"], mapsources.SAVE_MIN_ZOOM) for r in rows)  # coarse first
+    kv.data["maps_home_zmax"] = want
+    ms._save_task = None
+    asyncio.run(ms.start_home_save())
+    assert ms._save_task is None  # done already at that zoom
+
+
+def test_kept_space_setting(tmp_path, monkeypatch):
+    from collections import namedtuple
+
+    import pytest
+
+    import os
+
+    vfs = namedtuple("vfs", "f_bavail f_frsize f_favail")
+    monkeypatch.setattr(os, "statvfs", lambda p: vfs(30 * 1024**2, 1024, 5_000_000))
+    kv = _KV()
+    ms = mapsources.MapSources(tmp_path, session=None, store=kv)
+    assert ms.kept_space()["kept_choices"] == [3, 5, 10, 20]  # 30 GB free, 4 GB kept back
+    assert ms.kept.max_bytes == 10 * 1024**3  # not picked: the largest within half the room
+    ms.set_kept_limit(20)
+    assert kv.data["maps_kept_gb"] == 20 and ms.kept.max_bytes == 20 * 1024**3
+    with pytest.raises(ValueError):
+        ms.set_kept_limit(100)
+    with pytest.raises(ValueError):
+        ms.set_kept_limit(7)
+    again = mapsources.MapSources(tmp_path, session=None, store=kv)
+    assert again.kept.max_bytes == 20 * 1024**3

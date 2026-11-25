@@ -4930,16 +4930,9 @@ class VectorChart:
         return b.layer
 
     def prune(self) -> None:
-        """Drop blocks nobody has looked at for two refresh periods."""
-        for root in (self.dir / "blocks", self.dir / "heritage"):
-            if not root.exists():
-                continue
-            for p in root.iterdir():
-                try:
-                    if time.time() - p.stat().st_mtime > 2 * MAX_AGE:
-                        p.unlink()
-                except FileNotFoundError:
-                    pass
+        """Old zoomed-out tiles and finished helper files go. Chart blocks never go for age
+        (0.71): they're only replaced by a newer download, so a chart service that goes
+        away or breaks keeps the chart as last seen. Finland is finite, so they're bounded."""
         # Zoomed-out tiles: those of other revisions (and of the old one-file format) go.
         root = self.dir / "overview"
         rev = self._rev()

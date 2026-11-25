@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.71.0
+
+- **Old photos and maps are kept for good on the NAS**, so they keep working if a
+  municipal or national service changes or shuts down. Tiles you have looked at are stored
+  in their own place (outside Home Assistant backups) and never thrown away for age. Each
+  is checked again once a year, and the stored copy is replaced only by a good new one:
+  if the service fails, says "nothing here" or sends something unreadable, the old copy
+  stays. The satellite archives' past years (Esri Wayback, Sentinel-2) are kept the same way.
+- Layers a service stops listing stay in the year bar, showing what was kept.
+- **Save area** in the Historic bar: store the whole view ahead, for the year shown or all
+  years here, at Streets, Houses, Sharp or "Best each has" detail (default; old map scans
+  stop at zoom 17, where they have no more detail). It shows the number of tiles and rough
+  size first, then a progress bar, and can be stopped (what was saved stays).
+- **Space** setting in the same panel: how much of the disk old photos and maps may take.
+  It only offers sizes the disk has room for, and until you pick one it uses the largest
+  that's at most half the free room. When it's full, the pictures unseen longest make room.
+- **Your home area is stored in the background**: all of Kirkkonummi's old photos and maps
+  (including Porkkala) at the sharpest zoom that fits in the space, coarse zooms first.
+  It goes on to sharper zooms by itself when the space or the disk grows. Saving a view
+  yourself pauses it.
+- Old photos are stored at higher picture quality (they are often the only copy).
+- Safe with millions of stored tiles: the clean-up uses little memory and runs once a day,
+  and saving stops before the disk runs short of space or files.
+- The drawn chart's downloaded areas are no longer deleted for age either: they are only
+  replaced by a newer download.
+
 ## 0.70.1
 
 - Passage replays from Stats are drawn like a ship's voyage: the line coloured by speed,
