@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.72.0
+
+- **Enhance** switch in the Historic bar (on by default) for old aerial photos:
+  - Evens out the patchwork of lighter and darker photo frames.
+  - Stretches the flat grey contrast, keeping the overall brightness.
+  - Sharpens a little.
+  - Your browser does the work while drawing, so the NAS does nothing extra and the stored
+    originals stay as they are. Switch it off to see the photos untouched.
+- The NAS measures each photo's brightness across its area once, the first time after the
+  update. Enhance applies to each photo as soon as its measurement is done.
+
 ## 0.71.1
 
 - **Ice chart shows on the zoomed-out map again**: the ice was cut to the drawn chart's water,

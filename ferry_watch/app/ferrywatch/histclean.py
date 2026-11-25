@@ -325,3 +325,73 @@ def encode(img: Image.Image, photo: bool) -> bytes:
             out = io.BytesIO()
             img.save(out, "PNG", optimize=False)
     return out.getvalue()
+
+
+# --- tone: evening out an old photo mosaic ---------------------------------------------
+TONE_STRENGTH = 0.6  # how far frames are evened out (1 = fully: sea and land would go alike)
+TONE_LONG = 64     # brightness cells along the longer side of a layer's area (coarse: frames, not shores)
+
+
+def tone(img: Image.Image, mask: Image.Image, long: int = TONE_LONG) -> dict | None:
+    """How bright an old photo mosaic is across its area, from an overview of it: the
+    panel's Enhance scales each pixel by (t / this) ** s (frames and dark corners even out),
+    then stretches lo..hi to full range. {w, h, g: bytes (cell brightness 1..255, row 0
+    north), t: the brightness to even out to, lo, hi}; None without enough picture."""
+    gray = img.convert("L")
+    mask = mask.convert("L").point(lambda v: 255 if v > 127 else 0)
+    if mask.getbbox() is None:
+        return None
+    gw, gh = overview_size((0, 0, img.width, img.height), long)
+    gw, gh = min(gw, img.width), min(gh, img.height)
+    # Mean brightness per cell over the picture only: sum(gray*mask) / sum(mask).
+    masked = ImageChops.multiply(gray, mask)
+    num = masked.resize((gw, gh), Image.Resampling.BOX).tobytes()
+    den = mask.resize((gw, gh), Image.Resampling.BOX).tobytes()
+    cells: list[float | None] = [num[i] * 255.0 / den[i] if den[i] > 25 else None for i in range(gw * gh)]
+    known = [v for v in cells if v is not None]
+    if len(known) < 4:
+        return None
+    # Cells without picture take their neighbours' value (so edges don't pull towards black).
+    for _ in range(max(gw, gh)):
+        missing = [i for i, v in enumerate(cells) if v is None]
+        if not missing:
+            break
+        fill = {}
+        for i in missing:
+            x, y = i % gw, i // gw
+            near = [cells[j] for j in (i - gw if y else -1, i + gw if y < gh - 1 else -1,
+                                       i - 1 if x else -1, i + 1 if x < gw - 1 else -1) if j >= 0 and cells[j] is not None]
+            if near:
+                fill[i] = sum(near) / len(near)
+        if not fill:
+            break
+        for i, v in fill.items():
+            cells[i] = v
+    mean = sum(known) / len(known)
+    field = Image.frombytes("L", (gw, gh), bytes(max(1, min(255, round(v if v is not None else mean))) for v in cells))
+    field = field.filter(ImageFilter.GaussianBlur(1.5))
+    target = sorted(known)[len(known) // 2]
+    # The evened-out overview's spread, for the stretch.
+    big = field.resize(gray.size, Image.Resampling.BILINEAR)
+    g, f, m = gray.tobytes(), big.tobytes(), mask.tobytes()
+    hist = [0] * 256
+    step = max(1, len(g) // 200_000)
+    for i in range(0, len(g), step):
+        if m[i]:
+            gain = min(1.6, max(0.6, (target / max(1, f[i])) ** TONE_STRENGTH))
+            hist[max(0, min(255, round(g[i] * gain)))] += 1
+    total = sum(hist)
+    if not total:
+        return None
+
+    def pct(p: float) -> int:
+        acc = 0
+        for v, n in enumerate(hist):
+            acc += n
+            if acc >= total * p:
+                return v
+        return 255
+    lo, hi = pct(0.01), pct(0.995)
+    if hi - lo < 24:
+        lo, hi = max(0, lo - 12), min(255, hi + 12)
+    return {"w": gw, "h": gh, "g": field.tobytes(), "t": round(target, 1), "s": TONE_STRENGTH, "lo": lo, "hi": hi}
