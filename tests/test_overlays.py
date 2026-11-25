@@ -331,3 +331,27 @@ def test_time_bar_maths():
     assert out["index"] == [2, 0, 3]
     assert out["start"] == [600, 1200, None]
     assert out["rel"] == ["now", "25 min ago", "in 3 h", "3 days ago"]
+
+
+def test_a_slow_source_never_holds_up_the_list(tmp_path, monkeypatch):
+    from ferrywatch import overlays as overlays_mod
+    monkeypatch.setattr(overlays_mod, "LIST_WAIT", 0.1)
+    calls = []
+
+    async def slow(session, now):
+        calls.append(now)
+        await asyncio.sleep(0.4)
+        return [now - 3600, now]
+
+    async def main():
+        ov = Overlays(tmp_path, None)
+        ov.register(Overlay(id="slow", title="Slow", kind="tiles", url="https://x/{z}/{x}/{y}", times=slow,
+                            max_age=3600, attribution="x"))
+        first = (await ov.listing({"slow"}, T0))[0]
+        assert first["times"] == [] and first["loading"]
+        again = (await ov.listing({"slow"}, T0))[0]  # the same fetch, not a second one
+        assert again["loading"] and len(calls) == 1
+        await asyncio.sleep(0.5)
+        done = (await ov.listing({"slow"}, T0))[0]
+        assert done["times"] == [T0 - 3600, T0] and not done["loading"] and len(calls) == 1
+    asyncio.run(main())

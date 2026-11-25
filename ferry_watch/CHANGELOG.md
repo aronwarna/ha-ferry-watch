@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.67.3
+
+- **Blue-green algae switch on at once**: the switches answer straight away and can be switched
+  off again at once. The reports used to hold the switch (and the whole weather list) until a
+  whole summer of reports had come from SYKE, which takes over a minute; now they load in the
+  background with "Loading…" under the switch and show up by themselves.
+- The reports come several weeks at a time (about three times faster the first time), are read
+  as they come so a summer's raw records never sit in memory together, and are kept on the
+  disk: last summer is fetched once and never again, and in season only the newest days are
+  asked for.
+- Switched off, a layer's requests still on their way are dropped. A paused time bar no longer
+  loads a second, unseen frame (the algae map used to load the first day of summer as well).
+- Any weather layer whose source is slow no longer holds up the others.
+
 ## 0.67.2
 
 - **Ice chart says when it can't load**: if the NAS can't download FMI's ice chart, the
@@ -115,6 +129,7 @@
 - All these layers come from one list on the NAS (mapsources.py), which reads each service's
   layer list once a day, so new years appear by themselves. Settings › Copy diagnostics lists
   what each service gave.
+
 ## 0.55.1
 
 - Places to check: short brushes past the shore (under 150 m) are no longer listed, and
@@ -268,6 +283,7 @@
 - New, in both: a second way for alerts, through ntfy. When it is set up and Home
   Assistant doesn't answer, the alert goes out through ntfy instead (without checking
   where your phone is, which only Home Assistant knows). As an add-on this is off.
+
 ## 0.47.1
 
 - Stats › Times past Porkkala: the "Show the lines on the map" link turns into "Hide the
@@ -1189,6 +1205,7 @@ Fixes from the NAS log of 23 to 25 October:
   limit, as in Traficom's symbol key.
 - The routeing part of the chart is downloaded once more, in the background,
   to pick up dredged depths.
+
 ## 0.16.2
 
 - Settings: chart problems name only the service, so the long web address
