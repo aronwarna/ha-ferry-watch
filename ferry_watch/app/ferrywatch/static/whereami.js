@@ -6,8 +6,9 @@
    - Long press (right click on a computer) anywhere: What's here. Coordinates in sea
      style (tap to copy), distance and bearing from you, the chart's depth there, the seabed
      type, and the weather now and the next hours (here.py). Save it as a pin from there.
-   - Search button: places (islands, bays, villages; OpenStreetMap), harbours, your pins, or
-     typed coordinates.
+   - Search button: anything the app knows (find.py): ships by name, MMSI or IMO, places
+     (OpenStreetMap), harbours, lights and marks, reserves, stations, bridges and locks, your
+     pins and routes, layers and map types, or typed coordinates; each with its kind's icon.
    - Pins: your own marks (fishing spot, anchorage, sauna, …) with a name and a note, kept on
      the NAS so the phone and the computer share them; download them all as GPX for the
      plotter. A switch in Layers.
@@ -40,6 +41,60 @@
     return (Math.atan2(y, x) / r + 360) % 360;
   }
   const dirName = (deg) => COMPASS[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+  // Lower case without accents (Rönnskär -> ronnskar), as find.py folds names.
+  const fold = (text) => String(text ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  // 0 the same, 1 starts with it, 2 a word starts with it, 3 inside; null: not every word in it.
+  function score(name, words) {
+    const n = fold(name);
+    if (!n || !words.length || !words.every((w) => n.includes(w))) return null;
+    const whole = words.join(" ");
+    if (n === whole) return 0;
+    if (n.startsWith(whole)) return 1;
+    return n.split(" ").some((p) => p.startsWith(words[0])) ? 2 : 3;
+  }
+  // "60.12 24.45", "60°07.2'N 24°27'E" and the like (pins.py parses the same on the NAS).
+  function parseCoords(q) {
+    const nums = (q.match(/-?\d+(?:[.,]\d+)?/g) || []).map((n) => n.replace(",", "."));
+    if (!nums.length || /[a-df-mo-rt-vx-z]/i.test(q.replace(/[NSEWnsew]$|[NSEWnsew](?=\s)/g, ""))) return null;
+    let lat, lon;
+    if (nums.length === 2) [lat, lon] = nums.map(Number);
+    else if (nums.length === 4) { lat = Number(nums[0]) + Number(nums[1]) / 60; lon = Number(nums[2]) + Number(nums[3]) / 60; }
+    else return null;
+    if (/S/.test(q)) lat = -Math.abs(lat);
+    if (/W/.test(q)) lon = -Math.abs(lon);
+    return Math.abs(lat) > 1 && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? [lat, lon] : null;
+  }
+  const svg = (d) => d.split("|").map((p) => `<path d="${p}"/>`).join("");
+  // What each kind of result looks like in the list: icon, colour, label, and its rank
+  // when two match equally well.
+  const TYPES = {
+    coords: { label: "Coordinates", color: "#475569", rank: 0, icon: svg("M12 3v4|M12 17v4|M3 12h4|M17 12h4|M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8z") },
+    ship: { label: "Ship", color: "#dc2626", rank: 1, icon: svg("M3 14h18l-2.5 5.5h-13z|M6 14V9h12v5|M10 9V5.5h4V9") },
+    pin: { label: "Pin", color: "#2563eb", rank: 2, icon: svg("M12 21s-6-6.5-6-11a6 6 0 0 1 12 0c0 4.5-6 11-6 11z|M12 8.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3z") },
+    route: { label: "Saved route", color: "#7c3aed", rank: 3, icon: svg("M6 16.5a2 2 0 1 0 0 4a2 2 0 1 0 0-4z|M18 3.5a2 2 0 1 0 0 4a2 2 0 1 0 0-4z|M7.5 17C12 15 7 10.5 12 10s5-2 5.5-3") },
+    harbour: { label: "Harbour", color: "#b91c1c", rank: 4, icon: svg("M12 3.5a2 2 0 1 0 0 4a2 2 0 1 0 0-4z|M12 7.5V20|M5 13a7 7 0 0 0 14 0|M9 10.5h6") },
+    vessel: { label: "Ship", color: "#0e7490", rank: 5, icon: svg("M3 14h18l-2.5 5.5h-13z|M6 14V9h12v5|M10 9V5.5h4V9") },
+    light: { label: "Light", color: "#ca8a04", rank: 6, icon: svg("M10 21l1-11h2l1 11z|M9 10h6|M10.5 7h3v3h-3z|M5 4.5l3 2|M19 4.5l-3 2|M4 9h2.5|M20 9h-2.5") },
+    aid: { label: "Mark", color: "#15803d", rank: 7, icon: svg("M12 3v5|M9 21l1.5-10h3L15 21|M7.5 21h9|M9.5 6l2.5-3 2.5 3") },
+    reserve: { label: "Nature reserve", color: "#3f9a4f", rank: 8, icon: svg("M5 19C5 10 11 5 20 5c0 9-5 14-14 14|M5 19l8-8") },
+    station: { label: "Weather station", color: "#0284c7", rank: 9, icon: svg("M3 8h10a3 3 0 1 0-3-3|M3 12h15a3 3 0 1 1-3 3|M3 16h7") },
+    structure: { label: "Bridge or lock", color: "#9a3412", rank: 10, icon: svg("M3 10h18|M5 10v9|M19 10v9|M5 15.5a7 4.5 0 0 1 14 0") },
+    ashore: { label: "Ashore", color: "#15803d", rank: 11, icon: svg("M3 20L12 5l9 15z|M12 20l-2.5-5h5z") },
+    place: { label: "Place", color: "#64748b", rank: 12, icon: svg("M4 6.5l5-2 6 2 5-2v13l-5 2-6-2-5 2z|M9 4.5v13|M15 6.5v13") },
+    layer: { label: "Layer", color: "#0f766e", rank: 13, icon: svg("M12 4l9 5-9 5-9-5z|M3 14l9 5 9-5") },
+    weather: { label: "Weather layer", color: "#0369a1", rank: 13, icon: svg("M7 18h10a4 4 0 0 0 .5-8A6 6 0 0 0 6 11.5 3.3 3.3 0 0 0 7 18z") },
+    view: { label: "Map type", color: "#475569", rank: 14, icon: svg("M4 6.5l5-2 6 2 5-2v13l-5 2-6-2-5 2z|M9 4.5v13|M15 6.5v13") },
+    menu: { label: "Menu", color: "#475569", rank: 15, icon: svg("M4 7h16|M4 12h16|M4 17h16") },
+  };
+  // Nominatim's kinds in plain words.
+  function placeLabel(kind) {
+    const k = String(kind || "").replace(/_/g, " ");
+    const words = { islet: "Island", island: "Island", bay: "Bay", strait: "Strait", village: "Village", town: "Town", city: "City",
+      hamlet: "Village", cape: "Cape", peninsula: "Peninsula", lake: "Lake", water: "Water", reef: "Reef", shoal: "Shoal",
+      suburb: "District", locality: "Place", beach: "Beach", harbour: "Harbour", marina: "Marina", ferry_terminal: "Ferry terminal" };
+    return words[String(kind || "").toLowerCase()] || (k ? k[0].toUpperCase() + k.slice(1) : "Place");
+  }
   const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(d));
 
   function toast(text) {
@@ -60,7 +115,7 @@
     try { await navigator.clipboard.writeText(text); toast("Copied"); } catch { toast(text); }
   }
 
-  function create({ map, api, store, phoneFix, busy, onChange }) {
+  function create({ map, api, store, phoneFix, busy, onChange, localRows, onPick }) {
     // --- buttons on the map ---------------------------------------------------------
     const fabs = document.createElement("div");
     fabs.className = "map-fabs";
@@ -306,22 +361,29 @@
     }
     loadPins();
 
-    // --- search -----------------------------------------------------------------------
+    // --- search: everything the app knows ---------------------------------------------
+    // Rows: { type, name, label?, detail?, lat?, lon?, bbox?, score, km?, pick? }. The NAS
+    // answers for ships, harbours, lights and marks, reserves, stations and bridges
+    // (/api/find), OpenStreetMap for place names (/api/places, slower); the panel adds its
+    // own ships, pins, routes and layers (localRows). Each row shows its kind's icon and a
+    // label, so a ship is never mistaken for an island of the same name.
     const sheet = document.createElement("div");
     sheet.className = "search-sheet panel";
     sheet.hidden = true;
     sheet.innerHTML = `<div class="search-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg>
-      <input type="text" inputmode="search" placeholder="Island, bay, harbour, pin or 60.12 24.45" autocomplete="off" enterkeyhint="search" aria-label="Find a place">
+      <input type="text" inputmode="search" placeholder="Ships, places, lights, harbours, layers…" autocomplete="off" enterkeyhint="search" aria-label="Search">
       <button type="button" class="icon-button plain search-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-      <ul class="search-results"></ul>`;
+      <ul class="search-results" role="listbox"></ul><div class="search-foot small muted" hidden></div>`;
     document.body.append(sheet);
     L.DomEvent.disableClickPropagation(sheet);
     L.DomEvent.disableScrollPropagation(sheet);
     const input = sheet.querySelector("input");
     const list = sheet.querySelector(".search-results");
+    const foot = sheet.querySelector(".search-foot");
     let found = null;
     function openSearch(open) {
       sheet.hidden = !open;
+      document.body.classList.toggle("search-open", open);
       if (open) { input.focus(); input.select(); }
     }
     fabs.querySelector(".fab-search").addEventListener("click", () => openSearch(sheet.hidden));
@@ -332,46 +394,94 @@
     });
     let timer = null;
     let seq = 0;
-    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 350); });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(timer); run().then(() => list.querySelector("button")?.click()); } });
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 220); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { clearTimeout(timer); (list.children.length ? Promise.resolve() : run()).then(() => list.querySelector("button")?.click()); }
+      if (e.key === "ArrowDown") { e.preventDefault(); list.querySelector("button")?.focus(); }
+    });
+    list.addEventListener("keydown", (e) => {
+      const li = e.target.closest("li");
+      if (!li) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); li.nextElementSibling?.querySelector("button")?.focus(); }
+      if (e.key === "ArrowUp") { e.preventDefault(); (li.previousElementSibling?.querySelector("button") || input).focus(); }
+    });
+
     async function run() {
       const q = input.value.trim();
       const my = ++seq;
-      if (q.length < 2) { list.replaceChildren(); return; }
-      const ql = q.toLowerCase();
-      const rows = pins.filter((p) => (p.name || "").toLowerCase().includes(ql) || (p.note || "").toLowerCase().includes(ql))
-        .slice(0, 5).map((p) => ({ name: p.name || PIN_KINDS[p.kind][0], where: "Your pin", kind: PIN_KINDS[p.kind][2], lat: p.lat, lon: p.lon }));
+      if (q.length < 2) { list.replaceChildren(); foot.hidden = true; return; }
+      const words = fold(q).split(" ").filter(Boolean).slice(0, 5);
       const c = map.getCenter();
-      const [places, harbours] = await Promise.all([
-        api(`api/places?q=${encodeURIComponent(q)}`).catch(() => ({ places: [] })),
-        api(`api/harbours?q=${encodeURIComponent(q)}&near=${c.lat.toFixed(3)},${c.lng.toFixed(3)}`).catch(() => null),
-      ]);
-      if (my !== seq) return;
-      if (places.coords) rows.unshift({ name: seaCoords(places.coords[0], places.coords[1]), where: "Coordinates", kind: "⌖", lat: places.coords[0], lon: places.coords[1] });
-      const hb = Array.isArray(harbours) ? harbours : harbours?.harbours || harbours?.results || [];
-      for (const h of hb.slice(0, 5)) {
-        // Rows [id, lat, lon, name, kind, …] as harbours.py gives them.
-        const lat = Array.isArray(h) ? h[1] : h.lat;
-        const lon = Array.isArray(h) ? h[2] : h.lon;
-        const name = Array.isArray(h) ? h[3] : h.name;
-        if (lat != null && lon != null) rows.push({ name, where: "Harbour", kind: "⚓", lat, lon });
+      const near = `${c.lat.toFixed(3)},${c.lng.toFixed(3)}`;
+      const nearKm = (lat, lon) => (lat == null ? null : c.distanceTo([lat, lon]) / 1000);
+      const local = [];
+      for (const p of pins) {
+        const sc = Math.min(score(p.name, words) ?? 9, (score(p.note, words) ?? 9) + 1);
+        if (sc < 9) local.push({ type: "pin", name: p.name || PIN_KINDS[p.kind][0], label: `Pin: ${PIN_KINDS[p.kind][0]}`, lat: p.lat, lon: p.lon, score: sc, pick: () => { goTo(p); showPin(p); } });
       }
-      for (const p of places.places || []) rows.push({ ...p, kind: "", where: [p.kind, p.where].filter(Boolean).join(" · ") });
-      found = rows;
+      for (const r of localRows?.(words, score) || []) local.push(r);
+      for (const r of local) if (r.km == null && r.lat != null) r.km = nearKm(r.lat, r.lon);
+      const coords = parseCoords(q);
+      if (coords) local.unshift({ type: "coords", name: seaCoords(coords[0], coords[1]), label: "Coordinates", lat: coords[0], lon: coords[1], score: -1 });
+      // What the panel knows shows at once; the NAS's answer and the place names join it.
+      let server = [], places = [], indexing = null, placesError = null, placesDone = false;
+      const show = () => {
+        if (my !== seq) return;
+        const seen = new Set(local.filter((r) => r.mmsi).map((r) => r.mmsi));
+        const rows = [...local, ...server.filter((r) => !(r.mmsi && seen.has(r.mmsi))), ...places];
+        rows.sort((a, b) => (a.score - b.score) || ((TYPES[a.type]?.rank ?? 50) - (TYPES[b.type]?.rank ?? 50))
+          || ((a.km ?? 1e9) - (b.km ?? 1e9)));
+        found = rows.slice(0, 40);
+        render(found);
+        const notes = [];
+        if (indexing) notes.push(`Still indexing the chart's lights and marks (${indexing.done} of ${indexing.total} areas)…`);
+        if (!placesDone) notes.push("Looking up place names…");
+        else if (placesError && !rows.length) notes.push(`Couldn't search place names just now (${placesError}).`);
+        foot.textContent = notes.join(" ");
+        foot.hidden = !notes.length;
+        if (!rows.length && placesDone) list.innerHTML = '<li class="muted small sr-empty">Nothing found.</li>';
+      };
+      show();
+      const a = api(`api/find?q=${encodeURIComponent(q)}&near=${near}`).then((d) => {
+        server = d.results || [];
+        indexing = d.indexing;
+        show();
+      }).catch(() => {});
+      const b = api(`api/places?q=${encodeURIComponent(q)}`).then((d) => {
+        places = (d.places || []).map((p) => ({ type: "place", name: p.name, label: placeLabel(p.kind), detail: p.where,
+          lat: p.lat, lon: p.lon, km: nearKm(p.lat, p.lon), score: (score(p.name, words) ?? 3) + 0.5 }));
+        placesError = d.error;
+      }).catch((err) => { placesError = err.message || String(err); }).finally(() => { placesDone = true; show(); });
+      await Promise.all([a, b]);
+    }
+
+    function render(rows) {
       list.replaceChildren(...rows.map((r) => {
+        const t = TYPES[r.type] || TYPES.place;
         const li = document.createElement("li");
         const b = document.createElement("button");
         b.type = "button";
-        b.innerHTML = `<span class="sr-kind">${esc(r.kind || "◦")}</span><span class="sr-text"><strong>${esc(r.name)}</strong><span class="muted small">${esc(r.where || "")}</span></span>`;
+        const color = r.color || (r.light ? TYPES.light.color : t.color);
+        const icon = (r.light && TYPES.light.icon) || t.icon;
+        const where = [r.detail, r.km != null && r.km >= 0.05 ? (r.km < 10 ? `${r.km.toFixed(1)} km` : `${Math.round(r.km)} km`) : ""].filter(Boolean).join(" · ");
+        b.innerHTML = `<span class="sr-icon" style="--c:${esc(color)}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></span>`
+          + `<span class="sr-text"><strong>${esc(r.name)}</strong><span class="small"><span class="sr-type" style="--c:${esc(color)}">${esc(r.label || t.label)}</span>${where ? ` <span class="muted">${esc(where)}</span>` : ""}</span></span>`;
         b.addEventListener("click", () => {
           openSearch(false);
-          map.setView([r.lat, r.lon], Math.max(map.getZoom(), 13));
-          whatsHere(L.latLng(r.lat, r.lon), r.name);
+          if (r.pick) r.pick();
+          else if (!onPick?.(r)) {
+            goTo(r);
+            whatsHere(L.latLng(r.lat, r.lon), r.name);
+          }
         });
         li.append(b);
         return li;
       }));
-      if (!rows.length) list.innerHTML = `<li class="muted small sr-empty">${places.error ? `Couldn't search just now (${esc(places.error)}).` : "Nothing found."}</li>`;
+    }
+
+    function goTo(r, zoom = 13) {
+      if (r.bbox) map.fitBounds([[r.bbox[1], r.bbox[0]], [r.bbox[3], r.bbox[2]]], { padding: [30, 30], maxZoom: 14 });
+      else if (r.lat != null) map.setView([r.lat, r.lon], Math.max(map.getZoom(), zoom));
     }
 
     // --- places ashore (ashore.py, OpenStreetMap), from zoom 11 ---------------------------
@@ -467,8 +577,8 @@
       return true;
     }
 
-    return { rows, whatsHere, myFix, fromHash, get found() { return found; } };
+    return { rows, whatsHere, myFix, fromHash, openSearch, TYPES, get found() { return found; } };
   }
 
-  window.FerryHere = { create, seaCoords };
+  window.FerryHere = { create, seaCoords, fold, score, parseCoords, TYPES, toast };
 })();

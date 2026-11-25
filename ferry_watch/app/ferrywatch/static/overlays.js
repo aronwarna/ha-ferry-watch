@@ -823,7 +823,7 @@
     }
 
     load();
-    return { rows, fieldChips, problems, checks, load, setTime, play, pause, get time() { return t; }, entries };
+    return { rows, fieldChips, problems, checks, load, setTime, play, pause, setOn, get time() { return t; }, entries };
   }
 
   return { union, frameAt, indexAt, startTime, timeLabel, relative, renderers, create };

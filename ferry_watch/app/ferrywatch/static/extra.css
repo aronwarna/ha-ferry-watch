@@ -1014,7 +1014,7 @@ body.sky-open .leaflet-control-container { visibility: hidden; }
 .sky-note-text { flex: 1; min-width: 0; }
 .sky-note-open { flex: 0 0 auto; padding: 6px 10px; border: 0; border-radius: 10px; background: #6366f1; color: #fff; font-weight: 600; cursor: pointer; }
 .sky-note .icon-button { color: #cbd5e1; }
-body.weather-open .sky-note, body.sky-open .sky-note { display: none; }
+body.weather-open .sky-note, body.sky-open .sky-note, body.search-open .sky-note { display: none; }
 /* On a phone the note would sit on top of whatever was just opened. */
 @media (max-width: 560px) {
   body.conditions-open .sky-note, body.route-open .sky-note, body:has(#card:not([hidden])) .sky-note { display: none; }
@@ -1341,8 +1341,16 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 .search-results:not(:empty) { border-top: 1px solid var(--line, #e2e8f0); margin-top: 4px; padding-top: 4px; }
 .search-results button { display: flex; gap: 10px; align-items: center; width: 100%; border: 0; background: none; color: var(--text); text-align: left; padding: 7px 8px; border-radius: 8px; cursor: pointer; font: inherit; }
 .search-results button:hover, .search-results button:focus { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.sr-kind { width: 20px; text-align: center; flex: none; }
-.sr-text { display: flex; flex-direction: column; min-width: 0; }
+.sr-icon { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--c); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.35); }
+.sr-icon svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sr-text { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.sr-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-text > .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-type { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px; letter-spacing: .01em;
+  color: color-mix(in srgb, var(--c) 78%, var(--text)); background: color-mix(in srgb, var(--c) 16%, transparent); }
+.search-foot { padding: 6px 8px 2px; }
+.search-flash { animation: search-flash 2.2s ease-out; border-radius: 10px; }
+@keyframes search-flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent, #2563eb); } 100% { box-shadow: 0 0 0 3px transparent; } }
 .sr-empty { padding: 8px; }
 .fw-toast { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 2000; padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: calc(100vw - 32px); }
 .link-like { color: var(--accent, #2563eb); cursor: pointer; text-decoration: underline; }

@@ -67,6 +67,21 @@ def score(name: str | None, words: list[str], whole: str) -> int | None:
     return 3
 
 
+def ais_type(code: Any) -> str | None:
+    """An AIS ship type number in a word or two (as the panel's aisType)."""
+    if not isinstance(code, int):
+        return None
+    named = {30: "Fishing", 31: "Towing", 32: "Towing", 33: "Dredger", 34: "Diving", 35: "Military",
+             36: "Sailing", 37: "Pleasure craft", 50: "Pilot", 51: "Rescue", 52: "Tug", 53: "Port tender",
+             55: "Law enforcement", 58: "Medical"}
+    if code in named:
+        return named[code]
+    for lo, word in ((40, "High-speed craft"), (60, "Passenger"), (70, "Cargo"), (80, "Tanker")):
+        if lo <= code < lo + 10:
+            return word
+    return None
+
+
 def _km(lat: float, lon: float, near: tuple[float, float] | None) -> float | None:
     if not near:
         return None
@@ -272,7 +287,9 @@ class Finder:
             s = score(name, words, whole)
             if s is None:  # matched by number
                 s = 0 if digits in (str(r["mmsi"]), str(r.get("imo") or "")) else 1
-            out.append({"type": "vessel", "name": name, "mmsi": r["mmsi"], "imo": r.get("imo"),
+            facts = [ais_type(r["type"]), f"{r['length']} m" if r["length"] else None,
+                     f"to {r['destination'].strip().title()}" if (r["destination"] or "").strip() else None]
+            out.append({"type": "vessel", "name": name, "detail": " · ".join(f for f in facts if f), "mmsi": r["mmsi"], "imo": r.get("imo"),
                         "ship_type": r["type"], "length": r["length"], "destination": r["destination"],
                         "tracked": r["mmsi"] in tracked, "score": s})
         return out
@@ -286,7 +303,7 @@ class Finder:
             sc = score(s.get("name"), words, whole)
             if sc is not None:
                 out.append({"type": "station", "name": s["name"], "id": s["id"], "lat": s["lat"], "lon": s["lon"],
-                            "score": sc, "detail": "FMI weather station"})
+                            "score": sc})
         return out
 
     def _structures(self, words: list[str], whole: str) -> list[dict[str, Any]]:
@@ -328,7 +345,7 @@ class Finder:
             kind = r[1]
             label = AID_LABELS.get(kind, "Mark")
             rows.append({"type": "aid", "name": r[0], "label": label, "lit": bool(r[4]),
-                         "light": kind in LIGHTS or bool(r[4]), "lat": r[2], "lon": r[3], "score": s,
+                         "light": kind in LIGHTS, "lat": r[2], "lon": r[3], "score": s,
                          "detail": "Lit" if r[4] and kind not in LIGHTS else None})
         for s, r in await self.reserves.search(words, whole):
             b = r[3]

@@ -240,6 +240,8 @@
     onChange: () => {
       if (!$("ships-dialog").querySelector('[data-pane="layers"]').hidden) renderLayers();
     },
+    localRows: (words, score) => searchRows(words, score),
+    onPick: (r) => pickFound(r),
   });
   FerryHist.compactPicker(document.querySelector('.segmented[aria-label="Map type"]'));
   // Phones: the chart style sits under the weather pill (the map buttons run down the right
@@ -912,6 +914,138 @@
     };
     group.set(points);
     return group;
+  }
+
+  // --- search: what the panel itself knows (whereami.js asks the NAS for the rest) ---
+
+  function searchRows(words, score) {
+    const out = [];
+    const digits = words.join("");
+    for (const [mmsi, e] of ships) {
+      const name = e.info.name || `MMSI ${mmsi}`;
+      let sc = score(name, words);
+      if (sc == null && /^\d{3,}$/.test(digits) && String(mmsi).startsWith(digits)) sc = String(mmsi) === digits ? 0 : 1;
+      if (sc == null) continue;
+      const p = e.info.position;
+      const sog = p?.sog;
+      out.push({
+        type: "ship", mmsi, name, label: e.info.fleet ? "Ship you follow" : "Your ship",
+        color: e.info.color || undefined,
+        detail: p ? (sog == null ? "" : sog < 0.5 ? "Stopped" : `${sog.toFixed(1)} kn`) : "No position yet",
+        lat: p?.lat, lon: p?.lon, score: sc,
+        pick: () => focusShip(mmsi, { view: "center" }),
+      });
+    }
+    for (const r of savedRoutes) {
+      const sc = score(r.name, words);
+      if (sc == null || !r.points?.length) continue;
+      out.push({ type: "route", name: r.name, detail: routeSummary(r.points, r.speed).text, lat: r.points[0][0], lon: r.points[0][1], score: sc,
+        pick: async () => {
+          if (!r.shown) { await api("api/routes", { method: "POST", body: { id: r.id, shown: true } }); await loadRoutes(); }
+          map.fitBounds(L.latLngBounds(r.points), { padding: [40, 80], maxZoom: 13 });
+        } });
+    }
+    // Layers, weather layers, map types and the menu's tabs: found by name, switched on or
+    // opened when picked. Ranked a step below things on the map (+1).
+    const plus = (sc) => (sc == null ? null : sc + 1);
+    renderLayers();
+    for (const head of $("layers-list").querySelectorAll(".fleet-head")) {
+      const title = head.querySelector(".strong")?.textContent;
+      const sc = plus(score(title, words));
+      if (sc == null) continue;
+      const on = head.querySelector("input.switch")?.checked;
+      out.push({ type: "layer", name: title, detail: on ? "On" : "Off", score: sc, km: -1,
+        pick: () => {
+          openMenu("layers");
+          const row = [...$("layers-list").querySelectorAll(".fleet-head")].find((h) => h.querySelector(".strong")?.textContent === title);
+          const box = row?.closest("section") || row;
+          box?.scrollIntoView({ block: "center" });
+          box?.classList.add("search-flash");
+          setTimeout(() => box?.classList.remove("search-flash"), 2200);
+        } });
+    }
+    const wx = [...overlays.entries.values()].map((e) => ({ title: e.ov.title, on: e.on, id: e.ov.id }));
+    wx.push({ title: "Weather stations", on: stationsOn, stations: true }, { title: "Night sky", sky: true });
+    for (const w of wx) {
+      const sc = plus(score(w.title, words));
+      if (sc == null) continue;
+      out.push({ type: "weather", name: w.title, detail: w.sky ? "Stars and planets tonight" : w.on ? "On" : "Off", score: sc, km: -1,
+        pick: async () => {
+          if (w.sky) { sky.open(); return; }
+          if (w.stations) { if (!stationsOn) setStations(true); }
+          else if (!w.on) await overlays.setOn(w.id, true);
+          toggleWeather(true);
+        } });
+    }
+    for (const b of document.querySelectorAll('.segmented[aria-label="Map type"] button[data-layer]')) {
+      const sc = plus(score(b.textContent, words));
+      if (sc != null) out.push({ type: "view", name: b.textContent.trim(), detail: "Show this map", score: sc, km: -1, pick: () => setLayer(b.dataset.layer) });
+    }
+    for (const b of document.querySelectorAll("button[data-tab]")) {
+      const name = b.textContent.trim();
+      const sc = plus(score(name, words));
+      if (sc != null) out.push({ type: "menu", name, detail: "Open in the menu", score: sc, km: -1, pick: () => openMenu(b.dataset.tab) });
+    }
+    return out;
+  }
+
+  // A row the NAS found (find.py) that needs more than "go there and say what's here".
+  function pickFound(r) {
+    if (r.type === "vessel") {
+      if (ships.has(r.mmsi)) focusShip(r.mmsi, { view: "center" });
+      else showVessel(r);
+      return true;
+    }
+    if (r.type === "station") { showStation(r); return true; }
+    if (r.type === "reserve" && reserves) {
+      reserves.show(r.id, r.bbox).then((ok) => { if (!ok) here.whatsHere(L.latLng(r.lat, r.lon), r.name); });
+      return true;
+    }
+    return false;
+  }
+
+  // Another ship picked in search: where Digitraffic last heard it, with its usual popup.
+  async function showVessel(r) {
+    let data;
+    try {
+      data = await api(`api/find/vessel/${r.mmsi}`);
+    } catch (err) {
+      FerryHere.toast(`Couldn't find ${r.name} just now (${err.message || err}).`);
+      return;
+    }
+    const row = data.row;
+    if (!row) {
+      FerryHere.toast(`${r.name} hasn't been heard on AIS lately${data.error ? ` (${data.error})` : ""}.`);
+      return;
+    }
+    if (!trafficLayer) {
+      trafficCanvas = sharedCanvas();
+      trafficLayer = L.layerGroup().addTo(map);
+    }
+    const [mmsi, lat, lon, sog, cog, heading, , type] = row;
+    let boat = traffic.get(mmsi);
+    if (!boat) {
+      const course = sog != null && sog >= 0.5 ? (heading ?? cog) : null;
+      boat = new Boat([lat, lon], { renderer: trafficCanvas, radius: trafficSize(Math.max(map.getZoom(), 12)), color: "#fff", weight: 1,
+        opacity: 0.9, fillColor: aisColor(type), fillOpacity: 0.85, course });
+      boat.bindPopup(() => trafficPopup(boat), { className: "aid-popup", offset: [0, -4] });
+      boat.addTo(trafficLayer);
+      traffic.set(mmsi, boat);
+      // With Other ships off, it goes when its card closes.
+      boat.on("popupclose", () => { if (!trafficOn) { boat.remove(); traffic.delete(mmsi); } });
+    }
+    boat.row = row;
+    map.setView([lat, lon], Math.max(map.getZoom(), 12));
+    boat.openPopup();
+  }
+
+  async function showStation(r) {
+    if (!stationsOn) setStations(true);
+    map.setView([r.lat, r.lon], Math.max(map.getZoom(), 10));
+    for (let i = 0; i < 40 && !stationMarks.get(r.id); i++) await new Promise((ok) => setTimeout(ok, 250));
+    const mark = stationMarks.get(r.id);
+    if (mark) openStation(mark);
+    else here.whatsHere(L.latLng(r.lat, r.lon), r.name);
   }
 
   // --- focus a ship -------------------------------------------------------------

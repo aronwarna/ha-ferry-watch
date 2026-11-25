@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.70.0
+
+- **Search finds everything, and says what each result is**: the map's search box now finds
+  ships (your own, the ones you follow, and any ship in Digitraffic's list by name, MMSI or IMO
+  number), named lights, lighthouses, buoys and marks from the drawn chart, harbours, places to
+  go ashore, nature reserves, weather stations, opening bridges, locks and canals, your pins and
+  saved routes, island and village names, coordinates, and even the app's own layers, weather
+  layers, map types and menu tabs. Every suggestion has a coloured icon and a label (Ship,
+  Lighthouse, Spar buoy, Harbour, Nature reserve, Weather station, Layer…), with the ship's
+  type and length or the distance from the map's middle beside it.
+- Picking one does the right thing: a ship opens its card where it is now (another ship shows
+  where Digitraffic last heard it, with its photo and links), a station opens its readings, a
+  reserve its outline and card, a layer is shown in Layers, a weather layer is switched on.
+- Lights and marks are found in the chart areas already downloaded; the first search after
+  the update indexes them in the background (a few minutes on the NAS, then only new areas).
+- Arrow keys move through the suggestions on a computer; the night-sky note no longer covers
+  the search box.
+
 ## 0.67.1
 
 - **Tidier map buttons on the phone**: one even column of square buttons down the right side
