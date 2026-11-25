@@ -18,6 +18,12 @@ Each source is one of:
 - "xyz": a plain tile template ({z}/{x}/{y}, {key} for the Land Survey's API key).
   A list of templates is tried in order (the first that answers wins).
 - "arcgis": an ArcGIS MapServer, drawn through its export call.
+- "rest": a folder of ArcGIS MapServers, one picture each (Kirkkonummi's old photos and
+  maps). The folder's list is read like a WMS's GetCapabilities, the source's rules pick
+  the services, and each is drawn through its export call in web mercator.
+
+An "xyz" source with `years` and `"wide": False` is one place's old photo as plain tiles
+(Sipoo 1987); its coverage is worked out from a few tiles stitched together.
 
 Layers come in three groups, which decide where the panel shows them:
 "photo" (old aerial photos) and "map" (old maps) are the years of the Historic
@@ -211,6 +217,37 @@ SOURCES: list[dict[str, Any]] = [
                   "taustakartat_ja_aluejaot:Ortoilmakuva_2023"],
     },
     {
+        # Kirkkonummi's own historical layers (Porkkala included): photo flights from 1944, just
+        # before the Soviet lease, and 1954-56, just after, to 2017; and the old map series. An
+        # ArcGIS server whose pictures are stored in the Finnish GK25 grid but drawn in web
+        # mercator on request. Terms aren't stated; the municipality's own public map uses it.
+        # Their mosaics have black or white "no picture" collars, so both colours are cleaned.
+        "id": "kirkkonummi", "name": "Kirkkonummi", "kind": "rest",
+        "url": "https://paikkatieto.kirkkonummi.fi/server/rest/services", "folder": "Historia_aineisto",
+        "attribution": "© Kirkkonummen kunta",
+        "box": (59.84, 24.13, 60.36, 24.90), "max_zoom": 18, "opaque": True,
+        "rules": [
+            {"match": r"(?i)/(ilmakuva|ortokuva)_", "group": "photo", "year_required": True, "min_zoom": 9},
+            _series("Historia_aineisto/Kuninkaankartasto_1776", "King's map", 1776, None, 9, 17),
+            _series("Historia_aineisto/Pitäjänkartasto_1840", "Parish map atlas", 1840, None, 9, 17),
+            _series("Historia_aineisto/Senaatinkartasto_1870", "Senate atlas", 1870, None, 9, 17),
+            _series("Historia_aineisto/Pitäjänkartta_1932_1943", "Parish map", 1932, 1943, 9, 17),
+            _series("Historia_aineisto/Peruskartta_1960", "Basic map", 1960, None, 9, 17),
+        ],
+        "known": [f"Historia_aineisto/{n}" for n in (
+            "Ilmakuva_1944", "Ilmakuva_1954_1956", "Ilmakuva_1976_1977", "Ilmakuva_1983", "Ilmakuva_1992_1993",
+            "Ilmakuva_1998_1999", "Ilmakuva_2005_2006", "ortokuva_2011", "ortokuva_2017", "Kuninkaankartasto_1776",
+            "Pitäjänkartasto_1840", "Senaatinkartasto_1870", "Pitäjänkartta_1932_1943", "Peruskartta_1960")],
+    },
+    {
+        # Sipoo's own 1987 photo flight, published as plain web-mercator tiles (ArcGIS Online).
+        "id": "sipoo", "name": "Sipoo", "kind": "xyz", "group": "photo", "title": "Aerial photo", "wide": False,
+        "years": {1987: "https://tiles-eu1.arcgis.com/1uXGIDAAq2wrQcJ8/arcgis/rest/services/"
+                        "SipoonPaikkatietotuki_Ilmakuva_Sipoosta_vuodelta_1987/MapServer/tile/{z}/{y}/{x}"},
+        "attribution": "© Sipoon kunta",
+        "box": (60.16, 25.03, 60.57, 25.54), "min_zoom": 11, "max_zoom": 19,
+    },
+    {
         "id": "turku", "name": "Turku", "kind": "wms",
         "url": "https://turku.asiointi.fi/teklaogcweb/wms.ashx",
         "attribution": "© Turun kaupunki (CC BY 4.0)",
@@ -321,6 +358,15 @@ SOURCES: list[dict[str, Any]] = [
         "url": "https://gtkdata.gtk.fi/arcgis/rest/services/Maankamara/Merenpohja/MapServer/export",
         "attribution": "Seabed © GTK (CC BY 4.0)",
         "box": (59.3, 19.0, 66.0, 30.5), "min_zoom": 8, "max_zoom": 16, "opacity": 0.6,
+    },
+    {
+        "id": "porkkala-lease", "name": "Kirkkonummi", "kind": "arcgis", "group": "overlay",
+        "title": "Porkkala lease area 1944-56",
+        "info": "The border of the area the Soviet Union held as a naval base from 1944 to 1956.",
+        "url": "https://paikkatieto.kirkkonummi.fi/server/rest/services/Historia_aineisto/Parenteesialueen_raja/"
+               "MapServer/export",
+        "attribution": "© Kirkkonummen kunta",
+        "box": (59.95, 24.13, 60.25, 24.80), "min_zoom": 8, "max_zoom": 18,
     },
     {
         # NASA's satellite picture of the whole Earth, new each day (VIIRS, ~375 m): sea ice,
@@ -478,7 +524,7 @@ def layers_from_names(source: dict, found: list[dict]) -> list[dict]:
                 break
             box = entry.get("box") or source["box"]
             picked[key] = (rank, {
-                "id": f"{source['id']}-{_slug(name.split(':')[-1])}",
+                "id": f"{source['id']}-{_slug(name.split(':')[-1].split('/')[-1])}",
                 "source": source["id"], "where": source["name"], "group": group, "year": year, "year_to": year_to,
                 "label": label, "title": title or _pretty(name), "layer": name,
                 "format": rule.get("format", source.get("format", "image/png")), "box": [round(v, 4) for v in box],
@@ -544,7 +590,8 @@ def parse_capabilities(path: Path) -> list[dict]:
 def _wide_row(source: dict, year: int, **more: Any) -> dict:
     return {"id": f"{source['id']}-{year}", "source": source["id"], "where": source["name"], "group": source["group"],
             "year": year, "label": source["title"], "title": f"{source['title']} {year}", "box": list(source["box"]),
-            "min_zoom": source.get("min_zoom", 0), "max_zoom": source.get("max_zoom", 18), "wide": True, "year_to": None,
+            "min_zoom": source.get("min_zoom", 0), "max_zoom": source.get("max_zoom", 18),
+            "wide": source.get("wide", True), "year_to": None,
             "attribution": source["attribution"], **more}
 
 
@@ -594,7 +641,7 @@ class MapSources:
     def _rebuild(self) -> None:
         layers: dict[str, dict] = {}
         for s in SOURCES:
-            if s["kind"] == "wms":
+            if s["kind"] in ("wms", "rest"):
                 found = self.found.get(s["id"])
                 rows = layers_from_names(s, found) if found else ([] if s.get("discover_only") else known_layers(s))
                 for row in rows:
@@ -666,7 +713,7 @@ class MapSources:
         await asyncio.to_thread(self._drop_old_tiles)
         while True:
             for s in SOURCES:
-                if s["kind"] == "wms":
+                if s["kind"] in ("wms", "rest"):
                     await self.discover(s)
                 elif s["kind"] == "wayback":
                     await self.discover_wayback(s)
@@ -713,6 +760,8 @@ class MapSources:
             if self.fake:
                 from .simmaps import fake_capabilities
                 found = fake_capabilities(s)
+            elif s["kind"] == "rest":
+                found = await self._rest_list(s)
             else:
                 found = await self._capabilities(url)
         except Exception as err:  # noqa: BLE001 - any failure keeps the last good list
@@ -731,6 +780,17 @@ class MapSources:
                                for e in found if layers_from_names(s, [e])]
         self.store.kv_set("mapsources_found", self.found)
         self.checked[s["id"]] = {"ts": time.time(), "error": None}
+
+    async def _rest_list(self, s: dict) -> list[dict]:
+        """An ArcGIS folder's map services, as [{name: "Folder/Service"}]."""
+        url = f"{s['url']}/{quote(s['folder'])}?f=json"
+        async with self.session.get(url, headers={"User-Agent": USER_AGENT},
+                                    timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+        if "services" not in data:
+            raise ValueError(str(data.get("error") or "no service list")[:200])
+        return [{"name": e["name"]} for e in data["services"] if e.get("type") == "MapServer"]
 
     async def _capabilities(self, url: str) -> list[dict]:
         fd, name = tempfile.mkstemp(prefix="caps-", suffix=".xml", dir=self.dir if self.dir.exists() else None)
@@ -807,7 +867,7 @@ class MapSources:
             async with self._cover_limit:
                 cover = await self._make_cover(row)
         except Exception as err:  # noqa: BLE001 - a layer without coverage still shows (by its box)
-            _LOGGER.warning("Map coverage of %s %s (%s): %s", row["where"], row["year"], row["layer"], err)
+            _LOGGER.warning("Map coverage of %s %s (%s): %s", row["where"], row["year"], row.get("layer", row["title"]), err)
             self.cover_failed[lid] = time.time()
         finally:
             del self._cover_pending[lid]
@@ -840,8 +900,41 @@ class MapSources:
             lsize = overview_size(lbox, max(size))
             body = await self._get(self._wms_url(src, row, lbox, lsize, "EPSG:3301"), 120)
             return await asyncio.to_thread(lambda: reproject_lest(Image.open(io.BytesIO(body)), lbox, mbox, size))
-        body = await self._get(self._wms_url(src, row, mbox, size), 120)
+        if src["kind"] == "xyz":
+            return await self._stitch(row, mbox, size)
+        url = self._rest_url(src, row, mbox, size) if src["kind"] == "rest" else self._wms_url(src, row, mbox, size)
+        body = await self._get(url, 120)
         return await asyncio.to_thread(lambda: Image.open(io.BytesIO(body)).convert("RGBA"))
+
+    async def _stitch(self, row: dict, mbox, size: tuple[int, int], most: int = 16) -> Image.Image:
+        """A plain-tile layer over a web-mercator box: the tiles of the deepest zoom that needs
+        at most ``most`` of them (from the layer's first zoom), pasted and scaled. Missing
+        tiles stay see-through."""
+        x0, y0, x1, y1 = mbox
+        z = row["min_zoom"]
+        def span(zz: int) -> tuple[int, int, int, int]:
+            n, w = 2**zz, 2 * HALF / 2**zz
+            return (int((x0 + HALF) // w), int((HALF - y1) // w), min(n - 1, int((x1 + HALF) // w)),
+                    min(n - 1, int((HALF - y0) // w)))
+        while z < row["max_zoom"]:
+            a, b, c, d = span(z + 1)
+            if (c - a + 1) * (d - b + 1) > most:
+                break
+            z += 1
+        a, b, c, d = span(z)
+        sheet = Image.new("RGBA", ((c - a + 1) * 256, (d - b + 1) * 256), (0, 0, 0, 0))
+        for tx in range(a, c + 1):
+            for ty in range(b, d + 1):
+                try:
+                    body = await self._get(self.tile_urls(row, z, tx, ty)[0], 60)
+                except (aiohttp.ClientResponseError, ValueError):
+                    continue  # no tile here: nothing to paste
+                sheet.paste(Image.open(io.BytesIO(body)).convert("RGBA"), ((tx - a) * 256, (ty - b) * 256))
+        w = 2 * HALF / 2**z
+        left, top = (x0 + HALF) / w - a, (HALF - y1) / w - b
+        right, bottom = (x1 + HALF) / w - a, (HALF - y0) / w - b
+        crop = sheet.crop((round(left * 256), round(top * 256), round(right * 256), round(bottom * 256)))
+        return crop.resize(size, Image.BILINEAR)
 
     async def _get(self, url: str, timeout: float) -> bytes:
         async with self.session.get(url, headers={"User-Agent": USER_AGENT},
@@ -874,8 +967,15 @@ class MapSources:
                 f"&STYLES=&SRS={srs}&BBOX={','.join(f'{v:.3f}' for v in bbox)}&WIDTH={size[0]}&HEIGHT={size[1]}"
                 f"&FORMAT={quote(fmt, safe='/')}&TRANSPARENT=TRUE")
 
+    def _rest_url(self, src: dict, row: dict, bbox, size: tuple[int, int]) -> str:
+        return (f"{src['url']}/{quote(row['layer'], safe='/')}/MapServer/export?"
+                f"bbox={','.join(f'{v:.3f}' for v in bbox)}&bboxSR=3857&imageSR=3857&size={size[0]},{size[1]}"
+                f"&format=png32&transparent=true&f=image")
+
     def tile_urls(self, row: dict, z: int, x: int, y: int) -> list[str]:
         src = _source(row["source"])
+        if src["kind"] == "rest":
+            return [self._rest_url(src, row, mercator_bbox(z, x, y), (256, 256))]
         if src["kind"] == "wms":
             if src.get("crs") == "EPSG:3301":
                 lbox = lest_box_for(tile_merc(z, x, y))
@@ -980,6 +1080,6 @@ def _source(source_id: str) -> dict:
 
 
 def _needs_cover(row: dict) -> bool:
-    """Old photos and maps from WMS services have edges worth finding; the satellite
-    archives cover everything."""
-    return row["group"] in ("photo", "map") and not row.get("wide") and _source(row["source"])["kind"] == "wms"
+    """Old photos and maps have edges worth finding; the satellite archives cover everything."""
+    return (row["group"] in ("photo", "map") and not row.get("wide")
+            and _source(row["source"])["kind"] in ("wms", "rest", "xyz"))

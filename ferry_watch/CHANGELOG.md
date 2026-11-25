@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.69.0
+
+- **Kirkkonummi and Porkkala in Historic maps**: the municipality's own photo flights from 1944
+  (just before the Soviet lease), 1954-56 (just after it was handed back), 1976-77, 1983,
+  1992-93, 1998-99, 2005-06, 2011 and 2017, and its old maps: King's map 1776, the 1840s parish
+  maps, Senate atlas 1870, parish map 1932-43 and basic map 1960.
+- **Sipoo 1987** aerial photo.
+- New switch in Layers: **Porkkala lease area 1944-56**, the border of the Soviet naval base.
+
 ## 0.68.0
 
 - **Then & now is now Historic maps**, with a calmer, clearer bar: Aerial photos and Old maps

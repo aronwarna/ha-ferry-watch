@@ -43,6 +43,9 @@ FAKE_LISTS = {
               ("Turku ilmakuva 1939", "Turun ilmakuva 1939"), ("Turku ilmakuva 2005 vaaravari", "x"),
               ("Turun Osoitekartta 1950", "Turun osoitekartta 1950"), ("Virastokartta 1958-61", "Virastokartta 1958-61"),
               ("Asemakaava", "Asemakaava")],
+    "kirkkonummi": [(f"Historia_aineisto/{n}", "") for n in (
+        "Ilmakuva_1944", "Ilmakuva_1954_1956", "Ilmakuva_1983", "ortokuva_2017", "Kuninkaankartasto_1776",
+        "Pitäjänkartta_1932_1943", "Peruskartta_1960", "Parenteesialueen_raja")],
     "oulu": [("Ilmakuva 2012 Oulu", "Oulun ilmakuva 2012"), ("Ilmakuva 2024", "Ilmakuva 2024")],
     "estonia-old": [("of1993-2000_10k", "1993-2000 1:10 000"), ("of2005", "2005"), ("of2015aero", "Aeropildistamine 2015"),
                     ("of2015mets", "Metsanduslik 2015"), ("yheverstakaart", "Üheverstane kaart (1894-1922)"),

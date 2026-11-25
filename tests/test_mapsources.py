@@ -151,3 +151,49 @@ def test_wayback_and_yearly_sources():
     assert mapsources.wayback_releases(cfg) == {2014: 999, 2019: 31144}
     s2 = next(s for s in mapsources.SOURCES if s["id"] == "s2")
     assert "s2cloudless-2020_3857" in s2["years"][2020] and "{z}/{y}/{x}" in s2["years"][2020]
+
+
+def test_kirkkonummi_folder_and_sipoo_tiles(tmp_path):
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    class Store:
+        def kv_get(self, k, d=None):
+            return d
+
+        def kv_set(self, k, v):
+            pass
+
+    kirkko = next(s for s in mapsources.SOURCES if s["id"] == "kirkkonummi")
+    found = [{"name": f"Historia_aineisto/{n}"} for n in ("Ilmakuva_1944", "Ilmakuva_1954_1956", "ortokuva_2017",
+                                                         "Parenteesialueen_raja", "Pitäjänkartta_1932_1943")]
+    rows = {r["id"]: r for r in mapsources.layers_from_names(kirkko, found)}
+    assert set(rows) == {"kirkkonummi-ilmakuva-1944", "kirkkonummi-ilmakuva-1954-1956", "kirkkonummi-ortokuva-2017",
+                         "kirkkonummi-pit-j-nkartta-1932-1943"}  # the lease border is an overlay, not a year
+    assert (rows["kirkkonummi-ilmakuva-1954-1956"]["year"], rows["kirkkonummi-ilmakuva-1954-1956"]["year_to"]) == (1954, 1956)
+
+    ms = mapsources.MapSources(tmp_path, session=None, store=Store())
+    url = ms.tile_urls(ms._layers["kirkkonummi-ilmakuva-1944"], 14, 9300, 4740)[0]
+    assert "/Historia_aineisto/Ilmakuva_1944/MapServer/export?" in url and "imageSR=3857" in url
+    assert "porkkala-lease" in ms._layers and ms._layers["porkkala-lease"]["group"] == "overlay"
+
+    sipoo = ms._layers["sipoo-1987"]
+    assert mapsources._needs_cover(sipoo) and not sipoo["wide"]
+    asked = []
+
+    async def fake_get(url, timeout):
+        asked.append(url)
+        z, y, x = (int(v) for v in url.rsplit("/", 3)[1:])
+        if x % 2:
+            raise ValueError("no tile")
+        buf = io.BytesIO()
+        Image.new("RGB", (256, 256), (90, 110, 80)).save(buf, "PNG")
+        return buf.getvalue()
+
+    ms._get = fake_get
+    img = asyncio.run(ms._stitch(sipoo, mapsources.box_merc(sipoo["box"]), (300, 400)))
+    assert img.size == (300, 400) and 1 < len(asked) <= 24  # its first zoom (11) already needs 20
+    alphas = img.getchannel("A").getextrema()
+    assert alphas == (0, 255)  # missing tiles stay see-through
