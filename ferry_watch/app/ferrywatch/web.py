@@ -294,6 +294,11 @@ class Web:
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/mapsources", self.mapsources)
         r.add_get("/api/mapcovers", self.mapcovers)
+        r.add_get("/api/mapsave", self.mapsave_status)
+        r.add_post("/api/mapsave/plan", self.mapsave_plan)
+        r.add_post("/api/mapsave", self.mapsave_start)
+        r.add_delete("/api/mapsave", self.mapsave_stop)
+        r.add_post("/api/mapsave/limit", self.mapsave_limit)
         r.add_get("/api/here", self.here)
         r.add_get("/api/pins", self.pins)
         r.add_post("/api/pins", self.save_pin)
@@ -648,6 +653,47 @@ class Web:
         body = gzip.compress(json.dumps(self.fw.maps.covers_payload(), separators=(",", ":")).encode(), 6)
         return web.Response(body=body, content_type="application/json",
                             headers={"Content-Encoding": "gzip", "Cache-Control": "max-age=86400"})
+
+    @staticmethod
+    async def _save_args(request: web.Request) -> tuple[tuple, list[str], int, str]:
+        """{box: [s, w, n, e], layers: [ids], zmax, title} from a "Save this area" request."""
+        try:
+            body = await request.json()
+            box = tuple(float(v) for v in body["box"])
+            layers = [str(v) for v in body["layers"]][:200]
+            zmax = int(body.get("zmax", 16))
+        except (ValueError, KeyError, TypeError):
+            raise web.HTTPBadRequest(text="box, layers and zmax needed") from None
+        if len(box) != 4 or not (box[0] < box[2] and box[1] < box[3]) or not 8 <= zmax <= 19:
+            raise web.HTTPBadRequest(text="bad area or detail")
+        return box, layers, zmax, str(body.get("title", ""))[:80]
+
+    async def mapsave_plan(self, request: web.Request) -> web.Response:
+        box, layers, zmax, _ = await self._save_args(request)
+        return web.json_response(await asyncio.to_thread(self.fw.maps.save_plan, box, layers, zmax))
+
+    async def mapsave_start(self, request: web.Request) -> web.Response:
+        box, layers, zmax, title = await self._save_args(request)
+        try:
+            return web.json_response(await self.fw.maps.save_start(box, layers, zmax, title))
+        except (RuntimeError, ValueError) as err:
+            raise web.HTTPConflict(text=str(err)) from None
+
+    async def mapsave_status(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.maps.save_status())
+
+    async def mapsave_stop(self, request: web.Request) -> web.Response:
+        return web.json_response(self.fw.maps.save_stop())
+
+    async def mapsave_limit(self, request: web.Request) -> web.Response:
+        try:
+            gb = int((await request.json())["gb"])
+        except (ValueError, KeyError, TypeError):
+            raise web.HTTPBadRequest(text="gb needed") from None
+        try:
+            return web.json_response(await asyncio.to_thread(self.fw.maps.set_kept_limit, gb))
+        except ValueError as err:
+            raise web.HTTPConflict(text=str(err)) from None
 
     async def map_tile(self, request: web.Request) -> web.StreamResponse:
         try:

@@ -34,8 +34,15 @@ has picture (its coverage, which the panel uses to offer only the years that sho
 where you look); and for each tile, the white or black "no picture" areas at its edges
 made see-through.
 
-Historical pictures don't change, so tiles are kept for half a year, in their own
-folder with their own size limit (they never push chart tiles out).
+Old photos and maps (the satellite archives' past years too) never change, so their
+tiles are kept for good, in a store of their own (/data/maps/kept; its size is a setting,
+kept_space/set_kept_limit; the longest unseen go only when it's full). Each is asked for
+again once a year, and the copy stays unless a good new one comes. Layers a service stops
+listing stay listed (their kept tiles still show). "Save this area" (save_plan/save_start)
+fills that store for a whole view ahead, so those years work without the services, and
+HOME_SAVE fills it in the background with the home area at the sharpest detail that fits.
+Overlays live in the ordinary cache (half a year, CACHE_BYTES). Both stay out of HA
+backups (*/maps).
 """
 
 from __future__ import annotations
@@ -68,6 +75,24 @@ _LOGGER = logging.getLogger(__name__)
 HALF = 20037508.342789244
 TILE_MAX_AGE = 182 * 86400
 CACHE_BYTES = 600 * 1024 * 1024
+KEPT_BYTES = 3 * 1024**3       # old photos and maps, kept for good (the smallest size offered)
+KEPT_GB_CHOICES = (3, 5, 10, 20, 30, 50, 100, 200, 400)
+KEPT_AUTO_SHARE = 0.5          # until a size is picked: the largest that's at most half the room
+DISK_RESERVE = 4 * 1024**3     # never let the kept store fill the disk past this much free
+INODE_RESERVE = 200_000        # nor use up the disk's last files (each tile is one)
+TILE_FILE_BYTES = 20_000       # a kept tile's average, for how many files a size means
+KEPT_RECHECK = 365 * 86400     # a kept tile is asked for again after this (and kept if that fails)
+SAVE_MAX_TILES = 150_000       # one "Save this area" at most
+SAVE_CONCURRENCY = 3           # gentle on the cities' servers
+SAVE_MIN_ZOOM = 8
+SAVE_TILE_BYTES = {"photo": 28_000, "map": 18_000}  # rough average of a kept tile, for estimates
+BEST_MAP_ZOOM = 17             # old map scans hold no more detail than this (photos: their max_zoom)
+# Saved in the background without asking: pictures only one small service has (the most
+# at risk of going away), over its whole area, at the sharpest zoom (up to HOME_ZMAX) that
+# fits in the kept store's size with room to spare. Carries on deeper when the size grows.
+HOME_SAVE = ["kirkkonummi"]
+HOME_ZMIN, HOME_ZMAX = 14, 18
+HOME_FILL = 0.85               # share of the kept store the home area may take
 DISCOVER_EVERY = 86400
 CAPS_MAX_BYTES = 40 * 1024 * 1024  # a GetCapabilities answer larger than this is cut off
 TILE_REV = "h2"        # old photo and map tiles as cleaned by histclean (0.68)
@@ -623,8 +648,22 @@ class MapSources:
         self.store = store
         self.fake = fake
         self.cache = TileCache(directory / "tiles", session, CACHE_BYTES)
+        # Old photos and maps: never stale (they don't change), only the oldest go when full.
+        self.kept = TileCache(directory / "kept", session, KEPT_BYTES, delete_stale=False)
+        self._kept_pruned = 0.0
+        self.kept.max_ages = {s["id"]: KEPT_RECHECK for s in SOURCES}
+        self.save_state: dict[str, Any] = {"running": False}
+        self._save_task: asyncio.Task | None = None
+        self._kept_size: tuple[float, int] = (0.0, 0)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.kept.max_bytes = self._kept_limit()
+        # Asked for again after half a year, but never removed for age (only when the cache
+        # is full): a service that goes away keeps showing what was seen. Only sources of
+        # short-lived pictures (a day's satellite picture) are removed when old.
+        self.cache.default_age = TILE_MAX_AGE
         for s in SOURCES:
-            self.cache.max_ages[s["id"]] = s.get("max_age", TILE_MAX_AGE)
+            if s.get("max_age"):
+                self.cache.max_ages[s["id"]] = s["max_age"]
         self.found: dict[str, list[dict]] = self.store.kv_get("mapsources_found", {}) or {}
         self.checked: dict[str, dict] = {}
         self._layers: dict[str, dict] = {}
@@ -702,7 +741,7 @@ class MapSources:
             n = sum(1 for r in self._layers.values() if r["source"] == s["id"])
             check = self.checked.get(s["id"], {})
             out.append({"id": s["id"], "name": s["name"], "layers": n,
-                        "failing": self.cache.failing.get(s["id"]) or check.get("error"),
+                        "failing": self.cache.failing.get(s["id"]) or self.kept.failing.get(s["id"]) or check.get("error"),
                         "checked": check.get("ts")})
         return out
 
@@ -719,6 +758,7 @@ class MapSources:
                     await self.discover_wayback(s)
             self._rebuild()
             await self.find_covers()
+            await self.start_home_save()
             await asyncio.sleep(DISCOVER_EVERY)
 
     def _drop_old_tiles(self) -> None:
@@ -726,12 +766,24 @@ class MapSources:
         borders): they go, once."""
         tiles = self.dir / "tiles"
         mark = tiles / f".{TILE_REV}"
-        if mark.exists():
-            return
-        if tiles.exists():
-            shutil.rmtree(tiles, ignore_errors=True)
-        tiles.mkdir(parents=True, exist_ok=True)
-        mark.touch()
+        if not mark.exists():
+            if tiles.exists():
+                shutil.rmtree(tiles, ignore_errors=True)
+            tiles.mkdir(parents=True, exist_ok=True)
+            mark.touch()
+        # 0.71: old photo and map tiles move from the half-year cache to the kept store.
+        for s in SOURCES:
+            if s.get("group") in ("photo", "map") and (tiles / s["id"]).is_dir() and not (self.kept.dir / s["id"]).exists():
+                self.kept.dir.mkdir(parents=True, exist_ok=True)
+                os.replace(tiles / s["id"], self.kept.dir / s["id"])  # the satellite archives
+            old = tiles / s["id"] / TILE_REV
+            if old.is_dir():
+                new = self.kept.dir / s["id"] / TILE_REV
+                new.parent.mkdir(parents=True, exist_ok=True)
+                if new.exists():
+                    shutil.rmtree(old, ignore_errors=True)
+                else:
+                    os.replace(old, new)
 
     async def discover_wayback(self, s: dict) -> None:
         try:
@@ -750,7 +802,8 @@ class MapSources:
             self.checked[s["id"]] = {"ts": time.time(), "error": str(err) or type(err).__name__}
             return
         _LOGGER.info("Map layers from %s: %s years (%s to %s)", s["name"], len(releases), min(releases), max(releases))
-        self.found[s["id"]] = {str(y): r for y, r in releases.items()}
+        # A year Esri drops from its list stays (its kept tiles still show).
+        self.found[s["id"]] = {**(self.found.get(s["id"]) or {}), **{str(y): r for y, r in releases.items()}}
         self.store.kv_set("mapsources_found", self.found)
         self.checked[s["id"]] = {"ts": time.time(), "error": None}
 
@@ -776,8 +829,14 @@ class MapSources:
             _LOGGER.info("Map layers from %s: none matched; the service has: %s", s["name"], names)
             if s.get("known"):
                 return  # keep offering the layers we know (a changed list shouldn't empty the year bar)
-        self.found[s["id"]] = [{k: v for k, v in e.items() if k in ("name", "title", "box")}
-                               for e in found if layers_from_names(s, [e])]
+        fresh = [{k: v for k, v in e.items() if k in ("name", "title", "box")}
+                 for e in found if layers_from_names(s, [e])]
+        names = {e["name"] for e in fresh}
+        gone = [e for e in self.found.get(s["id"]) or [] if isinstance(e, dict) and e.get("name") not in names]
+        if gone:
+            _LOGGER.info("Map layers from %s: %s no longer listed, still offered from what's kept: %s", s["name"],
+                         len(gone), ", ".join(e["name"] for e in gone[:20]))
+        self.found[s["id"]] = fresh + gone
         self.store.kv_set("mapsources_found", self.found)
         self.checked[s["id"]] = {"ts": time.time(), "error": None}
 
@@ -1025,10 +1084,11 @@ class MapSources:
             process = self._processor(row, src, z, x, y, cover)
             if self.fake:
                 return await self._fake_tile(folder, row, src, z, x, y, process)
-            return await self.cache.get(folder, z, x, y, self.tile_urls(row, z, x, y)[0], transform=process)
+            return await self.kept.get(folder, z, x, y, self.tile_urls(row, z, x, y)[0], transform=process)
+        cache = self.kept if _historic(row) else self.cache
         if self.fake:
             from .simmaps import fake_tile
-            path = self.cache.path(f"{row['source']}/{row['id']}", z, x, y)
+            path = cache.path(f"{row['source']}/{row['id']}", z, x, y)
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(await asyncio.to_thread(fake_tile, row, z, x, y))
@@ -1039,24 +1099,24 @@ class MapSources:
             if row.get("daily"):
                 folder += f"/{daily_date()}"  # a day's picture never stands in for another day's
                 # "No picture yet" is only believed for an hour: the day's picture arrives late.
-                empty = self.cache.path(folder, z, x, y)
+                empty = cache.path(folder, z, x, y)
                 try:
                     st = empty.stat()
                     if not st.st_size and time.time() - st.st_mtime > 3600:
                         empty.unlink()
                 except FileNotFoundError:
                     pass
-            path = await self.cache.get(folder, z, x, y, url)
+            path = await cache.get(folder, z, x, y, url)
             if path:
                 return path
-            if row["source"] not in self.cache.failing and not row.get("daily"):
+            if row["source"] not in cache.failing and not row.get("daily"):
                 return None  # answered, just nothing here (a daily picture: try the next satellite)
         return None
 
     async def _fake_tile(self, folder, row, src, z, x, y, process) -> Path | None:
         """Simulator: the made-up service's picture, through the same cleaning as real ones."""
         from .simmaps import fake_render
-        path = self.cache.path(folder, z, x, y)
+        path = self.kept.path(folder, z, x, y)
         if not path.exists():
             def make() -> bytes:
                 img = fake_render(row, src, tile_merc(z, x, y), (256, 256))
@@ -1072,11 +1132,304 @@ class MapSources:
         return path if path.stat().st_size else None
 
     def prune(self) -> int:
-        return self.cache.prune()
+        removed = self.cache.prune()
+        # The kept store can hold millions of tiles: walked once a day, or sooner when a
+        # save may have filled it (never during one, which would fight it).
+        if not self.save_state.get("running") and (
+                time.time() - self._kept_pruned > 86400 or self.kept_bytes() > self.kept.max_bytes):
+            removed += self.kept.prune()
+            self._kept_pruned = time.time()
+            self._kept_size = self.kept.size_seen
+        return removed
+
+    # --- the kept store's size --------------------------------------------------------
+    def kept_bytes(self) -> int:
+        """Size of the kept store: from the last walk of it (at most every 6 hours, or the
+        daily prune's), plus what saves added since. Walks it: call from a thread."""
+        ts, size = self._kept_size
+        if time.time() - ts > 6 * 3600:
+            size = 0
+            for root, _, names in os.walk(self.kept.dir):
+                for name in names:
+                    try:
+                        size += os.stat(os.path.join(root, name)).st_size
+                    except OSError:
+                        pass
+            self._kept_size = (time.time(), size)
+        return size
+
+    def _disk(self) -> tuple[int, int]:
+        """(free bytes, free files) on the disk the store is on."""
+        try:
+            st = os.statvfs(self.dir)
+            return st.f_bavail * st.f_frsize, st.f_favail
+        except (OSError, AttributeError):
+            try:
+                return shutil.disk_usage(self.dir).free, 1 << 40
+            except OSError:
+                return 0, 0
+
+    def _kept_choices(self) -> list[int]:
+        """The sizes the disk has room for (what's kept already counts as room)."""
+        free, files = self._disk()
+        kept = self.kept_bytes()
+        room = free + kept - DISK_RESERVE
+        if files:
+            room = min(room, kept + (files - INODE_RESERVE) * TILE_FILE_BYTES)
+        return [g for g in KEPT_GB_CHOICES if g * 1024**3 <= room] or [KEPT_GB_CHOICES[0]]
+
+    def _kept_limit(self, fresh: bool = False) -> int:
+        """The size picked; else the largest that's at most half the room, worked out once
+        and only ever raised after (a store filling the disk mustn't shrink its own size)."""
+        gb = self.store.kv_get("maps_kept_gb", 0) or 0
+        if gb in KEPT_GB_CHOICES:
+            return gb * 1024**3
+        auto = self.store.kv_get("maps_kept_auto_gb", 0) or 0
+        if auto in KEPT_GB_CHOICES and not fresh:
+            return auto * 1024**3
+        free, _ = self._disk()
+        share = (free + self.kept_bytes()) * KEPT_AUTO_SHARE
+        best = max([g for g in self._kept_choices() if g * 1024**3 <= share] or [KEPT_GB_CHOICES[0]])
+        if best > auto:
+            self.store.kv_set("maps_kept_auto_gb", best)
+            if auto:
+                _LOGGER.info("Old photos and maps may now take %s GB (the disk grew)", best)
+        return max(best, auto) * 1024**3
+
+    def kept_space(self) -> dict:
+        """The kept store's size, whether it was picked, and which sizes the disk has room for."""
+        current = round(self.kept.max_bytes / 1024**3)
+        return {"kept_gb": current, "kept_auto": not self.store.kv_get("maps_kept_gb", 0),
+                "disk_free_mb": round(self._disk()[0] / 1e6),
+                "kept_choices": sorted(set(self._kept_choices()) | {current})}
+
+    def set_kept_limit(self, gb: int) -> dict:
+        """How much of the disk old photos and maps may take; the longest unseen go when it's full."""
+        if gb not in KEPT_GB_CHOICES:
+            raise ValueError("not one of the sizes offered")
+        if gb * 1024**3 > self.kept.max_bytes and gb not in self._kept_choices():
+            raise ValueError("there isn't that much free space on the disk")
+        self.kept.max_bytes = gb * 1024**3
+        self.store.kv_set("maps_kept_gb", gb)
+        _LOGGER.info("Old photos and maps may now take %s GB", gb)
+        if self._loop is not None:  # a larger size may let the home area go sharper
+            self._loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.start_home_save()))
+        return self.kept_space()
+
+    # --- saving an area ahead ---------------------------------------------------------
+    @staticmethod
+    def _best_zoom(row: dict, zmax: int) -> int:
+        top = min(row["max_zoom"], zmax)
+        return min(top, BEST_MAP_ZOOM) if row["group"] == "map" else top
+
+    def _save_rows(self, box, layer_ids: list[str]) -> list[dict]:
+        rows = [self._layers.get(lid) for lid in layer_ids]
+        return [r for r in rows if r and _historic(r) and overlaps(box, tuple(r["box"]))]
+
+    def _save_tiles(self, box: tuple[float, float, float, float], layer_ids: list[str], zmax: int):
+        """Every (row, z, x, y) the area needs, coarse zooms first: each old photo or map
+        asked for, at each zoom from its first (or SAVE_MIN_ZOOM) to zmax (or the sharpest
+        it has), where it has picture."""
+        rows = self._save_rows(box, layer_ids)
+        s, w, n, e = box
+        for z in range(SAVE_MIN_ZOOM, zmax + 1):
+            for row in rows:
+                if not max(row["min_zoom"], SAVE_MIN_ZOOM) <= z <= self._best_zoom(row, zmax):
+                    continue
+                rs, rw, rn, re_ = row["box"]
+                x0, y0 = _tile_xy(min(n, rn), max(w, rw), z)
+                x1, y1 = _tile_xy(max(s, rs), min(e, re_), z)
+                cover = self.cover.get(row["id"])
+                for x in range(x0, x1 + 1):
+                    for y in range(y0, y1 + 1):
+                        if cover is None or cover.any_in(tile_merc(z, x, y)):
+                            yield row, z, x, y
+
+    def _kept_path(self, t) -> Path:
+        return self.kept.path(kept_folder(t[0]), *t[1:])
+
+    def save_plan(self, box, layer_ids: list[str], zmax: int) -> dict:
+        """What saving the area would take: tiles, how many are kept already, rough MB."""
+        per: set[str] = set()
+        total = have = 0
+        est = 0
+        for t in self._save_tiles(box, layer_ids, zmax):
+            total += 1
+            got = self._kept_path(t).exists()
+            have += got
+            if not got:
+                est += SAVE_TILE_BYTES.get(t[0]["group"], 18_000)
+            per.add(t[0]["id"])
+            if total - have > SAVE_MAX_TILES:
+                break  # too big anyway: stop counting
+        return {"tiles": total, "have": have, "mb": round(est / 1e6, 1), "max_tiles": SAVE_MAX_TILES,
+                "too_big": total - have > SAVE_MAX_TILES, "layers": len(per),
+                "kept_mb": round(self.kept_bytes() / 1e6), "kept_max_mb": round(self.kept.max_bytes / 1e6),
+                **self.kept_space()}
+
+    def _home_sizes(self) -> tuple[tuple, list[str], dict[int, tuple[int, int]]] | None:
+        """The home area's box, layers, and per zoom (tiles, bytes) up to it, worked out
+        from its HOME_ZMIN tiles (each zoom deeper has four times as many)."""
+        rows = [r for r in self._layers.values() if r["source"] in HOME_SAVE and _historic(r)
+                and r["id"] in self.cover]  # coverage first, so open sea isn't fetched
+        if not rows:
+            return None
+        box = (min(r["box"][0] for r in rows), min(r["box"][1] for r in rows),
+               max(r["box"][2] for r in rows), max(r["box"][3] for r in rows))
+        ids = [r["id"] for r in rows]
+        base: dict[str, int] = {}
+        for row, z, _, _ in self._save_tiles(box, ids, HOME_ZMIN):
+            if z == HOME_ZMIN:
+                base[row["id"]] = base.get(row["id"], 0) + 1
+        sizes = {}
+        for zmax in range(HOME_ZMIN, HOME_ZMAX + 1):
+            n = b = 0
+            for row in rows:
+                for z in range(max(row["min_zoom"], SAVE_MIN_ZOOM), self._best_zoom(row, zmax) + 1):
+                    k = round(base.get(row["id"], 0) * 4.0 ** (z - HOME_ZMIN))
+                    n += k
+                    b += k * SAVE_TILE_BYTES.get(row["group"], 18_000)
+            sizes[zmax] = (n, b)
+        return box, ids, sizes
+
+    async def start_home_save(self) -> None:
+        """The background save of the home area, at the sharpest zoom that fits (resumed
+        after a restart; tiles kept already are skipped quickly)."""
+        if self.fake or (self._save_task and not self._save_task.done()):
+            return
+        self._loop = asyncio.get_running_loop()
+
+        def look():
+            self.kept.max_bytes = self._kept_limit(fresh=True)  # the disk may have grown
+            return self._home_sizes(), self.kept_bytes()
+        got, kept = await asyncio.to_thread(look)
+        if got is None:
+            return
+        box, ids, sizes = got
+        done = self.store.kv_get("maps_home_zmax", 0) or 0
+        room = HOME_FILL * self.kept.max_bytes - kept + sizes.get(done, (0, 0))[1]
+        fits = [z for z, (_, b) in sizes.items() if b <= room]
+        if not fits or max(fits) <= done:
+            return
+        zmax = max(fits)
+        _LOGGER.info("Keeping old photos and maps of %s in the background, to zoom %s (about %s tiles, %.1f GB)",
+                     ", ".join(HOME_SAVE), zmax, sizes[zmax][0], sizes[zmax][1] / 1e9)
+        self.save_state = {"running": True, "auto": True, "title": "Kirkkonummi's old photos and maps",
+                           "zoom": zmax, "total": sizes[zmax][0], "done": 0, "failed": 0, "started": time.time(),
+                           "finished": None, "stopped": False, "bytes": 0}
+        self._save_task = asyncio.create_task(self._save_run(self._save_tiles(box, ids, zmax), auto=True))
+
+    async def save_start(self, box, layer_ids: list[str], zmax: int, title: str = "") -> dict:
+        self._loop = asyncio.get_running_loop()
+        if self._save_task and not self._save_task.done() and self.save_state.get("auto"):
+            self._save_task.cancel()  # the background save gives way; it carries on afterwards
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+        if self._save_task and not self._save_task.done():
+            raise RuntimeError("a save is already running")
+        def missing() -> list:
+            out = []
+            for t in self._save_tiles(box, layer_ids, zmax):
+                if not self._kept_path(t).exists():
+                    out.append(t)
+                    if len(out) > SAVE_MAX_TILES:
+                        break  # too many: no need to count on
+            return out
+        todo = await asyncio.to_thread(missing)
+        if self._save_task and not self._save_task.done():
+            raise RuntimeError("a save is already running")
+        if len(todo) > SAVE_MAX_TILES:
+            raise ValueError(f"More than {SAVE_MAX_TILES:,} tiles: zoom in or pick less detail")
+        self.save_state = {"running": True, "title": title, "total": len(todo), "done": 0, "failed": 0,
+                           "started": time.time(), "finished": None, "stopped": False, "bytes": 0}
+        self._save_task = asyncio.create_task(self._save_run(todo))
+        return self.save_status()
+
+    def save_stop(self) -> dict:
+        if self._save_task and not self._save_task.done():
+            self.save_state["stopped"] = True
+            self._save_task.cancel()
+        return self.save_status()
+
+    def save_status(self) -> dict:
+        return {k: v for k, v in self.save_state.items()}
+
+    async def _save_run(self, todo, auto: bool = False) -> None:
+        """Fetch the tiles (a list, or the home area's generator, read as it goes so millions
+        of tiles never sit in memory). Stops when the disk runs short of room or files."""
+        st = self.save_state
+        queue = iter(todo)
+
+        def room_left() -> bool:
+            free, files = self._disk()
+            return free > DISK_RESERVE and (not files or files > INODE_RESERVE)
+
+        async def worker() -> None:
+            for t in queue:
+                row, z, x, y = t
+                if auto and self._kept_path(t).exists():
+                    st["done"] += 1  # kept already (a save resumed)
+                    if st["done"] % 2000 == 0:
+                        await asyncio.sleep(0)  # let the rest of the app run
+                    continue
+                if st["done"] % 500 == 0 and not await asyncio.to_thread(room_left):
+                    st["error"] = "the disk is nearly full"
+                    return
+                try:
+                    path = await self.tile(row["id"], z, x, y)
+                    if path is not None:
+                        size = path.stat().st_size
+                        st["bytes"] += size
+                        ts, kept = self._kept_size
+                        self._kept_size = (ts, kept + size)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001 - one bad tile doesn't stop the save
+                    st["failed"] += 1
+                    _LOGGER.debug("Saving %s %s/%s/%s: %s", row["id"], z, x, y, err)
+                st["done"] += 1
+                if st["failed"] > 200 and st["failed"] > st["done"] // 2:
+                    st["error"] = "the map service keeps failing; try again later"
+                    return
+        complete = False
+        try:
+            await asyncio.gather(*(worker() for _ in range(2 if auto else SAVE_CONCURRENCY)))
+            complete = not st.get("error") and st["failed"] <= max(5, st["done"] // 100)  # a few dead tiles: done
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if auto and complete:
+                self.store.kv_set("maps_home_zmax", st["zoom"])
+                st["total"] = st["done"]
+            elif not auto:
+                asyncio.get_running_loop().call_later(60, lambda: asyncio.ensure_future(self.start_home_save()))
+            st["running"] = False
+            st["finished"] = time.time()
+            _LOGGER.info("Saved area %s: %s of %s tiles (%s failed, %.0f MB)%s", st.get("title", ""), st["done"],
+                         st["total"], st["failed"], st["bytes"] / 1e6, " - stopped" if st["stopped"] else "")
+
+
+def _tile_xy(lat: float, lon: float, z: int) -> tuple[int, int]:
+    n = 2**z
+    lat = max(-85.0511, min(85.0511, lat))
+    x = int((lon + 180) / 360 * n)
+    y = int((1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n)
+    return min(n - 1, max(0, x)), min(n - 1, max(0, y))
 
 
 def _source(source_id: str) -> dict:
     return next(s for s in SOURCES if s["id"] == source_id)
+
+
+def _historic(row: dict) -> bool:
+    """Old photos and maps (and the satellite archives' past years): kept for good."""
+    return row["group"] in ("photo", "map")
+
+
+def kept_folder(row: dict) -> str:
+    return f"{row['source']}/{TILE_REV}/{row['id']}" if _needs_cover(row) else f"{row['source']}/{row['id']}"
 
 
 def _needs_cover(row: dict) -> bool:

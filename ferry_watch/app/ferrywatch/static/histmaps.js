@@ -153,6 +153,26 @@
           <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 2v16" stroke="currentColor" stroke-width="1.6"/></svg>
           <span>Side by side</span></button>
         <label class="hb-op" title="See today's picture through the old one"><span class="muted">Fade</span><input type="range" class="player-range hb-opacity" min="15" max="100" step="5" aria-label="Opacity"></label>
+        <button type="button" class="hb-savebtn" aria-expanded="false" title="Keep this area's old pictures on the NAS, to see them even if a service is down">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 3v9m-4-4 4 4 4-4M4 15h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Save area</span></button>
+      </div>
+      <div class="hb-save small" hidden>
+        <div class="hb-save-opts">
+          <label><span class="muted">Years</span><select class="hb-save-scope"></select></label>
+          <label><span class="muted">Detail</span><select class="hb-save-z">
+            <option value="15">Streets (zoom 15)</option>
+            <option value="16">Houses (zoom 16)</option>
+            <option value="17">Sharp (zoom 17)</option>
+            <option value="19" selected>Best each has</option></select></label>
+          <label title="How much of the NAS disk old photos and maps may take; when full, the longest unseen go first"><span class="muted">Space</span><select class="hb-save-space"></select></label>
+        </div>
+        <p class="hb-save-plan muted">Working out the size…</p>
+        <div class="hb-save-bar" hidden><span></span></div>
+        <div class="hb-save-actions">
+          <button type="button" class="hb-save-go primary">Save</button>
+          <button type="button" class="hb-save-close link-button">Close</button>
+        </div>
       </div>
       <div class="hb-empty small" hidden></div>
       <p class="hb-credit small muted"></p>`;
@@ -188,6 +208,144 @@
       store.set("fw-hist-opacity", String(opacity));
       shown.eachLayer((l) => l.setOpacity?.(opacity / 100));
     });
+    // --- saving the area ahead -----------------------------------------------------------
+    // Everything kept stays on the NAS for good; this fetches a whole view's worth now.
+    const save = $b(".hb-save");
+    let savePoll = null;
+    let planSeq = 0;
+    function saveRows() {
+      const scope = $b(".hb-save-scope").value;
+      const pickRows = scope === "shown" ? (current ? current.rows : []) : here(kind);
+      return pickRows.filter((r) => r.group === "photo" || r.group === "map");
+    }
+    function saveBox() {
+      const b = map.getBounds();
+      return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map((v) => Math.round(v * 1e5) / 1e5);
+    }
+    function saveBody() {
+      return { box: saveBox(), layers: saveRows().map((r) => r.id), zmax: Number($b(".hb-save-z").value),
+        title: current ? entryTitle(current) : "" };
+    }
+    async function post(url, body, method = "POST") {
+      const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || res.statusText);
+      return JSON.parse(text);
+    }
+    function fillScope() {
+      const n = new Set(here(kind).map((r) => `${r.year}-${r.year_to}`)).size;
+      const sel = $b(".hb-save-scope");
+      const was = sel.value || "all";
+      sel.innerHTML = `<option value="shown">${current ? esc(yearText(current)) : "This year"} only</option>
+        <option value="all">All ${n} year${n === 1 ? "" : "s"} here</option>`;
+      sel.value = was;
+    }
+    const fmtN = (n) => n.toLocaleString("en-GB");
+    function fillSpace(r) {
+      const sel = $b(".hb-save-space");
+      if (!r.kept_choices || sel.matches(":focus")) return;
+      sel.innerHTML = r.kept_choices.map((g) => `<option value="${g}">${g} GB${r.kept_auto && g === r.kept_gb ? " (auto)" : ""}</option>`).join("");
+      sel.value = String(r.kept_gb);
+    }
+    const fmtMB = (mb) => (mb >= 1000 ? `${(mb / 1000).toFixed(mb >= 10000 ? 0 : 1)} GB` : `${fmtN(Math.max(1, Math.round(mb)))} MB`);
+    async function plan() {
+      if (save.hidden) return;
+      const seq = ++planSeq;
+      const p = $b(".hb-save-plan");
+      const body = saveBody();
+      if (!body.layers.length) { p.textContent = "Nothing to save here."; $b(".hb-save-go").disabled = true; return; }
+      p.textContent = "Working out the size…";
+      try {
+        const r = await post("api/mapsave/plan", body);
+        if (seq !== planSeq) return;
+        const left = r.tiles - r.have;
+        fillSpace(r);
+        $b(".hb-save-go").disabled = !left || r.too_big;
+        const full = r.kept_mb + r.mb > r.kept_max_mb;
+        p.innerHTML = r.too_big
+          ? `${fmtN(left)}+ tiles is more than one save takes (${fmtN(r.max_tiles)}). Zoom in or pick less detail.`
+          : !left ? `All ${fmtN(r.tiles)} tiles of this view are kept already. ${fmtMB(r.kept_mb)} of ${r.kept_gb} GB used.`
+          : `${fmtN(left)} tiles, about ${fmtMB(r.mb)}${r.have ? ` (${fmtN(r.have)} kept already)` : ""}. ${fmtMB(r.kept_mb)} of ${r.kept_gb} GB used${
+            full ? ": that's more than fits, so the longest unseen pictures would make room. Pick more space if the disk has it." : "."}`;
+      } catch (err) {
+        if (seq === planSeq) p.textContent = `Couldn't work out the size: ${err.message}`;
+      }
+    }
+    function showStatus(st) {
+      const barEl = $b(".hb-save-bar");
+      const p = $b(".hb-save-plan");
+      const go = $b(".hb-save-go");
+      if (st.running) {
+        barEl.hidden = false;
+        barEl.firstElementChild.style.width = `${st.total ? (100 * st.done) / st.total : 0}%`;
+        p.textContent = `${st.auto ? "Keeping in the background: " : "Saving "}${st.title ? `${st.title}, ` : ""}${fmtN(st.done)} of ${fmtN(st.total)} tiles…${st.auto ? " Saving this view instead pauses it." : ""}`;
+        if (st.auto) {
+          go.textContent = "Save this view";
+          delete go.dataset.stop;
+          return true;
+        }
+        go.textContent = "Stop";
+        go.disabled = false;
+        go.dataset.stop = "1";
+        $b(".hb-savebtn span").textContent = `Saving ${st.total ? Math.floor((100 * st.done) / st.total) : 0}%`;
+        return true;
+      }
+      barEl.hidden = true;
+      go.textContent = "Save";
+      delete go.dataset.stop;
+      $b(".hb-savebtn span").textContent = "Save area";
+      if (st.finished && Date.now() / 1000 - st.finished < 120) {
+        p.textContent = st.error ? `Stopped: ${st.error}` : st.stopped ? `Stopped after ${fmtN(st.done)} tiles; what was saved stays.`
+          : `Saved ${fmtN(st.done - st.failed)} tiles (${Math.round(st.bytes / 1e6)} MB)${st.failed ? `, ${fmtN(st.failed)} couldn't be fetched` : ""}. They now show even if the service is down.`;
+        setTimeout(plan, 6000);
+      } else {
+        plan();
+      }
+      return false;
+    }
+    async function pollSave() {
+      clearTimeout(savePoll);
+      try {
+        const st = await post("api/mapsave", null, "GET");
+        if (showStatus(st)) savePoll = setTimeout(pollSave, 1500);
+      } catch { /* the add-on restarting: try when the panel is opened again */ }
+    }
+    $b(".hb-savebtn").addEventListener("click", () => {
+      save.hidden = !save.hidden;
+      $b(".hb-savebtn").setAttribute("aria-expanded", String(!save.hidden));
+      if (!save.hidden) { fillScope(); pollSave(); }
+    });
+    $b(".hb-save-close").addEventListener("click", () => { save.hidden = true; $b(".hb-savebtn").setAttribute("aria-expanded", "false"); });
+    $b(".hb-save-scope").addEventListener("change", plan);
+    $b(".hb-save-z").addEventListener("change", plan);
+    $b(".hb-save-space").addEventListener("change", async (ev) => {
+      try {
+        await post("api/mapsave/limit", { gb: Number(ev.target.value) });
+      } catch (err) {
+        $b(".hb-save-plan").textContent = err.message;
+      }
+      ev.target.blur();
+      plan();
+    });
+    $b(".hb-save-go").addEventListener("click", async () => {
+      const go = $b(".hb-save-go");
+      try {
+        go.disabled = true;
+        const st = go.dataset.stop ? await post("api/mapsave", null, "DELETE") : await post("api/mapsave", saveBody());
+        showStatus(st);
+        pollSave();
+      } catch (err) {
+        $b(".hb-save-plan").textContent = err.message;
+        go.disabled = false;
+      }
+    });
+    let planTimer = null;
+    map.on("moveend", () => {
+      if (save.hidden || $b(".hb-save-go").dataset.stop) return;
+      clearTimeout(planTimer);
+      planTimer = setTimeout(() => { fillScope(); plan(); }, 400);
+    });
+
     // Keep map gestures off the bar.
     L.DomEvent.disableClickPropagation(bar);
     L.DomEvent.disableScrollPropagation(bar);

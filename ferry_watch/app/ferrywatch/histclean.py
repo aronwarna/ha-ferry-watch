@@ -312,14 +312,15 @@ def clean_tile(img: Image.Image, zone: Image.Image | None, opaque: bool) -> Imag
 
 
 def encode(img: Image.Image, photo: bool) -> bytes:
-    """WebP (small, keeps see-through); JPEG for a photo tile with nothing see-through."""
+    """WebP (small, keeps see-through); JPEG for a photo tile with nothing see-through.
+    High quality: these are kept for good, often as the only copy."""
     out = io.BytesIO()
     lo, _ = _alpha(img).getextrema()
     if photo and lo == 255:
-        img.convert("RGB").save(out, "JPEG", quality=84, optimize=True)
+        img.convert("RGB").save(out, "JPEG", quality=92, optimize=True)
     else:
         try:
-            img.save(out, "WEBP", quality=84 if photo else 90, method=4)
+            img.save(out, "WEBP", quality=92 if photo else 95, method=4)
         except (OSError, KeyError):  # Pillow without WebP
             out = io.BytesIO()
             img.save(out, "PNG", optimize=False)
