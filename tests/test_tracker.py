@@ -165,3 +165,33 @@ def test_old_eta_is_not_shown(tmp_path):
     store, tracker = make(tmp_path)
     tracker.ships[MMSI].meta["eta_ts"] = int(time.time()) - 3 * 3600
     assert tracker.ship_summary(MMSI)["eta_ais"] is None
+
+
+def _trip(tracker, t):
+    """Stockholm turnaround, sea, a 25-minute call at Mariehamn, sea, Helsinki."""
+    legs = [(3 * 3600, 60, 0.1, 59.35, 18.10), (5 * 3600, 30, 18.0, 59.8, 19.0),
+            (25 * 60, 60, 0.1, 60.09, 19.93), (5 * 3600, 30, 18.0, 60.0, 23.0),
+            (3 * 3600, 60, 0.1, 60.16, 24.955), (600, 30, 18.0, 60.0, 24.0)]
+    marks = []
+    for dur, step, sog, lat, lon in legs:
+        marks.append(t)
+        for i in range(0, dur, step):
+            tracker.on_location(MMSI, loc(t + i, lat=lat, lon=lon, sog=sog))
+        t += dur
+    return marks
+
+
+def test_call_at_mariehamn_does_not_start_a_voyage(tmp_path):
+    store, tracker = make(tmp_path)
+    _trip(tracker, 1_000_000)
+    ports = [r["from_port"] for r in store.db.execute("SELECT from_port FROM voyages ORDER BY start_ts")]
+    assert ports == ["Stockholm", "Helsinki"]
+
+
+def test_voyage_around_spans_the_aland_call(tmp_path):
+    store, tracker = make(tmp_path)
+    marks = _trip(tracker, 1_000_000)
+    passage = marks[3] + 4 * 3600  # near Porkkala, after Mariehamn
+    start, end = store.voyage_around(MMSI, passage, 1.0, 20 * 3600, 3600)
+    assert marks[0] <= start < marks[1]  # left Stockholm, not Mariehamn
+    assert marks[4] <= end <= marks[4] + 300  # arrived in Helsinki (first stored stopped point)

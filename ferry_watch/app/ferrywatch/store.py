@@ -242,19 +242,36 @@ class Store:
         ).fetchall()
         return [list(r) if speed else [r[0], r[1], r[2]] for r in rows]
 
-    def voyage_around(self, mmsi: int, ts: int, stop_speed: float, max_span: int) -> tuple[int, int]:
-        """The stretch of a trip around ts: from the last stopped position before it
-        (leaving port) to the first one after it (arriving), at most max_span either side."""
-        before = self.db.execute(
-            "SELECT MAX(ts) FROM positions WHERE mmsi = ? AND ts < ? AND ts >= ? AND sog < ?",
-            (mmsi, ts, ts - max_span, stop_speed),
-        ).fetchone()[0]
-        after = self.db.execute(
-            "SELECT MIN(ts) FROM positions WHERE mmsi = ? AND ts > ? AND ts <= ? AND sog < ?",
-            (mmsi, ts, ts + max_span, stop_speed),
-        ).fetchone()[0]
-        return (before if before is not None else ts - max_span,
-                after if after is not None else ts + max_span)
+    def voyage_around(self, mmsi: int, ts: int, stop_speed: float, max_span: int,
+                      min_stop: int) -> tuple[int, int]:
+        """The trip around ts, port to port: from the end of the last stop of at least
+        min_stop seconds before it to the start of the first one after it, at most max_span
+        either side. Shorter stops (a call at Mariehamn on the way) don't end the trip."""
+        rows = self.db.execute(
+            "SELECT ts, sog FROM positions WHERE mmsi = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            (mmsi, ts - max_span, ts + max_span),
+        ).fetchall()
+        # Stops as [first stopped ts, last stopped ts, first moving ts after (or None)].
+        stops: list[list] = []
+        for t, sog in rows:
+            stopped = sog is not None and sog < stop_speed
+            if stopped:
+                if stops and stops[-1][2] is None:
+                    stops[-1][1] = t
+                else:
+                    stops.append([t, t, None])
+            elif sog is not None and stops and stops[-1][2] is None:
+                stops[-1][2] = t
+        start, end = ts - max_span, ts + max_span
+        for first, last, moved in stops:
+            long = (moved if moved is not None else ts + max_span) - first >= min_stop
+            if not long:
+                continue
+            if last < ts:
+                start = last
+            elif first > ts and end == ts + max_span:
+                end = first
+        return start, end
 
     def stopped_since(self, mmsi: int, stop_speed: float) -> int | None:
         """Start of the stop the ship is currently in, or None if it is moving."""
