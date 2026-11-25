@@ -1,8 +1,9 @@
 """Turns raw AIS messages into stored, thinned tracks and voyages.
 
 A voyage starts when a ship leaves port: it has been below STOP_SPEED for at
-least PORT_STOP_SECONDS and then moves faster than MOVE_SPEED again. The map
-shows each ship's track since the start of its current voyage.
+least PORT_STOP_SECONDS and then moves faster than MOVE_SPEED again. A call at a
+port on the way (CALL_PORTS: the Åland stop between Stockholm and Helsinki) doesn't
+start a new one. The map shows each ship's track since the start of its current voyage.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 STOP_SPEED = 1.0  # knots
 MOVE_SPEED = 2.0  # knots
 PORT_STOP_SECONDS = 20 * 60
+# Ports the Stockholm ferries only call at on the way: the voyage goes on through them.
+CALL_PORTS = {"Mariehamn", "Långnäs"}
 STORE_INTERVAL_MOVING = 30  # seconds between stored points while under way
 STORE_INTERVAL_STOPPED = 300  # seconds between stored points while stopped
 TURN_DEGREES = 15  # store early when the course changes this much
@@ -194,7 +197,8 @@ class Tracker:
                 state.port = nearest_port(pos.lat, pos.lon)
                 _LOGGER.info("%s: in port (%s)", state.mmsi, state.port or "unknown")
         elif pos.sog >= MOVE_SPEED:
-            if state.in_port or state.voyage_start is None:
+            through = state.in_port and state.port in CALL_PORTS and state.voyage_start is not None
+            if (state.in_port and not through) or state.voyage_start is None:
                 start = pos.ts
                 state.voyage_start = start
                 state.voyage_from = state.port if state.in_port else None
