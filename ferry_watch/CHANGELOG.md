@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.71.1
+## 0.72.1
 
 - **Places ashore and harbours no longer clutter the map.** Each kind of place ashore now
   starts at its own zoom: lean-to shelters, huts and campsites from 12, campfire sites and
