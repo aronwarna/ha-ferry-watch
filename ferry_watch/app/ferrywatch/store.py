@@ -220,6 +220,7 @@ class Store:
             (p.mmsi, p.ts, p.lat, p.lon, p.sog, p.cog, p.heading),
         )
         self.db.commit()
+        self._counted(1)
 
     def last_position(self, mmsi: int) -> Position | None:
         row = self.db.execute(
@@ -286,6 +287,7 @@ class Store:
     def prune(self, older_than_ts: int) -> int:
         cur = self.db.execute("DELETE FROM positions WHERE ts < ?", (older_than_ts,))
         self.db.commit()
+        self._counted(-cur.rowcount)
         return cur.rowcount
 
     def prune_untracked(self, older_than_ts: int) -> int:
@@ -295,10 +297,24 @@ class Store:
         cur = self.db.execute(f"DELETE FROM positions WHERE ts < ? AND {untracked}", (older_than_ts,))
         self.db.execute(f"DELETE FROM voyages WHERE start_ts < ? AND {untracked}", (older_than_ts,))
         self.db.commit()
+        self._counted(-cur.rowcount)
         return cur.rowcount
 
     def position_count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+        """Counting means reading the whole table (a million rows after 60 days), so the
+        count is kept for a few minutes: Settings shows it on every refresh."""
+        now = time.monotonic()
+        kept = getattr(self, "_count_kept", None)
+        if kept and now - kept[0] < 600:
+            return kept[1]
+        n = self.db.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+        self._count_kept = [now, n]
+        return n
+
+    def _counted(self, change: int) -> None:
+        kept = getattr(self, "_count_kept", None)
+        if kept:
+            kept[1] = max(0, kept[1] + change)
 
     # --- voyages ---------------------------------------------------------
 
@@ -451,6 +467,13 @@ class Store:
             "SELECT COUNT(*) FROM passages WHERE mmsi = ? AND route = ? AND direction = ? AND ts >= ?",
             (mmsi, route, direction, since_ts),
         ).fetchone()[0]
+
+    def latest_passage(self, mmsi: int) -> dict[str, Any] | None:
+        """The ship's newest passage off Porkkala, either route: {ts, route, direction, porkkala_ts}."""
+        row = self.db.execute(
+            "SELECT ts, route, direction, porkkala_ts FROM passages WHERE mmsi = ? ORDER BY ts DESC LIMIT 1", (mmsi,)
+        ).fetchone()
+        return dict(row) if row else None
 
     def last_passage(self, mmsi: int, route: str) -> dict[str, Any] | None:
         row = self.db.execute(

@@ -1,3 +1,16 @@
+/* Date and time formatters, made once and shared: toLocaleTimeString/DateString build a new
+   one on every call, which is slow on a phone when a time bar or a playback asks many
+   times a second. fwFormat("en-GB", {hour: "2-digit", ...}).format(date). */
+window.fwFormat = (() => {
+  const kept = new Map();
+  return (locale, opts) => {
+    const key = `${locale}|${JSON.stringify(opts)}`;
+    let f = kept.get(key);
+    if (!f) kept.set(key, f = new Intl.DateTimeFormat(locale || undefined, opts));
+    return f;
+  };
+})();
+
 /* Preferences that follow you between the phone and the desktop. The panel keeps what is
    switched on in the browser's own storage (localStorage, keys fw-…), which each browser
    has for itself. The NAS keeps a copy of the shared ones: the page arrives with it

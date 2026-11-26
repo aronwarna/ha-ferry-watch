@@ -17,6 +17,7 @@
   }
 })(typeof self !== "undefined" ? self : this, () => {
   "use strict";
+  const fwFormat = globalThis.fwFormat || ((locale, opts) => new Intl.DateTimeFormat(locale || undefined, opts));
 
   // --- colour scales ------------------------------------------------------------------
   // [value, r, g, b, alpha 0..255]; between stops the colour blends.
@@ -991,8 +992,8 @@
   const TERRAIN_KEEP = 80;
   const SUN_WORDS = [[80, "Fiery"], [60, "Great"], [40, "Good"], [20, "Fair"], [0, "Dull"]];
   const sunWord = (v) => SUN_WORDS.find(([limit]) => v >= limit)[1];
-  const hm = (ts) => new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  const weekday = (ts) => new Date(ts * 1000).toLocaleDateString("en-GB", { weekday: "short" });
+  const hm = (ts) => fwFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(new Date(ts * 1000));
+  const weekday = (ts) => fwFormat("en-GB", { weekday: "short" }).format(new Date(ts * 1000));
 
   // Why a sunset (or sunrise) got its score, from the run's reasons at a place:
   // [headline, when and where, why].

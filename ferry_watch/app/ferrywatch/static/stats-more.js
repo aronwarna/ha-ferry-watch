@@ -4,11 +4,12 @@
    now, each ship's times past Porkkala lately, and the year at a glance. */
 window.FerryStatsMore = (() => {
   "use strict";
+  const fwFormat = globalThis.fwFormat || ((locale, opts) => new Intl.DateTimeFormat(locale || undefined, opts));
 
   const DAY = 86400;
   const INNER = "#f97316";
   const SECTORS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-  const MONTHS = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "short" }));
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DIRS = [["east", "To Helsinki"], ["west", "To Stockholm"]];
   const TIMING_DAYS = 60; // the times strip covers this many days back
   const SIMILAR_MS = 3; // m/s either side of the wind now
@@ -18,8 +19,8 @@ window.FerryStatsMore = (() => {
   const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0);
   const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
-  const dayName = (ts) => new Date(ts * 1000).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-  const shortDate = (ts) => new Date(ts * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const dayName = (ts) => fwFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(ts * 1000));
+  const shortDate = (ts) => fwFormat("en-GB", { day: "numeric", month: "short" }).format(new Date(ts * 1000));
   const midnight = (ts) => { const d = new Date(ts * 1000); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000; };
   const daysBetween = (a, b) => Math.round((midnight(b) - midnight(a)) / DAY);
   const shortName = (name) => name.split(" ").slice(-1)[0];
@@ -128,6 +129,7 @@ window.FerryStatsMore = (() => {
   const FACTOR_WORDS = { wind: "wind strength", direction: "wind direction", waves: "waves", ice: "ice", habit: "recent choices" };
   const OUTLOOK_TTL = 5 * 60 * 1000;
   let outlookCache = null; // { at, data }
+  const OUTLOOK_FIRST = 4;
 
   async function loadOutlook() {
     if (outlookCache && Date.now() - outlookCache.at < OUTLOOK_TTL) return outlookCache.data;
@@ -286,7 +288,17 @@ window.FerryStatsMore = (() => {
         parts.push(el("p", "small muted", o.weather?.updated ? "No sailings expected in the next 48 hours (or not enough history to know when they sail)."
           : `Waiting for the weather forecast${o.weather?.error ? ` (${esc(o.weather.error)})` : ""}.`));
       } else {
-        parts.push(...rows.map((x) => sailingRow(x, ships, o.using)));
+        // The next few first; the rest of the 48 hours behind a button, so Stats stays short.
+        const first = rows.slice(0, OUTLOOK_FIRST).map((x) => sailingRow(x, ships, o.using));
+        parts.push(...first);
+        if (rows.length > OUTLOOK_FIRST) {
+          const more = el("button", "link-button sm-more", `Show all ${rows.length} sailings`);
+          more.type = "button";
+          more.addEventListener("click", () => {
+            more.replaceWith(...rows.slice(OUTLOOK_FIRST).map((x) => sailingRow(x, ships, o.using)));
+          });
+          parts.push(more);
+        }
       }
       parts.push(el("p", "small sm-verdict", esc(testText(o.test || {}, o.using))));
       parts.push(liveCard(o, ships));

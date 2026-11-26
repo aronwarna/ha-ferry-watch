@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any
 
-from . import __version__, config
+from . import __version__, config, stalls
 
 LOG_LINES = 60
 STARTED = time.time()
@@ -76,6 +76,10 @@ def report(state: dict[str, Any], overlays: list[dict[str, Any]], secrets: list[
     memory = state.get("memory")
     if memory:
         out += ["", f"Memory: {_flat(memory, 800)}"]
+    held = stalls.WATCH.summary()
+    if held["stalls"]:
+        out += ["", f"Held up {held['stalls']} times, {held['seconds']} s in all, mostly by:"]
+        out += [f"- {p['where']}: {p['times']}x, {p['seconds']} s (worst {p['worst']} s)" for p in held["places"]]
     out += ["", f"Latest warnings ({len(RING.lines)})"]
     out += list(RING.lines) or ["(none since the start)"]
     return redact("\n".join(out), secrets)

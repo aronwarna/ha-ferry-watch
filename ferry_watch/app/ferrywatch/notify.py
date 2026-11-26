@@ -83,6 +83,11 @@ class Notifier:
     # --- passages ---------------------------------------------------------
 
     def on_passage(self, passage: dict[str, Any]) -> None:
+        # An open panel shows it at once (the ship's chip and a short note on the map).
+        web = getattr(self.fw, "web", None)
+        if web is not None:
+            web.broadcast({"type": "passage", "passage": {k: passage.get(k) for k in (
+                "mmsi", "ts", "route", "direction", "porkkala_ts")}})
         task = asyncio.create_task(self.handle(passage))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

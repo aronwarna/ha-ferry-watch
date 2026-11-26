@@ -19,6 +19,26 @@
     set(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } },
   };
 
+  {
+    const dim = document.getElementById("dim-map");
+    const on = store.get("fw-dim-map") === "1";
+    document.body.classList.toggle("dim-map", on);
+    if (dim) {
+      dim.checked = on;
+      dim.addEventListener("change", () => {
+        store.set("fw-dim-map", dim.checked ? "1" : "0");
+        document.body.classList.toggle("dim-map", dim.checked);
+      });
+    }
+  }
+  {
+    const fold = document.getElementById("map-key-fold");
+    if (fold) {
+      fold.open = store.get("fw-key-open") === "1";
+      fold.addEventListener("toggle", () => store.set("fw-key-open", fold.open ? "1" : "0"));
+    }
+  }
+
   // Position reports arrive every few seconds; only touch the page where something changed.
   function setText(el, text) {
     if (el.textContent !== text) el.textContent = text;
@@ -837,10 +857,84 @@
     }
     if (entry.tail.options.color !== info.color) entry.tail.setStyle({ color: info.color });
     entry.marker.getTooltip()?.getElement()?.classList.toggle("dimmed", Boolean(dimmed));
+    if (!info.fleet) queueLabels();
     return entry;
   }
 
   const tailOpacity = (info) => (info.fleet ? 0.4 : 0.55);
+
+  // Ship names never sit on top of each other: a name that would cover another goes to
+  // the ship's left instead, and when neither side is free (ships side by side, say in
+  // port) it joins the other's label as "Serenade · Symphony".
+  let labelsQueued = false;
+  function queueLabels() {
+    if (labelsQueued) return;
+    labelsQueued = true;
+    setTimeout(() => { labelsQueued = false; requestAnimationFrame(declutterLabels); }, 250);
+  }
+  const labelWidths = new Map(); // label text -> [width, height] in px (measuring forces a layout)
+  function labelSize(el, text) {
+    let wh = labelWidths.get(text);
+    if (!wh) {
+      wh = [el.offsetWidth, el.offsetHeight];
+      if (wh[0]) labelWidths.set(text, wh);
+      if (labelWidths.size > 200) labelWidths.clear();
+    }
+    return wh;
+  }
+  function declutterLabels() {
+    // Not in the middle of a drag or a zoom: wait for the map to settle.
+    if (map._animatingZoom || map.dragging?._draggable?._moving) { queueLabels(); return; }
+    const rows = [];
+    for (const entry of ships.values()) {
+      const tt = entry.marker?.getTooltip();
+      const el = tt?.getElement();
+      if (!tt || !tt.options.permanent || !el || !map.hasLayer(entry.marker)) continue;
+      if (el.classList.contains("dimmed")) continue;
+      rows.push({ entry, tt, el, pt: map.latLngToLayerPoint(entry.marker.getLatLng()),
+        main: focused?.mmsi === entry.info.mmsi });
+    }
+    // Reset to the plain name on the right, then measure.
+    for (const r of rows) {
+      r.names = null;
+      if (r.el.textContent !== r.entry.label) r.tt.setContent(r.entry.label);
+      r.el.style.display = "";
+      [r.w, r.h] = labelSize(r.el, r.entry.label);
+    }
+    const box = (r, side) => (side === "right"
+      ? { x0: r.pt.x + 12, x1: r.pt.x + 12 + r.w, y0: r.pt.y - r.h / 2, y1: r.pt.y + r.h / 2 }
+      : { x0: r.pt.x - 12 - r.w, x1: r.pt.x - 12, y0: r.pt.y - r.h / 2, y1: r.pt.y + r.h / 2 });
+    const hit = (a, b) => a.x0 < b.x1 + 2 && b.x0 < a.x1 + 2 && a.y0 < b.y1 + 1 && b.y0 < a.y1 + 1;
+    const placed = [];
+    rows.sort((a, b) => (b.main - a.main) || (a.pt.x - b.pt.x));
+    for (const r of rows) {
+      let side = null;
+      for (const s of ["right", "left"]) {
+        const b = box(r, s);
+        if (!placed.some((p) => hit(p.b, b))) { side = s; r.b = b; break; }
+      }
+      if (side) {
+        setLabelSide(r.tt, side);
+        placed.push(r);
+        continue;
+      }
+      // Both sides taken: join the nearest label in the way.
+      const b = box(r, "right");
+      const host = placed.find((p) => hit(p.b, b)) || placed[0];
+      r.el.style.display = "none";
+      host.names = [...(host.names || [host.entry.label]), r.entry.label];
+      host.tt.setContent(host.names.join(" · "));
+      host.w = labelSize(host.el, host.names.join(" · "))[0];
+      host.b = box(host, host.tt.options.direction);
+    }
+  }
+  function setLabelSide(tt, side) {
+    if (tt.options.direction === side) return;
+    tt.options.direction = side;
+    tt.options.offset = L.point(side === "left" ? -12 : 12, 0);
+    tt.update();
+  }
+  map.on("zoomend", queueLabels);
 
   function removeShip(mmsi) {
     const entry = ships.get(mmsi);
@@ -876,6 +970,19 @@
       renderCard();
     }
     renderStrip();
+  }
+
+  // A ship just went past Porkkala: its chip says which way, and an inner route is noted
+  // on the map for a moment (the phone alert comes from Home Assistant as before).
+  function onPassage(p) {
+    const entry = p && ships.get(p.mmsi);
+    if (!entry || entry.info.fleet) return;
+    entry.info.last_passage = p;
+    renderStrip();
+    renderCard();
+    if (p.route === "inner" && !document.hidden) {
+      FerryHere.toast(`${entry.info.name} is taking the inner route${SHORT_DIR[p.direction] ? `, ${SHORT_DIR[p.direction]}` : ""}`, 8000);
+    }
   }
 
   // --- speed-coloured track -------------------------------------------------------
@@ -1718,7 +1825,8 @@
         chip = { button, dot, name, sub };
         chips.set(info.mmsi, chip);
       }
-      const cls = "chip panel" + (isStale(info) ? " stale" : "");
+      const cls = "chip panel" + (isStale(info) ? " stale" : "")
+        + (!nextPassage(info) && recentPassage(info)?.route === "inner" ? " took-inner" : "");
       if (chip.button.className !== cls) chip.button.className = cls;
       if (chip.color !== info.color) { chip.color = info.color; chip.dot.style.background = info.color; }
       setText(chip.name, info.name);
@@ -1732,9 +1840,21 @@
     if (!info.position) return "No position yet";
     if (isStale(info)) return `Last seen ${ago(info.position.ts)}`;
     const n = nextPassage(info);
-    if (!n) return motionText(info);
     const speed = info.position.sog != null ? ` · ${info.position.sog.toFixed(1)} kn` : "";
+    if (!n) {
+      const p = recentPassage(info);
+      const moving = info.position.sog >= 0.5 ? speed : "";
+      return p ? `${p.route === "inner" ? "Inner" : "Outer"} route ${ago(p.porkkala_ts || p.ts)}${moving}` : motionText(info);
+    }
     return `Porkkala ${n.left < 60 ? "now" : `in ${duration(n.left)}`}${speed}`;
+  }
+
+  // The ship's last passage off Porkkala, while it is fresh (shown on its chip for a while).
+  const RECENT_PASSAGE_S = 90 * 60;
+  function recentPassage(info) {
+    const p = info.last_passage;
+    if (!p || info.fleet || !["inner", "outer"].includes(p.route)) return null;
+    return now() - (p.porkkala_ts || p.ts) < RECENT_PASSAGE_S ? p : null;
   }
 
   // --- status -------------------------------------------------------------------
@@ -1812,7 +1932,7 @@
   // closed after a minute, so the NAS stops its panel-only work (weather, the phone's
   // position, aircraft); it's opened again, catching up, when the panel is seen again.
   const HIDDEN_CLOSE_MS = 60000;
-  let socket = null, socketPaused = false, hiddenTimer = null;
+  let socket = null, socketPaused = false, hiddenTimer = null, firstLoadAt = 0;
   document.addEventListener("visibilitychange", () => {
     clearTimeout(hiddenTimer);
     if (document.hidden) {
@@ -1835,14 +1955,15 @@
     ws.onopen = () => {
       socketOpen = true;
       renderStatus();
-      // Catch up on anything missed while disconnected.
-      loadState().then(loadTails).catch(console.error);
+      // Catch up on anything missed while disconnected (not right after the first load).
+      if (Date.now() - firstLoadAt > 10000) loadState().then(loadTails).catch(console.error);
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "position" || msg.type === "meta") onPosition(msg.ship);
       else if (msg.type === "reload") loadState().then(loadTails).catch(console.error);
       else if (msg.type === "aircraft") renderAircraft(msg.aircraft);
+      else if (msg.type === "passage") onPassage(msg.passage);
       else if (msg.type === "weather") {
         if (lastState) lastState.weather = msg.weather;
         renderConditions();
@@ -2709,8 +2830,9 @@
   // device's time zone. The ship and direction filters apply to everything in the tab;
   // tapping a bar (or a day in a month) narrows the passages, ships and weather to it.
 
-  const MONTHS = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "short" }));
-  const MONTHS_LONG = Array.from({ length: 12 }, (_, m) => new Date(2000, m, 1).toLocaleString("en", { month: "long" }));
+  const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December"];
+  const MONTHS = MONTHS_LONG.map((m) => m.slice(0, 3));
   const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const WEEKDAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const INNER_COLOR = "#f97316";
@@ -6680,6 +6802,41 @@
     else if (editing) setEditing(false);
   });
 
+  // Keys on a computer: one letter each, never while typing or with Ctrl/Cmd/Alt held.
+  const KEYS = [
+    ["m", "Menu", () => (menu.open ? menu.close() : openMenu())],
+    ["s", "Stats", () => openMenu("stats")],
+    ["l", "Layers", () => openMenu("layers")],
+    ["w", "Weather", () => toggleWeather()],
+    ["r", "Route tool", () => setRouteMode(!route.on)],
+    ["a", "All ships in view", () => fitAllShips()],
+    ["1–4", "Your ships, one by one", null],
+    ["/", "Search", null],
+    ["Esc", "Close what's open", null],
+  ];
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (e.target.closest?.("input, select, textarea, [contenteditable]")) return;
+    if (document.querySelector("dialog[open]:modal")) return;
+    const key = e.key.toLowerCase();
+    if (key === "?") {
+      FerryHere.toast(KEYS.map(([k, what]) => `${k} ${what}`).join(" · "), 9000);
+      e.preventDefault();
+      return;
+    }
+    if (/^[1-9]$/.test(key)) {
+      const mine = [...ships.values()].map((x) => x.info).filter((i) => !i.fleet && i.position);
+      const info = mine[Number(key) - 1];
+      if (info) { focusShip(info.mmsi, { view: "center" }); e.preventDefault(); }
+      return;
+    }
+    const hit = KEYS.find(([k, , fn]) => k === key && fn);
+    if (!hit) return;
+    if (key !== "m" && key !== "s" && key !== "l" && menu.open && menuModal()) return;
+    e.preventDefault();
+    hit[2]();
+  });
+
   // On a phone the attribution is one line; tap it to read it all.
   const attribution = map.attributionControl.getContainer();
   attribution.title = "Map data credits";
@@ -6700,9 +6857,11 @@
 
   (async () => {
     try {
+      firstLoadAt = Date.now();
       await loadState();
       await loadTails();
     } catch (err) {
+      firstLoadAt = 0; // the live connection's opening tries again
       console.error(err);
     }
     const target = shipFromUrl();

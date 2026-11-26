@@ -49,18 +49,28 @@ class PhotoCache:
         self.session = session
         self._locks: dict[int, asyncio.Lock] = {}
         self._warned = 0.0
+        # Own ships' notes kept in memory (a handful, asked for on every refresh of the panel);
+        # the other ships' 300 are read from disk when asked.
+        self._infos: dict[int, dict[str, Any]] | None = None if max_files else {}
 
     def _info_path(self, mmsi: int) -> Path:
         return self.dir / f"{mmsi}.json"
 
     def info(self, mmsi: int) -> dict[str, Any]:
+        if self._infos is not None and mmsi in self._infos:
+            return self._infos[mmsi]
         try:
-            return json.loads(self._info_path(mmsi).read_text())
+            info = json.loads(self._info_path(mmsi).read_text())
         except (OSError, ValueError):
-            return {}
+            info = {}
+        if self._infos is not None:
+            self._infos[mmsi] = info
+        return info
 
     def _write_info(self, mmsi: int, info: dict[str, Any]) -> None:
         self._info_path(mmsi).write_text(json.dumps(info))
+        if self._infos is not None:
+            self._infos[mmsi] = info
 
     def path(self, mmsi: int) -> Path | None:
         info = self.info(mmsi)

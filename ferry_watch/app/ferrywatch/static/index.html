@@ -335,8 +335,10 @@
       <div id="layers-list"></div>
       <h3 class="group-head">Routes</h3>
       <div id="routes-list"></div>
-      <h3 class="group-head">Map key</h3>
-      <div id="map-key" class="map-key"></div>
+      <details class="key-fold" id="map-key-fold">
+        <summary><h3 class="group-head">Map key</h3></summary>
+        <div id="map-key" class="map-key"></div>
+      </details>
     </div>
     <div data-pane="settings" role="tabpanel" hidden>
       <section class="group">
@@ -386,6 +388,16 @@
         </div>
       </section>
       <section class="group">
+        <h3>Display</h3>
+        <div class="fleet">
+          <label class="fleet-head">
+            <span class="grow strong">Dim the map in dark mode</span>
+            <input type="checkbox" class="switch" id="dim-map">
+          </label>
+          <p class="small muted note">When the phone or computer is in dark mode (at night, say), the map and chart are shown darker so they don't glare. Ships, labels and buttons stay as they are.</p>
+        </div>
+      </section>
+      <section class="group">
         <h3>Troubleshooting</h3>
         <p class="small" id="overlay-status" role="status" hidden></p>
         <p class="small muted" id="overlay-checks" hidden></p>
@@ -415,6 +427,7 @@
           <ul class="mem-parts small" id="memory-parts"></ul>
         </details>
         <p class="muted small" id="version"></p>
+        <p class="muted small keys-hint">On a computer: press <kbd>?</kbd> for the keyboard keys (M menu, S stats, L layers, W weather, R route tool, A all ships, 1–4 your ships, / search).</p>
         <details class="sources">
           <summary class="small strong">Credits</summary>
           <ul class="credits small muted">
