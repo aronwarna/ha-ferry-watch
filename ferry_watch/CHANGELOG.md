@@ -10,7 +10,7 @@ A polish pass over the whole app.
   short note says so at the top of the map. The phone alert is unchanged.
 - **The inner route alert is tried again if sending fails.** If Home Assistant is busy
   or restarting at that moment, the alert is sent again after 15 and 45 seconds instead
-  of being lost (Settings › Alerts › Last alert says "on try 2" when that happened).
+  of being lost, as long as the passage is under 10 minutes old (the log says so).
 - **Today off Porkkala** in the Ships tab, under your ships: every passage today, newest
   first, with the time, the ship and which way ("16:22 Cinderella · inner route, to
   Helsinki"), the inner ones in orange.
