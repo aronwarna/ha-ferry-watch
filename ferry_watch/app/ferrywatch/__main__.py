@@ -127,6 +127,7 @@ class FerryWatch:
         self.aircraft: AircraftWatcher | None = None
         self.tiles: TileCache | None = None
         self.satellite: Satellite | None = None
+        self.recent = None  # RecentSatellite (recentsat.py): Sentinel-2 by day
         self.maps: MapSources | None = None
         self.buildings: Buildings | None = None
         self.here: Here | None = None
@@ -187,6 +188,8 @@ class FerryWatch:
         self.buildings = Buildings(DATA_DIR / "maps" / "buildings", self.session, fake=sim)
         from .parcels import Parcels
         self.parcels = Parcels(DATA_DIR / "maps" / "parcels", self.session, self.store, fake=sim)
+        from .recentsat import RecentSatellite
+        self.recent = RecentSatellite(DATA_DIR / "recent", self.session, fake=sim)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simoverlays
             self.overlays = Overlays(DATA_DIR / "overlays", self.session, simoverlays.FakeTileSession())
@@ -566,6 +569,7 @@ class FerryWatch:
             self.ports.visits.prune()
             await asyncio.to_thread(self.tiles.prune)
             await asyncio.to_thread(self.satellite.cache.prune)
+            await asyncio.to_thread(self.recent.prune)
             await asyncio.to_thread(self.maps.prune)
             await asyncio.to_thread(self.buildings.prune)
             await asyncio.to_thread(self.parcels.prune)

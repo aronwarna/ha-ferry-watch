@@ -238,6 +238,18 @@
     },
   });
   layers.historic = hist.layer;
+  // Recent: one day's Sentinel-2 picture from the last two months over the greyed-out
+  // satellite view (recentsat.js, recentsat.py).
+  layers.recent = FerryRecent.create({
+    map, store,
+    base: (pane) => L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+      pane, maxZoom: 19, maxNativeZoom: ESRI_SAFE_Z, referrerPolicy: REFERRER,
+      attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+    }),
+    labels: () => L.tileLayer(`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 19, referrerPolicy: REFERRER, zIndex: 3,
+    }),
+  }).layer;
   // Where am I, What's here (long press), Find a place, My pins (whereami.js, here.py, pins.py).
   const here = FerryHere.create({
     map, api, store,
@@ -6419,7 +6431,7 @@
 
   function harbourStyle() {
     const zoom = map.getZoom();
-    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite, labels: zoom >= 13, dot: zoom < 13, small: zoom < 14 };
+    return { chart: activeLayer === layers.chart, dark: activeLayer === layers.satellite || activeLayer === layers.recent, labels: zoom >= 13, dot: zoom < 13, small: zoom < 14 };
   }
 
   // Below zoom 14 harbours that would touch on screen show as one: the one with the most
