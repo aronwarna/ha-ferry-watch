@@ -102,6 +102,7 @@ class Overlay:
     pickable: bool = False
     info: Callable[[float], dict[str, Any]] | None = None
     sea: bool = False  # tiles cut to the drawn chart's water by the panel (as the sea layers)
+    tile_rev: str = ""  # "local": changed when the drawing changes, so kept tiles are made again
     # Tiles overlays that carry on past their source's newest frame with pictures made here
     # (the radar's extrapolation): `future(ts, z, x, y)` gives the path of such a tile, and
     # `future_from()` the newest real frame's time (None while there is no forecast).
@@ -322,7 +323,7 @@ class Overlays:
                 "refresh": o.refresh, "times": times, "error": self.error(o), "check": check,
                 "group": o.group, "icon": o.icon, "static": o.static, "has_value": o.value is not None,
                 "pickable": o.pickable, "info": info,
-                "sea": o.sea, "loading": loading,
+                "sea": o.sea, "loading": loading, "rev": o.tile_rev,
                 "forecast_from": o.future_from() if o.future_from and times is not None else None,
             })
         return out
@@ -400,7 +401,7 @@ class Overlays:
 
     async def _local_tile(self, o: Overlay, ts: int, z: int, x: int, y: int) -> Path | None:
         """A tile made here, kept on disk like a fetched one (and pruned with them)."""
-        path = self.cache.dir / f"{o.id}/{ts}" / str(z) / str(x) / f"{y}.png"
+        path = self.cache.dir / f"{o.id}{'-' + o.tile_rev if o.tile_rev else ''}/{ts}" / str(z) / str(x) / f"{y}.png"
         if path.exists():
             return path
         async with self._lock(f"{o.id}/{ts}/{z}/{x}/{y}"):

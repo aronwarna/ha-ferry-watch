@@ -178,13 +178,16 @@
     // --- the list from the add-on ---
 
     const key = (id, what = "") => `fw-ov-${id}${what}`;
+    const FOLDED_INTO = { "ice-chart": "sea-ice" }; // layer -> an older one it replaces
 
     function entryFor(ov) {
       let e = entries.get(ov.id);
       if (!e) {
         const saved = Number(store.get(key(ov.id, "-opacity")));
+        // The old "Sea ice" switch (one layer with the ice chart since 0.73.0) turns this one on.
+        const was = store.get(key(ov.id)) ?? (FOLDED_INTO[ov.id] && store.get(key(FOLDED_INTO[ov.id])));
         e = {
-          ov, on: store.get(key(ov.id)) === "1", opacity: saved > 0 && saved <= 1 ? saved : ov.opacity,
+          ov, on: was === "1", opacity: saved > 0 && saved <= 1 ? saved : ov.opacity,
           frames: new Map(), current: null, visible: null, group: null, data: new Map(), loaded: new Set(),
         };
         entries.set(ov.id, e);
@@ -211,7 +214,11 @@
           const times = barTimes();
           if (times.length && (t == null || live || !times.includes(t))) {
             // Showing the latest keeps showing the latest as new frames come in.
-            t = t == null || live ? startAt(times) : times[indexAt(times, t)];
+            const picker = t == null && active().find((e) => e.ov.pickable);
+            t = picker ? pickFor(picker) : t == null || live ? startAt(times) : times[indexAt(times, t)];
+          }
+          for (const e of active()) {
+            if (e.ov.pickable && e.dayBox) dayStatus(e);
           }
           render();
           // The menu is drawn again only when what it shows changed (not under a dragged slider).
@@ -255,7 +262,23 @@
     const shown = () => [...entries.values()].filter((e) => e.on && e.ov.times?.length);
     // Static layers (light pollution, the latest lightning) show their one picture whatever the time.
     const active = () => shown().filter((e) => !e.ov.static);
-    const barTimes = () => union(active().map((e) => e.ov.times));
+    const barTimes = () => union(active().map(timesOf));
+
+    // A day layer that also has a day picker (the sea ice chart, years of days) puts one
+    // winter on the bar: the one of the day picked (or the add-on's suggestion, or the newest).
+    const WINTER_FROM = 10; // November, as Date.getUTCMonth()
+    function winterOf(ts) {
+      const d = new Date(ts * 1000);
+      const y = d.getUTCMonth() >= WINTER_FROM ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+      return [Date.UTC(y, WINTER_FROM, 1) / 1000, Date.UTC(y + 1, 5, 1) / 1000];
+    }
+    function timesOf(e) {
+      const times = e.ov.times || [];
+      if (!e.ov.pickable || e.ov.static || !times.length) return times;
+      const [a, b] = winterOf(pickFor(e));
+      const win = times.filter((ts) => ts >= a && ts < b);
+      return win.length ? win : times;
+    }
 
     // --- frames ---
 
@@ -269,7 +292,8 @@
           maxNativeZoom: ov.max_zoom, keepBuffer: 1, className: "overlay-frame", attribution: ov.attribution,
           ...(b ? { bounds: L.latLngBounds([b[0], b[1]], [b[2], b[3]]) } : {}),
         };
-        const url = `api/overlay/${ov.id}/${ft}/{z}/{x}/{y}.png`;
+        // A new way of drawing (rev) gets new tile addresses, so the browser's cache is skipped.
+        const url = `api/overlay/${ov.id}/${ft}/{z}/{x}/{y}.png${ov.rev ? `?r=${ov.rev}` : ""}`;
         layer = (ov.sea ? seaTiles(url, opts, ov) : L.tileLayer(url, opts)).addTo(map);
         // Quick frames (the radar) melt into each other over the whole step instead of
         // jumping: the old one fades out as the new one fades in.
@@ -284,7 +308,8 @@
             setTimeout(() => {
               if (!layer._map) return;
               tile._tries = n;
-              tile.src = `${layer.getTileUrl(coords)}?try=${n}`;
+              const u = layer.getTileUrl(coords);
+              tile.src = `${u}${u.includes("?") ? "&" : "?"}try=${n}`;
             }, 3000 * n);
           });
         }
@@ -496,36 +521,21 @@
       const times = e.ov.times || [];
       if (!times.length) return box;
       const info = e.ov.info || {};
-      const shownDay = pickFor(e), latest = times[times.length - 1];
+      const latest = times[times.length - 1];
       const status = document.createElement("p");
       status.className = "small ov-days-status";
-      let text = `Showing ${dayText(shownDay)}`;
-      if (shownDay === latest) text += " (the newest chart)";
-      else if (info.latest_ice === false) text += `. The newest chart (${dayText(latest, { day: "numeric", month: "short" })}) has no ice yet.`;
-      // How much ice that day's chart has, once read on the NAS, or why it couldn't be.
-      const read = info.read?.[String(shownDay)], failed = info.failed?.[String(shownDay)];
-      if (read) {
-        const [share, cm] = read;
-        text += share > 0
-          ? `: ice on ${share >= 0.01 ? Math.round(share * 100) : "under 1"} % of the sea${cm ? `, up to ${cm} cm thick` : ""}.`
-          : ": no ice in this chart.";
-      } else if (failed) {
-        text += `. Couldn't read it: ${failed}`;
-        status.classList.add("problem");
-      } else if (info.read) {
-        text += " (reading it…)";
-      }
-      status.textContent = text;
       const row = document.createElement("div");
       row.className = "ov-days-row";
       const input = document.createElement("input");
       input.type = "date";
       input.min = isoDay(times[0]);
       input.max = isoDay(latest);
-      input.value = isoDay(shownDay);
       input.setAttribute("aria-label", `${e.ov.title} day`);
       const choose = (ts) => {
-        e.pick = ts; render(); onChange();
+        e.pick = ts;
+        // A layer on the time bar moves the bar there (and to that winter).
+        if (!e.ov.static) { pause(); setTime(ts); } else render();
+        dayStatus(e);
         // Its tiles start the read on the NAS: asked again shortly for how it went.
         if (dayPending(e)) { clearTimeout(infoTimer); infoTimer = setTimeout(() => load(), 6000); }
       };
@@ -542,13 +552,46 @@
         b.type = "button";
         b.className = "chip-btn";
         b.textContent = label;
-        b.disabled = ts == null || ts === shownDay;
+        b.dataset.day = ts ?? "";
         b.addEventListener("click", () => choose(ts));
         return b;
       };
       row.append(input, button("Newest", latest), button("Last winter", info.peak ?? null));
       box.append(status, row);
+      e.dayBox = { status, input, buttons: [...row.querySelectorAll("button")] };
+      dayStatus(e);
       return box;
+    }
+
+    // The line under a day picker: the day shown and how much ice it has. Kept up to date as
+    // the time bar moves, without drawing the menu again.
+    function dayStatus(e) {
+      const box = e.dayBox;
+      const times = e.ov.times || [];
+      if (!box || !box.status.isConnected || !times.length) return;
+      const info = e.ov.info || {};
+      const shownDay = pickFor(e), latest = times[times.length - 1];
+      let text = `Showing ${dayText(shownDay)}`;
+      if (shownDay === latest) text += " (the newest chart)";
+      else if (info.latest_ice === false) text += `. The newest chart (${dayText(latest, { day: "numeric", month: "short" })}) has no ice yet.`;
+      // How much ice that day's chart has, once read on the NAS, or why it couldn't be.
+      const read = info.read?.[String(shownDay)], failed = info.failed?.[String(shownDay)];
+      let problem = false;
+      if (read) {
+        const [share, cm] = read;
+        text += share > 0
+          ? `: ice on ${share >= 0.01 ? Math.round(share * 100) : "under 1"} % of the sea${cm ? `, up to ${cm} cm thick` : ""}.`
+          : ": no ice in this chart.";
+      } else if (failed) {
+        text += `. Couldn't read it: ${failed}`;
+        problem = true;
+      } else if (info.read) {
+        text += " (reading it…)";
+      }
+      box.status.textContent = text;
+      box.status.classList.toggle("problem", problem);
+      box.input.value = isoDay(shownDay);
+      for (const b of box.buttons) b.disabled = b.dataset.day === "" || Number(b.dataset.day) === shownDay;
     }
 
     // Where the bar starts: the time nearest now, but for the radar its newest real frame,
@@ -572,8 +615,11 @@
       for (const e of entries.values()) {
         if (!e.on || !e.ov.times?.length) { hide(e); continue; }
         const vf = e.ov.valid_for;
-        const ft = e.ov.static ? pickFor(e) : t == null ? null : frameAt(e.ov.times, t, vf);
-        const nft = e.ov.static ? null : next == null ? null : frameAt(e.ov.times, next, vf);
+        const own = timesOf(e);
+        const ft = e.ov.static ? pickFor(e) : t == null ? null : frameAt(own, t, vf);
+        const nft = e.ov.static ? null : next == null ? null : frameAt(own, next, vf);
+        // A picker's day follows the bar.
+        if (e.ov.pickable && !e.ov.static && ft != null && e.pick !== ft) { e.pick = ft; dayStatus(e); }
         if (e.ov.kind === "points") showPoints(e, ft, nft);
         else showTiles(e, ft, nft);
       }
@@ -654,7 +700,7 @@
       const advance = () => {
         if (!playing) return;
         // Wait for the next frame's tiles, so a slow phone shows every frame, not gaps.
-        const waiting = active().some((e) => !ready(e, frameAt(e.ov.times, next, e.ov.valid_for)));
+        const waiting = active().some((e) => !ready(e, frameAt(timesOf(e), next, e.ov.valid_for)));
         if (waiting && performance.now() - started < LOAD_WAIT) { playTimer = setTimeout(advance, 100); return; }
         setTime(next);
         tick();

@@ -138,7 +138,9 @@ def test_listing_and_partial_tiles(tmp_path):
         ic.register(reg, tmp_path / "ic", None, water, fake_icechart_get)
         listing = {o["id"]: o for o in await reg.listing({ic.ID}, NOW)}
         o = listing[ic.ID]
-        assert o["pickable"] and o["static"] and o["has_value"] and o["info"]["peak"] == PEAK
+        # One "Sea ice" layer on the time bar, cut to the sea in the panel.
+        assert o["pickable"] and not o["static"] and o["sea"] and o["has_value"] and o["info"]["peak"] == PEAK
+        assert o["title"] == "Sea ice" and o["rev"] == ic.TILE_REV
         # z4 is drawn without water; the path is a kept one.
         path = await reg.tile(ic.ID, PEAK, 4, 9, 4)
         assert path and not path.name.endswith(".partial.png")

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.74.0
+
+- **Sea ice is now one layer, drawn from the ice services' daily ice chart** (SMHI and
+  FMI, the chart the icebreakers use). Each ice area is a sharp shape in the chart
+  colours of how close the ice is, fast ice is grey, ridged ice has small roof marks
+  (denser the heavier the ridging), rafted ice slanted strokes and brash barriers crosses,
+  and from zoom 7 each area says how thick its ice is in cm (e.g. "20-45"). Tap the ice
+  for what it is: "Very close drift ice, 9+/10 cover, heavily ridged ice, 20–45 cm thick".
+- **Slide and play through the winter** with the same time bar as the other weather layers
+  (months under the slider). The calendar, Newest and Last winter stay under the switch:
+  picking a day moves the bar to it, and to that winter.
+- **Cut to the sea** like the other sea layers, so islands and the coast show through.
+- The old "Sea ice" picture layer and the separate "Ice chart" are folded into this one
+  (a browser that had either on keeps it on). The Copernicus picture is only used for
+  days the ice chart doesn't have.
+
 ## 0.73.0
 
 - **New map type: Recent.** Sentinel-2 satellite pictures (10 m) from the last two
