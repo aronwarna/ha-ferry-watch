@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.73.0
+
+- **New map type: Recent.** Sentinel-2 satellite pictures (10 m) from the last two
+  months, by day, to see how a place looks now: ice, snow, building sites, algae, a new
+  pier. The bar shows the day big (how long ago, the pass time, how cloudy it was and how
+  much of the view it covers). A line of the last two months has a mark for each day
+  with a picture where you are looking (tall and blue when clear). Tap or drag along it,
+  or use ‹ ›, to pick a day. "Clear only" skips the cloudy days. Moving the map shows the
+  newest clear day there, unless you picked one.
+- Today's satellite view stays underneath, greyed out, so it's plain where that day's
+  picture stops. Fade lets it show through. Pictures show from zoom 8; past zoom 13 they
+  are enlarged (10 m pixels).
+- The pictures come free and without a key from Microsoft's Planetary Computer
+  (Copernicus Sentinel-2 L2A), with the colours lifted a little since the raw picture is
+  very dark in the low northern sun. The NAS keeps what you've looked at (up to 300 MB, in
+  `recent`, left out of backups).
+
 ## 0.72.2
 
 - **Harbours are just small dots when zoomed out** (below zoom 13): blue on the map and

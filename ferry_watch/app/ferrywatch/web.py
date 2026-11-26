@@ -293,6 +293,8 @@ class Web:
         r.add_post("/api/fleets/{fleet_id}", self.set_fleet)
         r.add_get("/api/tiles/{source}/{z}/{x}/{y}", self.tile)
         r.add_get("/api/mapsources", self.mapsources)
+        r.add_get("/api/recent/days", self.recent_days)
+        r.add_get("/api/recent/{day}/{z}/{x}/{y}", self.recent_tile)
         r.add_get("/api/mapcovers", self.mapcovers)
         r.add_get("/api/mapsave", self.mapsave_status)
         r.add_post("/api/mapsave/plan", self.mapsave_plan)
@@ -642,6 +644,40 @@ class Web:
         row = await self.fw.traffic.locate(mmsi)
         return web.json_response({"row": row, "error": None if row else self.fw.traffic.error},
                                  headers={"Cache-Control": "no-store"})
+
+    # --- recent satellite pictures (recentsat.py) ---------------------------------------
+
+    async def recent_days(self, request: web.Request) -> web.Response:
+        """The days with a Sentinel-2 picture in the view (box=south,west,north,east)."""
+        from .recentsat import parse_box
+        try:
+            box = parse_box(request.query.get("box", ""))
+        except ValueError:
+            raise web.HTTPBadRequest(text="box=south,west,north,east") from None
+        if not self.fw.recent:
+            raise web.HTTPServiceUnavailable()
+        try:
+            data = await self.fw.recent.days(box)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            return web.json_response({"days": [], "best": None, "error": str(err) or type(err).__name__},
+                                     headers={"Cache-Control": "no-store"})
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def recent_tile(self, request: web.Request) -> web.StreamResponse:
+        from .recentsat import MAX_Z, MIN_Z
+        day = request.match_info["day"]
+        try:
+            z, x = int(request.match_info["z"]), int(request.match_info["x"])
+            y = int(request.match_info["y"].split(".")[0])
+            time.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        if not self.fw.recent or not (MIN_Z <= z <= MAX_Z and 0 <= x < 2**z and 0 <= y < 2**z):
+            raise web.HTTPNotFound()
+        path = await self.fw.recent.tile(day, z, x, y)
+        if not path:
+            raise web.HTTPNotFound(headers={"Cache-Control": "max-age=3600"})
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/webp"})
 
     async def mapsources(self, request: web.Request) -> web.Response:
         """The extra layers (old photos and maps, overlays) the panel can show."""

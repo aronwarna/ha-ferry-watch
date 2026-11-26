@@ -1569,3 +1569,26 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 
 /* Ice chart day line: why the picked day could not be read. */
 .ov-days-status.problem { color: #dc2626; }
+
+/* --- Recent satellite pictures (recentsat.js) ------------------------------------- */
+/* Today's satellite view underneath, greyed out, so it's plain where the day's picture stops. */
+.leaflet-pane.recent-base { filter: grayscale(0.85) brightness(0.55) contrast(0.9); }
+.recentbar .rb-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.recentbar .hb-top .hb-split { padding: 4px 9px; }
+.recentbar .rb-line { height: 26px; }
+.recentbar .hb-track { top: 17px; }
+/* A mark per day: as tall as the view is clear that day; clear days blue, the rest pale. */
+.recentbar .rb-mark {
+  top: auto; bottom: 7px; height: calc(4px + var(--good, 0.2) * 16px); width: 3px; margin-left: -1.5px;
+  background: color-mix(in srgb, var(--text) 28%, transparent);
+}
+.recentbar .rb-mark.clear { background: color-mix(in srgb, var(--accent) 80%, var(--text) 5%); }
+.recentbar .rb-mark.skip { opacity: 0.35; }
+.recentbar .rb-mark.on { background: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); }
+.recentbar .hb-knob { top: 11px; }
+.recentbar .rb-note { flex: 1 1 180px; padding-top: 4px; font-size: 12px; }
+@media (max-width: 560px) {
+  .recentbar .rb-name .muted { display: none; }
+  .recentbar .rb-note { font-size: 11px; }
+  .recentbar .rb-clear span { display: inline; }
+}
