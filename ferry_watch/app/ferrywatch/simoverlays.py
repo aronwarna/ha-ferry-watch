@@ -16,7 +16,7 @@ import struct
 import zlib
 from typing import Any
 
-from . import radar, seaice
+from . import radar
 from .overlays import Overlays, every
 
 TILE_PX = 64  # drawn small; the panel stretches it over its 256-pixel tile
@@ -127,9 +127,6 @@ class FakeTileSession:
 
 
 def register(overlays: Overlays) -> None:
-    # The real ice chart's settings, drawn here and shown all year so it can be tried.
-    seaice.register(overlays, url="sim://sea-ice/{ts}/{z}/{x}/{y}", times=every(86400, 14, lag=86400),
-                    season=None, attribution=seaice.ATTRIBUTION + " (simulated)")
     # The real radar's settings, with drawn rain cells for its frames.
     radar.register(overlays, url="sim://rain-radar/{ts}/{z}/{x}/{y}", times=every(300, 12, lag=300),
                    attribution=radar.ATTRIBUTION + " (simulated)")
@@ -237,3 +234,116 @@ async def fake_icechart_get(url: str) -> bytes:
 
 
 _GREYS = [_grey_of(k / 1000) for k in range(1001)]
+
+
+# --- SMHI's ice chart (icemap.py), as its download service would answer ---------------
+
+def shapefile_zip(areas: list[list], day: str) -> bytes:
+    """A zipped shapefile like SMHI's: areas as [iceact, type, deformation, min, avg, max,
+    rings of [lon, lat]] (outer rings clockwise, as shapefiles have them)."""
+    import io
+    import struct
+    import zipfile
+
+    def cw(ring: list) -> list:
+        area = sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(ring, ring[1:]))
+        return ring if area < 0 else ring[::-1]
+
+    def ccw(ring: list) -> list:
+        return cw(ring)[::-1]
+
+    recs = b""
+    index = b""
+    off = 50
+    for i, a in enumerate(areas):
+        rings = [cw(r) if k == 0 else ccw(r) for k, r in enumerate(a[6])]
+        pts = [p for r in rings for p in r]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        starts, n = [], 0
+        for r in rings:
+            starts.append(n)
+            n += len(r)
+        content = struct.pack("<i4d2i", 5, min(xs), min(ys), max(xs), max(ys), len(rings), n)
+        content += struct.pack(f"<{len(starts)}i", *starts)
+        content += struct.pack(f"<{2 * n}d", *[v for p in pts for v in p])
+        recs += struct.pack(">2i", i + 1, len(content) // 2) + content
+        index += struct.pack(">2i", off, len(content) // 2)
+        off += 4 + len(content) // 2
+    head = lambda length: struct.pack(">7i", 9994, 0, 0, 0, 0, 0, length) + struct.pack("<2i4d4d", 1000, 5, 8, 53, 31, 66, 0, 0, 0, 0)
+    shp = head(50 + len(recs) // 2) + recs
+    shx = head(50 + len(index) // 2) + index
+    fields = [("iceact", "C", 80), ("icetck", "N", 5), ("icemax", "N", 5), ("icemin", "N", 5),
+              ("type", "N", 5), ("deformatio", "N", 5), ("chartdate", "C", 80)]
+    size = 1 + sum(f[2] for f in fields)
+    dbf = struct.pack("<B3BIHH20x", 3, 126, 1, 1, len(areas), 32 + 32 * len(fields) + 1, size)
+    for name, kind, length in fields:
+        dbf += name.encode().ljust(11, b"\0") + kind.encode() + b"\0" * 4 + bytes([length, 0]) + b"\0" * 14
+    dbf += b"\r"
+    for a in areas:
+        values = [f"{a[0]:02d}", a[4], a[5], a[3], a[1], a[2], day]
+        dbf += b" " + b"".join(str(v).encode().ljust(f[2])[:f[2]] if f[1] == "C" else str(v).encode().rjust(f[2])
+                               for v, f in zip(values, fields))
+    dbf += b"\x1a"
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        stem = "seaice_" + day.replace("-", "") + "120000"
+        z.writestr(stem + ".shp", shp)
+        z.writestr(stem + ".shx", shx)
+        z.writestr(stem + ".dbf", dbf)
+        z.writestr(stem + ".prj", 'GEOGCS["GCS_WGS_1984"]')
+    return out.getvalue()
+
+
+_SAMPLE: list | None = None
+
+
+def sim_icemap_day(day: int) -> list[list]:
+    """A day's areas: the real chart of 25 Feb 2026 (north of 59.6 N), its ice areas grown or
+    shrunk with the sim's season (none in early November, the most in late February)."""
+    import time as _t
+    from pathlib import Path
+
+    global _SAMPLE
+    if _SAMPLE is None:
+        _SAMPLE = json.loads((Path(__file__).with_name("sim_icemap_sample.json")).read_text())
+    t = _t.gmtime(day)
+    # Days since 20 November, the peak at day ~97 (late February), gone by late May.
+    from .icechart import season_start
+    d = (day - season_start(day)) / 86400 - 19
+    grow = max(0.0, min(1.0, d / 97)) if d < 97 else max(0.0, 1 - (d - 97) / 85)
+    if grow <= 0.02 or t.tm_mon in (6, 7, 8, 9, 10):
+        return []
+    out = []
+    for a in _SAMPLE:
+        lat = max(p[1] for p in a[6][0])
+        # The north freezes first and melts last.
+        if lat < 66 - grow * 6.5:
+            continue
+        thin = max(0.25, grow)
+        out.append([a[0], a[1], a[2], round(a[3] * thin), round(a[4] * thin), round(a[5] * thin), a[6]])
+    return out
+
+
+async def fake_icemap_get(url: str) -> bytes:
+    """SMHI's download service: month listings, day listings and the day's zip."""
+    import calendar as _cal
+    import re
+    import time as _t
+
+    now = _t.time()
+    m = re.search(r"/year/(\d+)/month/(\d+)(?:/day/(\d+))?(/data/.*)?", url)
+    if not m:
+        return b""
+    year, month = int(m.group(1)), int(m.group(2))
+    if m.group(4):
+        day = _cal.timegm((year, month, int(m.group(3)), 0, 0, 0, 0, 0, 0))
+        return shapefile_zip(sim_icemap_day(day), _t.strftime("%Y-%m-%d", _t.gmtime(day)))
+    if m.group(3):
+        stem = f"seaice_{year}{month:02d}{int(m.group(3)):02d}120000"
+        href = f"https://opendata-download-icemap.smhi.se/api/version/latest/year/{year}/month/{month}/day/{int(m.group(3))}/data/{stem}.zip"
+        return json.dumps({"data": [{"key": stem, "link": [{"href": href, "type": "application/zip"}]}]}).encode()
+    days = []
+    for d in range(1, _cal.monthrange(year, month)[1] + 1):
+        if _cal.timegm((year, month, d, 12, 0, 0, 0, 0, 0)) <= now - 3600:
+            days.append({"key": str(d)})
+    return json.dumps({"day": days}).encode()

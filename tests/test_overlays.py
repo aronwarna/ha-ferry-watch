@@ -276,7 +276,7 @@ def test_endpoints(tmp_path, monkeypatch):
         await client.start_server()
         try:
             listing = await (await client.get("/api/overlays")).json()
-            assert [o["id"] for o in listing["overlays"]] == ["sea-ice", "rain-radar", "wind"]
+            assert [o["id"] for o in listing["overlays"]] == ["rain-radar", "wind"]
             assert all(o["times"] is None for o in listing["overlays"]) and listing["now"] > 0
             listing = await (await client.get("/api/overlays?times=rain-radar,wind")).json()
             wind, rain = (next(o for o in listing["overlays"] if o["id"] == i) for i in ("wind", "rain-radar"))

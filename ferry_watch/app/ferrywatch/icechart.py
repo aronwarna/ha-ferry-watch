@@ -38,6 +38,7 @@ import aiohttp
 from .config import USER_AGENT
 from .ice import CHART_URL
 from .overlays import Overlay, Overlays, iso, parse_time_dimension, tile_bounds
+from . import icemap
 from .seaice import times_from_capabilities
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,12 +80,12 @@ RETRY_S = 120  # a day that couldn't be read is asked for again after this
 # Drift ice classes as on the ice chart (WMO colour code for total concentration):
 # (from %, name, short, RGB). Below the first, open water: not coloured.
 CLASSES = [
-    (1, "Open water (under 1/10 ice)", "<1/10", (150, 200, 255)),
-    (10, "Very open drift ice (1-3/10)", "1-3/10", (140, 255, 160)),
-    (35, "Open drift ice (4-6/10)", "4-6/10", (255, 255, 0)),
-    (65, "Close drift ice (7-8/10)", "7-8/10", (255, 125, 7)),
-    (85, "Very close drift ice (9-10/10)", "9-10/10", (255, 0, 0)),
-    (99.5, "Fast or consolidated ice (10/10)", "10/10", (150, 150, 150)),
+    (1, "Open water (under 1/10 ice)", "<1/10", (165, 208, 250)),
+    (10, "Very open drift ice (1-3/10)", "1-3/10", (150, 232, 170)),
+    (35, "Open drift ice (4-6/10)", "4-6/10", (250, 226, 70)),
+    (65, "Close drift ice (7-8/10)", "7-8/10", (246, 142, 48)),
+    (85, "Very close drift ice (9-10/10)", "9-10/10", (222, 52, 52)),
+    (99.5, "Fast or consolidated ice (10/10)", "10/10", (160, 165, 175)),
 ]
 ALPHA = 235
 EDGE_ALPHA = 150
@@ -648,30 +649,65 @@ async def list_days(session: aiohttp.ClientSession | None, now: float, get: Get 
 
 class IceChart:
     def __init__(self, directory: Path, session: aiohttp.ClientSession | None, water: Water | None = None,
-                 get: Get | None = None):
+                 get: Get | None = None, maps: icemap.IceMaps | None = None):
         self.grids = Grids(directory, session, get)
         self.session = session
         self.water = water
         self.get = get
+        self.maps = maps  # the analysts' chart (SMHI), drawn first where it has the day
         self.days: list[int] = []
+        self.chart_days: set[int] = set()
         self.overlay: Overlay | None = None
         self._reading: asyncio.Task | None = None
 
     async def times(self, session: Any, now: float) -> list[float]:
-        self.days = await list_days(self.session, now, self.get)
+        raster = await list_days(self.session, now, self.get)
+        chart: list[int] = []
+        if self.maps is not None:
+            try:
+                chart = await self.maps.days(last_season(now)[0], now)
+            except Exception as err:  # noqa: BLE001 - the raster's days still work
+                _LOGGER.warning("SMHI ice chart days could not be listed: %s", err)
+        self.chart_days = set(chart)
+        self.days = sorted(set(raster) | self.chart_days) if chart else raster
         # The newest day is read straight away, so the panel can say whether it has ice
         # (and show last winter's instead if not).
-        if self.days and self.grids.meta(self.days[-1]) is None and not self._reading:
+        if self.days and self._summary(self.days[-1]) is None and not self._reading:
             self._reading = asyncio.create_task(self._read_latest(self.days[-1]))
         return self.days
 
     async def _read_latest(self, day: int) -> None:
         try:
+            if day in self.chart_days and self.maps is not None:
+                try:
+                    await self.maps.ready(day)
+                    return
+                except Exception as err:  # noqa: BLE001 - the raster instead
+                    _LOGGER.warning("Could not read SMHI's ice chart for %s: %s", iso(day)[:10], err)
             await self.grids.ready(day)
         except Exception as err:  # noqa: BLE001 - shown again when a tile is asked for
             _LOGGER.warning("Could not read the ice chart for %s: %s", iso(day)[:10], err)
         finally:
             self._reading = None
+
+    def _summary(self, day: int) -> list[float] | None:
+        """[share of the sea with ice, thickest cm, km² or None] of a day read before."""
+        if self.maps is not None:
+            got = self.maps.summary(day)
+            if got is not None:
+                return got
+        meta = self.grids.meta(day)
+        return None if meta is None else [meta.get("share", 0), meta.get("max_cm", 0), None]
+
+    async def _chart_day(self, ts: int) -> icemap.Day | None:
+        """The analysts' chart of the day, None where it hasn't the day or can't be read."""
+        if self.maps is None or ts not in self.chart_days:
+            return None
+        try:
+            return await self.maps.ready(ts)
+        except Exception as err:  # noqa: BLE001 - the raster instead
+            _LOGGER.debug("SMHI ice chart for %s not read: %s", iso(ts)[:10], err)
+            return None
 
     async def _water(self, z: int, x: int, y: int) -> tuple[Any | None, bool]:
         """The tile's water mask and whether it's final (the chart may still be downloading)."""
@@ -699,6 +735,9 @@ class IceChart:
         s, w, n, e = tile_bounds(z, x, y)
         if n < 53 or s > 66 or e < 9 or w > 31:
             return None, True
+        chart = await self._chart_day(ts)
+        if chart is not None:
+            return await asyncio.to_thread(icemap.draw_tile, chart, z, x, y), True
         day = await self.grids.ready(ts)
         if day is None:
             return None, False
@@ -718,12 +757,20 @@ class IceChart:
                 _LOGGER.info("Ice chart tile %d/%d/%d: the drawn chart's water left little of the ice, drawn uncut",
                              z, x, y)
                 body = uncut
-        return body, final
+        # Drawn from the raster where the analysts' chart has the day but couldn't be read:
+        # not kept, so the sharper one replaces it once it can be read.
+        return body, final and not (ts in self.chart_days)
 
     async def value(self, lat: float, lon: float, ts: int) -> dict[str, Any] | None:
         day = self._day_for(ts)
         if day is None:
             return None
+        chart = await self._chart_day(day)
+        if chart is not None:
+            area = await asyncio.to_thread(chart.at, lat, lon)
+            if area is None:
+                return {"day": chart.day, "class": "No ice", "short": "", "conc": 0, "thick": 0, "src": "chart"}
+            return icemap.describe(area, chart.day)
         got = await self.grids.ready(day)
         if got is None:
             return None
@@ -749,23 +796,37 @@ class IceChart:
         usual peak, and the day to show first (the newest, or the peak while the newest
         has no ice)."""
         latest = self.days[-1] if self.days else None
-        meta = self.grids.meta(latest) if latest else None
-        has_ice = None if meta is None else bool(meta.get("ice_px"))
+        summary = self._summary(latest) if latest else None
+        has_ice = None if summary is None else bool(summary[0] or summary[1])
         peak = peak_day(self.days, now)
         default = peak if has_ice is False and peak else latest
-        return {"latest": latest, "latest_ice": has_ice, "latest_share": meta.get("share") if meta else None,
-                "max_cm": meta.get("max_cm") if meta else None, "peak": peak, "default": default,
-                "season_start": season_start(now), "read": self.grids.read_days(),
-                "failed": {str(d): str(err) or type(err).__name__ for d, (_t, err) in self.grids.failed.items()}}
+        read: dict[str, list[Any]] = dict(self.grids.read_days())
+        if self.maps is not None:
+            read.update(self.maps.summaries())
+        failed = {str(d): str(err) or type(err).__name__ for d, (_t, err) in self.grids.failed.items()}
+        if self.maps is not None:
+            for d, (_t, err) in self.maps.failed.items():
+                if self.grids.meta(d) is None:  # the raster didn't stand in for it either
+                    failed.setdefault(str(d), str(err) or type(err).__name__)
+        return {"latest": latest, "latest_ice": has_ice, "latest_share": summary[0] if summary else None,
+                "max_cm": summary[1] if summary else None, "peak": peak, "default": default,
+                "season_start": season_start(now), "read": read, "failed": failed,
+                "chart_days": len(self.chart_days), "source": "chart" if self.chart_days else "raster",
+                "listing_error": self.maps.listing_error if self.maps is not None else None}
+
+
+TILE_REV = "2"  # bump when the drawing changes: kept and cached tiles are drawn again
 
 
 def overlay(chart: IceChart, **changes: Any) -> Overlay:
     kw: dict[str, Any] = dict(
-        id=ID, title="Ice chart", kind="local", times=chart.times, tile=chart.tile, value=chart.value,
-        static=True, pickable=True, info=chart.info, max_age=400 * 86400, refresh=3 * 3600, color="#ef4444", icon="ice", opacity=0.8,
-        min_zoom=4, max_zoom=12, bounds=(53.0, 9.0, 66.0, 31.0), valid_for=86400, attribution=ATTRIBUTION,
-        note="FMI's daily ice chart: drift ice by how close it is (WMO colours), grey for fast ice, "
-             "thickness in cm. Tap the ice for its class and thickness.",
+        id=ID, title="Sea ice", kind="local", times=chart.times, tile=chart.tile, value=chart.value,
+        pickable=True, info=chart.info, max_age=400 * 86400, refresh=3 * 3600, color="#38bdf8", icon="ice", opacity=0.85,
+        min_zoom=4, max_zoom=12, bounds=(53.0, 9.0, 66.0, 31.0), valid_for=86400, frame_ms=800, sea=True,
+        tile_rev=TILE_REV,
+        attribution=(icemap.ATTRIBUTION if chart.maps is not None else ATTRIBUTION),
+        note="The ice services' daily ice chart: how close the ice is (chart colours), grey for fast ice, "
+             "roof marks for ridged ice, thickness in cm. Tap the ice for what it is.",
     )
     kw.update(changes)
     o = Overlay(**kw)
@@ -774,7 +835,8 @@ def overlay(chart: IceChart, **changes: Any) -> Overlay:
 
 
 def register(registry: Overlays, directory: Path, session: aiohttp.ClientSession | None,
-             water: Water | None = None, get: Get | None = None, **changes: Any) -> IceChart:
-    chart = IceChart(directory, session, water, get)
+             water: Water | None = None, get: Get | None = None, maps: icemap.IceMaps | None = None,
+             **changes: Any) -> IceChart:
+    chart = IceChart(directory, session, water, get, maps)
     registry.register(overlay(chart, **changes))
     return chart

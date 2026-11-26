@@ -35,7 +35,7 @@ from .ice import IceWatch
 from .notices import Notices
 from .notify import Notifier, sun_place
 from .outlook import Outlook, fake_get_json
-from . import algae, aurora, dayscore, forecast, icechart, lightning, lightpollution, marine, radar, seaice, sunset, wind
+from . import algae, aurora, dayscore, forecast, icechart, icemap, lightning, lightpollution, marine, radar, sunset, wind
 from .overlays import Overlays
 from .passages import Detector, backfill_timing
 from .photos import PhotoCache
@@ -196,7 +196,7 @@ class FerryWatch:
             simoverlays.register(self.overlays)
         else:
             self.overlays = Overlays(DATA_DIR / "overlays", self.session)
-            seaice.register(self.overlays)
+            # Sea ice is the ice chart's layer now (icechart.py, with SMHI's chart).
             radar.register(self.overlays)
         fake_chart = fake_fmi = fake_faults = fake_traffic = fake_stations = fake_overpass = fake_forecast = fake_reserves = fake_syke = None
         if os.environ.get("FW_SIMULATE") == "1":
@@ -667,10 +667,13 @@ class FerryWatch:
         aurora.register(self.overlays, noaa)
         lightpollution.register(self.overlays, DATA_DIR / "overlays" / "lightpollution", self.session, lp)
         sunset.register(self.overlays)
-        ice_get = None
+        ice_get = smhi_get = None
         if os.environ.get("FW_SIMULATE") == "1":
             from .simoverlays import fake_icechart_get as ice_get
-        icechart.register(self.overlays, DATA_DIR / "overlays" / "icechart", self.session, self._chart_water, ice_get)
+            from .simoverlays import fake_icemap_get as smhi_get
+        # The panel cuts the ice to the drawn chart's water (sea layer), so no water here.
+        maps = icemap.IceMaps(DATA_DIR / "overlays" / "icemap", self.session, smhi_get)
+        icechart.register(self.overlays, DATA_DIR / "overlays" / "icechart", self.session, None, ice_get, maps)
         if os.environ.get("FW_SIMULATE") == "1":
             from . import simalgae
             algae.register(self.overlays, simalgae.fake_get, simalgae.fake_reports,
