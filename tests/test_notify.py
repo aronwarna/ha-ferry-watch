@@ -243,3 +243,44 @@ def test_passage_keeps_water_visibility_and_ice(tmp_path, monkeypatch):
     row = fw.store.passages()[0]
     assert (row["wind_ms"], row["water_c"], row["vis_km"]) == (4.0, 1.4, 8.5)
     assert (row["ice"], row["ice_cm"], row["ice_conc"]) == ("ice", 31.0, 90.0)
+
+
+def test_failed_alert_is_tried_again(tmp_path, monkeypatch):
+    import aiohttp
+
+    monkeypatch.setattr(notify, "SEND_RETRIES", (0.01, 0.01))
+    fw, n = make_fw(tmp_path, monkeypatch)
+    real = fw.ha.call_service
+    failures = {"left": 1}
+
+    async def flaky(service, data):
+        if service.startswith("notify.") and failures["left"]:
+            failures["left"] -= 1
+            raise aiohttp.ClientConnectionError("Home Assistant restarting")
+        await real(service, data)
+
+    fw.ha.call_service = flaky
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    assert [c for c in fw.ha.calls if c[0].startswith("notify.")]  # sent on the second try
+    row = fw.store.passages()[0]
+    assert row["notified"] == 1 and "try 2" in row["note"]
+
+
+def test_alert_that_keeps_failing_gives_up(tmp_path, monkeypatch):
+    import aiohttp
+
+    monkeypatch.setattr(notify, "SEND_RETRIES", (0.01, 0.01))
+    fw, n = make_fw(tmp_path, monkeypatch)
+    tries = []
+
+    async def broken(service, data):
+        if service.startswith("notify."):
+            tries.append(service)
+            raise aiohttp.ClientConnectionError("down")
+
+    fw.ha.call_service = broken
+    p = passage(fw.store)
+    asyncio.run(n.handle(p))
+    assert len(tries) == 3
+    assert fw.store.passages()[0]["notified"] == 0

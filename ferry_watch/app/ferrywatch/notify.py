@@ -29,6 +29,7 @@ PHONE_IN_PICTURE_M = 25_000
 FEED_SILENCE = 30 * 60
 FEED_WARN_FROM, FEED_WARN_UNTIL = 6, 21  # local hours
 MAX_PASSAGE_AGE = 10 * 60  # don't alert about passages detected from old data
+SEND_RETRIES = (15, 45)  # seconds before trying a failed alert again (twice)
 IMAGE_KEEP_DAYS = 14
 LAST_INNER_ENTITY = "sensor.ferry_watch_last_inner_passage"
 WEATHER_WAIT = 3  # seconds an alert may wait for fresh sea conditions
@@ -137,7 +138,27 @@ class Notifier:
         self.fw.store.set_passage_conditions(passage["id"], **values)
 
     async def _alert(self, passage: dict[str, Any]) -> tuple[bool, str]:
-        """Send the phone alert if this passage calls for one; returns (sent, note)."""
+        """Send the phone alert if this passage calls for one; returns (sent, note). A send
+        that fails on the way (Home Assistant busy or restarting, a dropped connection) is
+        tried again a little later, as long as the passage is still fresh: this alert is
+        the one that matters, and twice is better than never."""
+        for attempt, wait in enumerate((*SEND_RETRIES, None)):
+            sent, note, transient = await self._alert_once(passage)
+            if sent or not transient or wait is None or time.time() - passage["ts"] + wait > MAX_PASSAGE_AGE:
+                if attempt and sent:
+                    note = f"{note} (on try {attempt + 1})"
+                return sent, note
+            _LOGGER.warning("Alert for passage %s not sent (%s), trying again in %s s", passage.get("id"), note, wait)
+            await asyncio.sleep(wait)
+        return False, "not sent"
+
+    async def _alert_once(self, passage: dict[str, Any]) -> tuple[bool, str, bool]:
+        """One try: (sent, note, worth trying again)."""
+        sent, note = await self._alert_try(passage)
+        transient = not sent and (note.startswith("sending failed") or note == "Home Assistant not answering")
+        return sent, note, transient
+
+    async def _alert_try(self, passage: dict[str, Any]) -> tuple[bool, str]:
         store = self.fw.store
         try:
             if passage["route"] != "inner":
