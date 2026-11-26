@@ -978,6 +978,8 @@
     const entry = p && ships.get(p.mmsi);
     if (!entry || entry.info.fleet) return;
     entry.info.last_passage = p;
+    lastState?.recent_passages?.push([p.porkkala_ts || p.ts, p.mmsi, p.route, p.direction]);
+    renderToday();
     renderStrip();
     renderCard();
     if (p.route === "inner" && !document.hidden) {
@@ -1867,7 +1869,9 @@
     const el = $("status");
     let state = "connecting";
     let text = "Connecting";
-    if (lastState?.simulated) {
+    if (lastState && !socketOpen && !socketPaused) {
+      state = "offline"; text = "Reconnecting";
+    } else if (lastState?.simulated) {
       state = "simulated"; text = "Simulated data";
     } else if (lastState && socketOpen) {
       const feed = lastState.feed || {};
@@ -1882,14 +1886,39 @@
     pill.dataset.state = state;
     pill.title = text;
     statusText = text;
+    // Lost for more than a few seconds (the NAS restarting, Wi-Fi gone): say so in words.
+    const lost = Boolean(lastState) && !socketOpen && !socketPaused && lostSince && Date.now() - lostSince > LOST_AFTER_MS;
+    $("pill-lost").hidden = !lost;
   }
+  const LOST_AFTER_MS = 8000;
+  let lostSince = 0;
 
   // --- data loading ---------------------------------------------------------------
+
+  // After an update of the app the NAS answers with a new version while this page still
+  // runs the old one: offer a reload (the phone app can keep a page open for days).
+  let pageVersion = (() => {
+    try { return new URL(document.querySelector('script[src*="app.js"]').src).searchParams.get("v"); } catch { return null; }
+  })();
+  function checkVersion(v) {
+    if (!v) return;
+    if (!pageVersion) { pageVersion = v; return; }
+    if (v === pageVersion || document.getElementById("fw-updated")) return;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.id = "fw-updated";
+    b.className = "fw-updated panel";
+    b.textContent = `Updated to ${v} · Reload`;
+    b.title = "Ferry Watch was updated on the NAS: reload to use the new version";
+    b.addEventListener("click", () => location.reload());
+    document.body.append(b);
+  }
 
   async function loadState() {
     const res = await fetch("api/state");
     const state = await res.json();
     lastState = state;
+    checkVersion(state.version);
     clockSkew = state.now - Date.now() / 1000;
     const seen = new Set();
     for (const info of [...state.ships, ...(state.fleet_ships || [])]) {
@@ -1941,6 +1970,7 @@
     }
     if (socketPaused) {
       socketPaused = false;
+      lostSince = 0;
       if (!socket || socket.readyState === WebSocket.CLOSED) connectSocket();
     }
     refreshState();
@@ -1954,6 +1984,7 @@
     const ws = socket = new WebSocket(url);
     ws.onopen = () => {
       socketOpen = true;
+      lostSince = 0;
       renderStatus();
       // Catch up on anything missed while disconnected (not right after the first load).
       if (Date.now() - firstLoadAt > 10000) loadState().then(loadTails).catch(console.error);
@@ -1976,6 +2007,10 @@
     ws.onclose = () => {
       socketOpen = false;
       if (socket === ws) socket = null;
+      if (!lostSince && !socketPaused) {
+        lostSince = Date.now();
+        setTimeout(renderStatus, LOST_AFTER_MS + 100);
+      }
       renderStatus();
       if (!socketPaused) setTimeout(connectSocket, 3000);
     };
@@ -1988,6 +2023,7 @@
     renderCard();
     fetch("api/state").then((r) => r.json()).then((s) => {
       lastState = s;
+      checkVersion(s.version);
       renderStatus();
       renderConditions();
       renderPhone();
@@ -2030,7 +2066,43 @@
     return bell;
   }
 
+  // Ships tab: today's passages off Porkkala, one short line each (inner ones in orange).
+  function renderToday() {
+    const box = $("today-passages");
+    const rows = lastState?.recent_passages;
+    if (!box || !rows) return;
+    const d = new Date();
+    const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+    const today = rows.filter((r) => r[0] >= midnight);
+    const inner = today.filter((r) => r[2] === "inner").length;
+    const key = JSON.stringify(today);
+    box.hidden = false;
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    const head = document.createElement("p");
+    head.className = "small muted today-head";
+    head.textContent = today.length
+      ? `Today off Porkkala: ${today.length} ${today.length === 1 ? "passage" : "passages"}, ${inner} on the inner route`
+      : "No passages off Porkkala yet today.";
+    const list = document.createElement("ul");
+    list.className = "today-list small";
+    for (const [ts, mmsi, routeName, dir] of [...today].reverse()) {
+      const info = ships.get(mmsi)?.info;
+      const li = document.createElement("li");
+      li.className = routeName === "inner" ? "inner" : "";
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = info?.color || "#64748b";
+      const text = document.createElement("span");
+      text.textContent = `${clock(ts)} ${info ? shortName(info.name) : `MMSI ${mmsi}`} · ${routeName === "inner" ? "inner route" : "outer route"}${SHORT_DIR[dir] ? `, ${SHORT_DIR[dir]}` : ""}`;
+      li.append(dot, text);
+      list.append(li);
+    }
+    box.replaceChildren(head, ...(today.length ? [list] : []));
+  }
+
   function renderShipsList() {
+    renderToday();
     const list = $("ships-list");
     list.replaceChildren(...[...ships.values()].filter(({ info }) => !info.fleet).map(({ info }) => {
       const li = document.createElement("li");

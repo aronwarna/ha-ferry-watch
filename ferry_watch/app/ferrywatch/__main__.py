@@ -619,6 +619,8 @@ class FerryWatch:
             "version": __version__,
             "now": time.time(),
             "ships": ships,
+            # The last day and a half off Porkkala (the panel picks out today's).
+            "recent_passages": self.store.passages_since(int(time.time()) - 36 * 3600),
             "feed": feed,
             "port_calls": self.ports.status(),
             "simulated": os.environ.get("FW_SIMULATE") == "1",

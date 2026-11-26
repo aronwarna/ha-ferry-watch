@@ -49,6 +49,7 @@
     <div class="subbar-left">
       <button type="button" id="conditions" class="conditions panel" aria-haspopup="dialog" aria-controls="conditions-sheet">
         <span id="pill-status" class="status" data-state="connecting"><i></i></span>
+        <span id="pill-lost" class="pill-part pill-lost" hidden>Can't reach the NAS, retrying…</span>
         <span id="pill-wind" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg><span></span></span>
         <span id="pill-water" class="pill-part" hidden></span>
         <span id="pill-warn" class="pill-part pill-warn" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6.5 L7 6 H-7 Z"/><path class="mark" d="M0 -2 V2 M0 4 V4.4"/></svg><span></span></span>
@@ -322,6 +323,7 @@
       <ul id="search-results" class="ships-list results"></ul>
       <h3 class="group-head">My ships</h3>
       <ul id="ships-list" class="ships-list my-ships"></ul>
+      <div id="today-passages" class="today-passages" hidden></div>
       <h3 class="group-head">Fleets</h3>
       <p class="small muted note">Switched-on fleets are shown on the map with their latest trip; tap one to see its ships. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
       <div id="fleets-list"></div>

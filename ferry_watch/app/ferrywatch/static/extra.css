@@ -1622,3 +1622,24 @@ body:has(.histbar:not([hidden])) .map-fabs { bottom: 200px; }
 }
 .keys-hint kbd { font: 600 11px/1 system-ui, sans-serif; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; }
 @media (hover: none) { .keys-hint { display: none; } }
+/* While planning a route, a tap on a warning, a faulty light, a pin or an aircraft adds a
+   point there (as a tap on a ship does) instead of opening its card. */
+body.route-open .notice-icon, body.route-open .notice-label, body.route-open .fault-icon,
+body.route-open .pin-icon, body.route-open .aircraft-icon, body.route-open .parcel-id span,
+body.route-open .reserve-label { pointer-events: none; }
+.pill-lost { color: #dc2626; font-weight: 600; font-size: 12px; }
+@media (prefers-color-scheme: dark) { .pill-lost { color: #f87171; } }
+/* The app was updated while this page was open. */
+.fw-updated { position: fixed; z-index: 2100; left: 50%; top: calc(var(--top, 10px) + 104px); transform: translateX(-50%); white-space: nowrap;
+  padding: 9px 14px; border-radius: 999px; border: 0; background: var(--accent); color: #fff; font: 600 13px/1.2 system-ui, sans-serif;
+  box-shadow: var(--shadow); cursor: pointer; max-width: calc(100vw - 32px); }
+#conditions:has(#pill-lost:not([hidden])) .pill-part:not(.pill-lost) { display: none; }
+body:has(#fw-updated) .sky-note { display: none; }
+/* Ships tab › today's passages off Porkkala. */
+.today-passages { margin: 4px 0 6px; }
+.today-head { margin: 6px 0 4px; }
+.today-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.today-list li { display: flex; align-items: center; gap: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.today-list li .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.today-list li.inner { color: #c2410c; font-weight: 500; }
+@media (prefers-color-scheme: dark) { .today-list li.inner { color: #fb923c; } }

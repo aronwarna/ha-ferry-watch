@@ -67,3 +67,46 @@ def test_stall_watch_is_quiet_when_the_loop_is_free():
 
     asyncio.run(main())
     assert watch.summary()["stalls"] == 0
+
+
+def test_json_answers_go_out_gzipped_when_big():
+    import gzip
+    import json
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ferrywatch.web import compress_answers
+
+    async def big(request):
+        return web.json_response({"rows": [[60.1, 24.4, 1795700000 + i] for i in range(400)]})
+
+    async def small(request):
+        return web.json_response({"ok": True})
+
+    async def main():
+        app = web.Application(middlewares=[compress_answers])
+        app.router.add_get("/big", big)
+        app.router.add_get("/small", small)
+        async with TestClient(TestServer(app)) as client:
+            r = await client.get("/big", headers={"Accept-Encoding": "gzip"}, auto_decompress=False)
+            raw = await r.read()
+            assert r.headers.get("Content-Encoding") == "gzip"
+            assert len(json.loads(gzip.decompress(raw))["rows"]) == 400
+            r = await client.get("/big", headers={"Accept-Encoding": "identity"}, auto_decompress=False)
+            assert "Content-Encoding" not in r.headers
+            r = await client.get("/small", headers={"Accept-Encoding": "gzip"}, auto_decompress=False)
+            assert "Content-Encoding" not in r.headers
+
+    asyncio.run(main())
+
+
+def test_passages_since_is_compact_and_oldest_first(tmp_path):
+    store = Store(tmp_path / "t.db")
+    base = {"zone_id": 1, "lat": 60.0, "lon": 24.4, "sog": 17.0, "mmsi": MMSI}
+    store.add_passage({**base, "ts": 1000, "route": "inner", "direction": "east"})
+    pid = store.add_passage({**base, "ts": 5000, "route": "outer", "direction": "west"})
+    store.set_porkkala_ts(pid, 5050)
+    store.add_passage({**base, "ts": 6000, "route": "phone", "direction": "west"})  # not a Porkkala route
+    assert store.passages_since(900) == [[1000, MMSI, "inner", "east"], [5050, MMSI, "outer", "west"]]
+    assert store.passages_since(2000) == [[5050, MMSI, "outer", "west"]]

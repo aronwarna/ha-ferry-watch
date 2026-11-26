@@ -468,6 +468,14 @@ class Store:
             (mmsi, route, direction, since_ts),
         ).fetchone()[0]
 
+    def passages_since(self, ts: int, limit: int = 60) -> list[list]:
+        """Passages off Porkkala since ts, oldest first, compact for the panel's "Today":
+        [time at the timing place (or crossing), mmsi, route, direction]."""
+        rows = self.db.execute(
+            "SELECT COALESCE(porkkala_ts, ts), mmsi, route, direction FROM passages "
+            "WHERE ts >= ? AND route IN ('inner', 'outer') ORDER BY ts DESC LIMIT ?", (ts, limit)).fetchall()
+        return [list(r) for r in reversed(rows)]
+
     def latest_passage(self, mmsi: int) -> dict[str, Any] | None:
         """The ship's newest passage off Porkkala, either route: {ts, route, direction, porkkala_ts}."""
         row = self.db.execute(

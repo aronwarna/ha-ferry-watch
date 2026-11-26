@@ -8,6 +8,9 @@ A polish pass over the whole app.
   the passage a chip reads "Inner route 12 min ago" (in the inner route's orange) or
   "Outer route 12 min ago". When a ship takes the inner route while the map is open, a
   short note says so at the top of the map. The phone alert is unchanged.
+- **Today off Porkkala** in the Ships tab, under your ships: every passage today, newest
+  first, with the time, the ship and which way ("16:22 Cinderella · inner route, to
+  Helsinki"), the inner ones in orange.
 - **Ship names no longer sit on top of each other.** A name that would cover another moves
   to the ship's other side, and when neither side is free (ships side by side, say in
   port) the names share one label: "Serenade · Symphony".
@@ -20,12 +23,19 @@ A polish pass over the whole app.
   and chart are shown darker at night so they don't glare.
 - **Keyboard keys on a computer**: M menu, S stats, L layers, W weather, R route tool,
   A all ships, 1–4 your ships one by one, / search, Esc closes. Press ? to see them.
+- **When the NAS can't be reached** (restarting, Wi-Fi gone), the weather pill says
+  "Can't reach the NAS, retrying…" instead of only turning its dot red.
+- **After an update of the app**, a page that was left open (the phone app keeps it for
+  days) shows "Updated to 0.75.1 · Reload" so the new version is one tap away.
+- Planning a route: a tap on a warning, faulty light, pin or aircraft adds a route point
+  there (as a tap on a ship already did) instead of opening its card.
 - Stats: the inner route outlook shows the next four sailings, with "Show all" for the rest.
 - Layers: the map key folds away (it remembers whether you left it open).
 - Faster: the panel asks the NAS for three fewer things when it opens (no duplicate
   refresh, and the old pictures' coverage only once Historic is opened). Settings'
   refresh no longer lists every chart file on disk each time, nor counts all stored
-  positions. Time labels on the time bar, playback and weather are quicker on the phone.
+  positions. The NAS's answers (ship tracks, the state, the map list, the page itself)
+  now go out compressed, about a quarter of the size on the phone's connection. Time labels on the time bar, playback and weather are quicker on the phone.
 - **Copy diagnostics now says what holds the app up.** A small watcher notices when the
   app is busy for more than a third of a second at a time and notes where in the program
   that was, so a slow spot on the NAS can be found from the report.
