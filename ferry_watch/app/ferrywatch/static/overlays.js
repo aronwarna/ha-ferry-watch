@@ -11,6 +11,7 @@
   else root.FerryOverlays = api;
 })(typeof self !== "undefined" ? self : this, () => {
   "use strict";
+  const fwFormat = globalThis.fwFormat || ((locale, opts) => new Intl.DateTimeFormat(locale || undefined, opts));
 
   // --- time maths --------------------------------------------------------------------
 
@@ -60,13 +61,13 @@
     const d = new Date(ts * 1000);
     if (daily) {
       const sameYear = new Date(now * 1000).getFullYear() === d.getFullYear();
-      return { clock: d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" }),
+      return { clock: fwFormat("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: "UTC" }).format(d),
         rel: Math.abs(ts - now) < 86400 ? "today" : relative(ts - now) };
     }
-    const clock = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const clock = fwFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
     const today = new Date(now * 1000).toDateString() === d.toDateString();
     return {
-      clock: today ? clock : `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${clock}`,
+      clock: today ? clock : `${fwFormat("en-GB", { weekday: "short" }).format(d)} ${clock}`,
       rel: relative(ts - now),
     };
   }

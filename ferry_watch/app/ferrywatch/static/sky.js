@@ -221,7 +221,8 @@
   }
 
   const compass = (deg) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(norm(deg) / 45) % 8];
-  const clock = (ts) => new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  let CLOCK = null; // one formatter, made on first use (making one per call is slow)
+  const clock = (ts) => (CLOCK ||= new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" })).format(new Date(ts * 1000));
 
   // Bright stars that make good pairs with the Moon and planets.
   const BRIGHT = [["Aldebaran", 68.98, 16.51], ["Regulus", 152.09, 11.97], ["Spica", 201.3, -11.16], ["Antares", 247.35, -26.43],
@@ -362,6 +363,8 @@
 
   /* opts: { where() -> { lat, lon, label } } (the phone, else the map's centre),
      esc(text) */
+  const NOTE_OPEN_MS = 15000; // the sky note folds into its ✨ button after this
+
   function create({ where, esc, mapCentre }) {
     // The star catalogue (static/sky-data.js) is only fetched when the sky map is opened.
     let data = typeof FerrySkyData !== "undefined" ? FerrySkyData : { stars: [], names: {}, lines: [], constellations: [] };
@@ -731,8 +734,22 @@
       <button type="button" class="sky-note-open">Sky map</button>
       <button type="button" class="icon-button plain sky-note-close" aria-label="Hide until tomorrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>`;
     document.body.append(toast);
-    let noteKey = null;
-    const hideNote = () => { toast.hidden = true; document.body.classList.remove("sky-note-on"); };
+    let noteKey = null, foldTimer = 0;
+    const hideNote = () => { toast.hidden = true; clearTimeout(foldTimer); document.body.classList.remove("sky-note-on"); };
+    // After a while, or as soon as the map is used, the note folds into a small ✨ button
+    // that keeps out of the way; a tap on it opens the note again.
+    const fold = (on) => {
+      clearTimeout(foldTimer);
+      toast.classList.toggle("mini", on);
+      toast.setAttribute("aria-expanded", String(!on));
+      if (!on) foldTimer = setTimeout(() => fold(true), NOTE_OPEN_MS);
+    };
+    toast.addEventListener("click", (e) => {
+      if (toast.classList.contains("mini")) { e.stopPropagation(); fold(false); }
+    }, true);
+    for (const ev of ["pointerdown", "wheel"]) {
+      document.getElementById("map")?.addEventListener(ev, () => { if (!toast.hidden && !toast.classList.contains("mini")) fold(true); }, { passive: true });
+    }
     toast.querySelector(".sky-note-close").addEventListener("click", () => { if (noteKey) store.set(noteKey, "1"); hideNote(); });
     toast.querySelector(".sky-note-open").addEventListener("click", () => { if (noteKey) store.set(noteKey, "1"); hideNote(); open(); });
 
@@ -755,7 +772,9 @@
       toast.querySelector(".sky-note-icon").textContent = ICONS[h.icon] || "✨";
       toast.querySelector(".sky-note-text").textContent = h.text;
       toast.hidden = false;
+      toast.title = h.text;
       document.body.classList.add("sky-note-on");
+      fold(false);
     }
 
     return { open, close, note, get isOpen() { return !box.hidden; } };

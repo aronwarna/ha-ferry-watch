@@ -97,7 +97,7 @@
   }
   const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(d));
 
-  function toast(text) {
+  function toast(text, ms = 3500) {
     let el = document.getElementById("fw-toast");
     if (!el) {
       el = document.createElement("div");
@@ -108,7 +108,7 @@
     el.textContent = text;
     el.hidden = false;
     clearTimeout(el._t);
-    el._t = setTimeout(() => { el.hidden = true; }, 3500);
+    el._t = setTimeout(() => { el.hidden = true; }, ms);
   }
 
   async function copy(text) {

@@ -105,6 +105,25 @@ async def ingress_only(request: web.Request, handler):
     return await handler(request)
 
 
+COMPRESS_MIN = 1500  # bytes: smaller answers aren't worth it
+COMPRESS_TYPES = ("application/json", "text/html", "text/csv", "text/plain", "application/gpx+xml")
+
+
+@web.middleware
+async def compress_answers(request: web.Request, handler):
+    """JSON and text answers over 1.5 kB go out gzipped when the browser takes it: the
+    ships' tracks, the map list and the state are a quarter of the size on a phone's
+    connection. Tiles and pictures, already compressed, are left as they are."""
+    resp = await handler(request)
+    if (isinstance(resp, web.Response) and not resp.prepared and resp.body is not None
+            and "Content-Encoding" not in resp.headers and resp.status == 200
+            and resp.content_type in COMPRESS_TYPES
+            and isinstance(resp.body, (bytes, bytearray)) and len(resp.body) >= COMPRESS_MIN
+            and "gzip" in request.headers.get("Accept-Encoding", "")):
+        resp.enable_compression()
+    return resp
+
+
 PREF_MAX_KEYS, PREF_MAX_LEN = 200, 2000
 ZONE_ROLES = {"inner": "Inner route", "outer": "Outer route", "phone": "My area"}
 MAX_ROUTES = 100
@@ -261,7 +280,7 @@ class Web:
         self._fleet_pushed: dict[int, float] = {}  # mmsi -> when its last position went out
         self._fleet_pending: set[int] = set()
         self._finder = None  # search (find.py), made on first use
-        self.app = web.Application(middlewares=[ingress_only], client_max_size=10 * 1024 * 1024)
+        self.app = web.Application(middlewares=[ingress_only, compress_answers], client_max_size=10 * 1024 * 1024)
         r = self.app.router
         r.add_get("/", self.index)
         r.add_get("/ship/{mmsi}", self.index)
@@ -389,7 +408,9 @@ class Web:
         base = f"{prefix}/" if prefix or request.path != "/" else ""
         if base:
             html = html.replace("<head>", f'<head>\n  <base href="{base}">', 1)
-        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+        resp = web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+        resp.enable_compression()  # 32 kB becomes 8 on every opening of the panel
+        return resp
 
     async def static_file(self, request: web.Request) -> web.StreamResponse:
         """The panel's own files. Scripts and styles go out gzipped (1.3 MB becomes 0.4), and

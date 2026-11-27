@@ -66,6 +66,7 @@
     let current = null;
     let swipeX = 0.5;
     let coversRev = -1;
+    let coversWanted = -1;     // the newest coverage there is; fetched only once Historic is opened
     let coversPending = 0;
     const covers = new Map();  // layer id -> {w, h, bits, mb}
     const tones = new Map();   // photo layer id -> {w, h, g, t, s, lo, hi, mb}: brightness across it, for Enhance
@@ -84,7 +85,11 @@
     const edges = L.layerGroup().addTo(group);
     let baseLayer = null;
     let baseKey = "";
-    group.on("add", () => { active = true; bar.hidden = false; update(true); refreshBase(); renderSwipe(); pollCovers(); });
+    group.on("add", () => {
+      active = true; bar.hidden = false; update(true); refreshBase(); renderSwipe(); pollCovers();
+      // Where each old picture has anything (~60 kB) is only needed here: fetched on first use.
+      if (coversWanted !== coversRev) loadCovers(coversWanted).then(() => { if (active) update(true); });
+    });
     group.on("remove", () => { active = false; bar.hidden = true; divider.hidden = true; pane.style.clip = ""; });
 
     // --- what to compare with ---------------------------------------------------------
@@ -576,7 +581,7 @@
       },
     });
     async function loadCovers(rev) {
-      if (rev === coversRev) return;
+      if (rev === coversRev || rev < 0) return;
       try {
         const res = await api(`api/mapcovers?v=${rev}`);
         const byId = new Map(catalogue.map((r) => [r.id, r]));
@@ -1073,7 +1078,10 @@
         catalogue = res.layers || [];
         sources = res.sources || [];
         coversPending = res.covers_pending || 0;
-        if (res.covers_rev) await loadCovers(res.covers_rev);
+        if (res.covers_rev) {
+          coversWanted = res.covers_rev;
+          if (active) await loadCovers(res.covers_rev);
+        }
       } catch (err) {
         console.warn("map sources", err);
       }

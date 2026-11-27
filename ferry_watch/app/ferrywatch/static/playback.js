@@ -4,6 +4,7 @@
    the controls it puts in `mount`. */
 window.FerryPlayback = (() => {
   "use strict";
+  const fwFormat = globalThis.fwFormat || ((locale, opts) => new Intl.DateTimeFormat(locale || undefined, opts));
 
   const SPEEDS = [60, 300, 1200, 3600];
   const icon = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
@@ -32,8 +33,8 @@ window.FerryPlayback = (() => {
 
   function timeText(ts, multiDay) {
     const d = new Date(ts * 1000);
-    const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    return multiDay ? `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${hm}` : hm;
+    const hm = fwFormat("", { hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+    return multiDay ? `${fwFormat("en-GB", { weekday: "short" }).format(d)} ${hm}` : hm;
   }
 
   /* points: [lat, lon, ts, sog?]; cover(): pixels at the bottom of the map hidden by the

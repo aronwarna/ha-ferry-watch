@@ -874,6 +874,7 @@ def make_overview(layers: dict[str, Layer]) -> dict[str, Layer]:
 MAGIC = b"FWCHART2\n"
 SUFFIX = ".fwc"
 OLD_SUFFIX = ".json.gz"  # the earlier JSON format, converted on first use
+DISK_COUNT_S = 120  # how long the count of chart files on disk is kept (Settings shows it)
 
 
 def write_block(path: Path, meta: dict, levels: list[dict[str, Layer]],
@@ -3622,12 +3623,36 @@ class VectorChart:
     def _path(self, bx: int, by: int, part: str = "", suffix: str = SUFFIX) -> Path:
         return self.dir / "blocks" / f"{bx}_{by}{'.' + part if part else ''}{suffix}"
 
-    def status(self) -> dict[str, Any]:
+    def _disk_use(self) -> tuple[int, float]:
+        """(blocks on disk, MB), counted at most once every DISK_COUNT_S: with all of Finland
+        that is tens of thousands of files, too slow to list on every refresh of the panel."""
+        now = time.monotonic()
+        kept = getattr(self, "_disk_count", None)
+        busy = bool(self.keep_status and self.keep_status.get("running"))
+        if kept and now - kept[0] < (20 if busy else DISK_COUNT_S):
+            return kept[1]
         root = self.dir / "blocks"
-        files = list(root.iterdir()) if root.exists() else []
-        blocks = {f.name.split(".")[0] for f in files if f.name.endswith((SUFFIX, OLD_SUFFIX))}
-        return {"blocks": len(blocks),
-                "mb": round(sum(f.stat().st_size for f in files if f.is_file()) / 1e6, 1),
+        n, size, names = 0, 0, set()
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    if entry.name.endswith((SUFFIX, OLD_SUFFIX)):
+                        names.add(entry.name.split(".")[0])
+                    try:
+                        if entry.is_file():
+                            size += entry.stat().st_size
+                    except OSError:
+                        pass
+            n = len(names)
+        except OSError:
+            pass
+        self._disk_count = (now, (n, round(size / 1e6, 1)))
+        return self._disk_count[1]
+
+    def status(self) -> dict[str, Any]:
+        blocks, mb = self._disk_use()
+        return {"blocks": blocks,
+                "mb": mb,
                 "errors": {**self.errors, **self.foreign.errors}, "attribution": ATTRIBUTION, "min_zoom": MIN_Z, "block_zoom": BLOCK_MIN_Z,
                 "keep": self.keep_status, "mml_key": bool(self.mml_key), "foreign": self.foreign.enabled,
                 "memory_mb": round(self._memory_bytes / 1e6, 1),

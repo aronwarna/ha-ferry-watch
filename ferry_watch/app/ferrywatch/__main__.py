@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from . import __version__, diagnostics, memory
+from . import __version__, diagnostics, memory, stalls
 from .ais import DigitrafficFeed
 from .aircraft import AircraftWatcher
 from .airhistory import AircraftHistory
@@ -601,6 +601,7 @@ class FerryWatch:
                 "color": ship["color"],
                 "next_passage": self.predictor.get(ship["mmsi"]),
                 "alerts": self.store.alerts_on(ship["mmsi"]),
+                "last_passage": self.store.latest_passage(ship["mmsi"]),
                 "photo": self.photos.public_info(ship["mmsi"]) if self.photos else None,
             })
         fleet_ships = []
@@ -618,6 +619,8 @@ class FerryWatch:
             "version": __version__,
             "now": time.time(),
             "ships": ships,
+            # The last day and a half off Porkkala (the panel picks out today's).
+            "recent_passages": self.store.passages_since(int(time.time()) - 36 * 3600),
             "feed": feed,
             "port_calls": self.ports.status(),
             "simulated": os.environ.get("FW_SIMULATE") == "1",
@@ -796,6 +799,7 @@ async def main() -> None:
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     logging.getLogger().addHandler(diagnostics.RING)  # the latest warnings, for Copy diagnostics
+    stalls.WATCH.start(asyncio.get_running_loop())
     fw = FerryWatch(options)
     await fw.start()
     stop = asyncio.Event()

@@ -128,6 +128,17 @@ The switches for other ships, weather stations, weather layers, harbours,
 faulty lights and heritage are remembered by each browser or phone on its own;
 the others are kept by the add-on.
 
+Settings › Display › **Dim the map in dark mode** shows the map and chart darker
+while the phone or computer is in dark mode, so they don't glare at night.
+
+On a computer, single keys work too: **M** menu, **S** stats, **L** layers,
+**W** weather, **R** route tool, **A** all ships in view, **1–4** your ships one
+by one, **/** search and **Esc** to close what's open. Press **?** to see them.
+
+Each ship's chip under the map says when it reaches the Porkkala lines, and for an
+hour and a half afterwards which way it went ("Inner route 12 min ago"). When a
+ship takes the inner route while the map is open, a short note says so at the top.
+
 ## Next passage
 
 Ferry Watch predicts when each of your ships will reach the Porkkala
@@ -810,6 +821,10 @@ database, which the fleets, ship search and the other-ships layer use; it is rea
 item by item so it never sits in memory whole. Sea conditions, your phone's
 location, other ships and faulty lights are only fetched while the panel is open
 (and the switch is on), and nothing is polled while it is closed, except as follows. Rescue aircraft add one small request every 10 seconds while the panel is open and, while their switch is on, every 30 seconds while it is closed; their flights take about 6 kB of database per hour flown (a few MB a year), and the memory holds only each airborne aircraft's latest position. The history view's flights are sent to the browser as simplified lines, a few at a time, so even a year is never in memory whole. Each passage fetches the sea conditions once if they're more than 15 minutes old, and from December to April the ice is checked once a day (two small requests). Weather stations add three small requests to FMI at most every 10 minutes while the panel is open, kept in a few kilobytes. The harbour list (well under 1 MB on disk) is read into memory only while harbours are being shown and let go after 10 minutes. Automatic route planning reads only the fairway lines of the chart areas along the way and keeps the result for a few minutes only if it is small. Chart and sea mark tiles you have viewed are kept in a cache of up to 300 MB, and drawn chart tiles in one of up to 512 MB (the zoomed-out ones, about 10 MB for all of Finland, are kept apart and served as they are). Weather layers are only fetched for the layers switched on while the panel is open. The weather model behind the forecast layers is 21 requests to FMI at most every 3 hours, and the marine forecast 3 to Open-Meteo; each is kept on disk as one small file per hour (about 33 kB each, 1.6 MB a run) and only the hours being shown or worked on are read, so neither is ever in memory whole. The sunset scores are worked out on the NAS from it after each new run (a second or two), one sunset or sunrise at a time. Lightning is one request every 5 minutes and the aurora two every 15 while they're on. The light pollution atlas is downloaded once (about 1 MB) and read from its 8.6 MB file without loading it; its tiles are drawn on the NAS and kept in the weather tile cache. Weather layer tiles are kept in a cache of their own of up to 80 MB, each layer's frames for as long as that layer says (a radar frame for hours), and removed from the disk after that. Sunset spots and the star map are worked out in the browser; the terrain tiles for the spots come through the NAS and share the chart tile cache (about 100 kB each, only where you zoom in with that layer on). While the panel is hidden for a minute (phone locked, another app), its live connection closes and the panel-only fetching stops until it is seen again. The drawn chart's data is downloaded an area at a time (about 20 km across) when first viewed, refreshed after a month, and removed when not viewed for two months; the menu shows how much is stored. Outside Finnish waters an area takes one or two requests to the Overpass API (streamed and drawn into a small depth grid as it arrives, so even the Stockholm archipelago's coastline is never held in memory whole) and EMODnet's depth model is fetched for about 40 km squares (under 1 MB each, kept on disk for half a year, a few hundred kB compressed).
+
+Settings › Copy diagnostics also lists what kept the app busy: a small watcher
+notices whenever the app is occupied for more than a third of a second at a time and
+notes where in the program that was (a sleeping thread and a few kB).
 
 ## Running without Home Assistant
 

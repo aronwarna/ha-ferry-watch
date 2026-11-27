@@ -49,6 +49,7 @@
     <div class="subbar-left">
       <button type="button" id="conditions" class="conditions panel" aria-haspopup="dialog" aria-controls="conditions-sheet">
         <span id="pill-status" class="status" data-state="connecting"><i></i></span>
+        <span id="pill-lost" class="pill-part pill-lost" hidden>Can't reach the NAS, retrying…</span>
         <span id="pill-wind" class="pill-part" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6 L4 5 L0 2.5 L-4 5 Z"/></svg><span></span></span>
         <span id="pill-water" class="pill-part" hidden></span>
         <span id="pill-warn" class="pill-part pill-warn" hidden><svg viewBox="-8 -8 16 16" aria-hidden="true"><path d="M0 -6.5 L7 6 H-7 Z"/><path class="mark" d="M0 -2 V2 M0 4 V4.4"/></svg><span></span></span>
@@ -322,6 +323,7 @@
       <ul id="search-results" class="ships-list results"></ul>
       <h3 class="group-head">My ships</h3>
       <ul id="ships-list" class="ships-list my-ships"></ul>
+      <div id="today-passages" class="today-passages" hidden></div>
       <h3 class="group-head">Fleets</h3>
       <p class="small muted note">Switched-on fleets are shown on the map with their latest trip; tap one to see its ships. Switching one off stops following it. Rescue boats, icebreakers, cruise ships and harbour boats start switched off.</p>
       <div id="fleets-list"></div>
@@ -335,8 +337,10 @@
       <div id="layers-list"></div>
       <h3 class="group-head">Routes</h3>
       <div id="routes-list"></div>
-      <h3 class="group-head">Map key</h3>
-      <div id="map-key" class="map-key"></div>
+      <details class="key-fold" id="map-key-fold">
+        <summary><h3 class="group-head">Map key</h3></summary>
+        <div id="map-key" class="map-key"></div>
+      </details>
     </div>
     <div data-pane="settings" role="tabpanel" hidden>
       <section class="group">
@@ -386,6 +390,16 @@
         </div>
       </section>
       <section class="group">
+        <h3>Display</h3>
+        <div class="fleet">
+          <label class="fleet-head">
+            <span class="grow strong">Dim the map in dark mode</span>
+            <input type="checkbox" class="switch" id="dim-map">
+          </label>
+          <p class="small muted note">When the phone or computer is in dark mode (at night, say), the map and chart are shown darker so they don't glare. Ships, labels and buttons stay as they are.</p>
+        </div>
+      </section>
+      <section class="group">
         <h3>Troubleshooting</h3>
         <p class="small" id="overlay-status" role="status" hidden></p>
         <p class="small muted" id="overlay-checks" hidden></p>
@@ -415,6 +429,7 @@
           <ul class="mem-parts small" id="memory-parts"></ul>
         </details>
         <p class="muted small" id="version"></p>
+        <p class="muted small keys-hint">On a computer: press <kbd>?</kbd> for the keyboard keys (M menu, S stats, L layers, W weather, R route tool, A all ships, 1–4 your ships, / search).</p>
         <details class="sources">
           <summary class="small strong">Credits</summary>
           <ul class="credits small muted">
