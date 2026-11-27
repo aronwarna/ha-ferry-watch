@@ -142,7 +142,7 @@ OVERVIEW_RECUT = 60
 # s a zoomed-far-out tile (made from its children, see merge_tiles) is shown as made before
 # it's made again, in the background.
 PYRAMID_RECUT = 600
-TILE_REV = 35  # bump when tiles change, so browsers don't keep drawing cached old ones
+TILE_REV = 36  # bump when tiles change, so browsers don't keep drawing cached old ones
 # Complete tiles from zoom BLOCK_MIN_Z are kept on disk (gzipped JSON, a few kB each) while
 # the blocks they're cut from don't change: a view seen before then needs neither those
 # blocks in RAM nor a cut. The oldest go once the cache passes this size.
@@ -586,6 +586,23 @@ def _flat(pts) -> list[int]:
         if len(out) >= 2 and out[-2] == xi and out[-1] == yi:
             continue
         out += (xi, yi)
+    return out
+
+
+def land_ring(flat: list) -> list:
+    """A flat land ring turned the way all land rings go (clockwise on screen, y down), so
+    the panel's nonzero fill joins overlapping pieces instead of cancelling them. Until
+    0.75.0 the land outside Finland (FOREIGN) went the other way round from Natural Earth's
+    base map under it, and where both were drawn (Sweden and Estonia) the two cancelled out
+    and no land was painted: the Bay of Bothnia's Swedish side showed the map under the
+    chart, its islands as holes (Nov 2026)."""
+    n = len(flat) - len(flat) % 2
+    s = sum(flat[i] * flat[(i + 3) % n] - flat[(i + 2) % n] * flat[i + 1] for i in range(0, n, 2))
+    if s <= 0:
+        return flat
+    out: list = []
+    for i in range(n - 2, -1, -2):
+        out += (flat[i], flat[i + 1])
     return out
 
 
@@ -2542,6 +2559,8 @@ def make_tile(z: int, x: int, y: int, blocks: dict[tuple[int, int], dict | None]
     if rows.get("xland"):
         # Land outside Finland, under the foreign depth areas (see foreign.py).
         tile["land"] = tile.get("land", []) + [ring for _, *rings in rows["xland"] for ring in rings]
+    if tile.get("land"):
+        tile["land"] = [land_ring(ring) for ring in tile["land"]]
     add_chart_rocks(rows, z)
     if z <= ROCK_MERGE_MAX_Z:
         merge_rocks(rows, z, x, y)

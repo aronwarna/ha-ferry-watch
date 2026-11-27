@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.74.1
+
+- **Land outside Finland is painted again.** On the drawn chart the Swedish (and
+  Estonian) land and islands came out see-through, so the map under the chart showed
+  instead: around Haparanda the islands looked like white holes in the sea and the
+  coastline like loose black scraps. The land abroad was drawn the opposite way round
+  from the base map's land under it, and where both were drawn they cancelled out. All
+  land now goes the same way round, so it always shows as tan. Zoomed-out tiles are made
+  again after the update.
+
 ## 0.74.0
 
 - **Sea ice is now one layer, drawn from the ice services' daily ice chart** (SMHI and

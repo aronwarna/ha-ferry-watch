@@ -1938,3 +1938,27 @@ def test_water_tiles_for_the_sea_layers(tmp_path):
     wet = [rings for band, *rings in whole["depth"] if band >= 1]
     assert wet and water["water"][:len(wet)] == wet
     assert len(body) < len(gzip.compress(json.dumps(whole).encode()))
+
+
+def _signed(flat):
+    n = len(flat) - len(flat) % 2
+    return sum(flat[i] * flat[(i + 3) % n] - flat[(i + 2) % n] * flat[i + 1] for i in range(0, n, 2))
+
+
+def test_land_abroad_turns_the_same_way_as_the_base_map():
+    """Sweden's land (FOREIGN) and Natural Earth's base land under it must go the same way
+    round: with opposite turns the panel's nonzero fill cancelled them and Haparanda's land
+    and islands came out see-through (Nov 2026)."""
+    from ferrywatch import foreign
+    for lat, lon in ((65.75, 23.8), (59.45, 24.5)):  # Haparanda, Tallinn
+        bx, by = tile_at(lat, lon, vchart.BLOCK_Z)[1:]
+        layers = foreign.BlockBuilder(bx, by, None).finish(True)
+        assert layers.get("xland") is not None and layers["xland"].n
+        for z in (11, 10):
+            s = vchart.BLOCK_Z - z
+            tile = vchart.make_tile(z, bx >> s, by >> s, {(bx, by): layers}, vchart.BASE_FINNISH)
+            land = tile.get("land", [])
+            assert len(land) >= 2
+            assert all(_signed(ring) <= 0 for ring in land)
+    assert vchart.land_ring([0, 0, 0, 10, 10, 10, 10, 0]) == [0, 0, 0, 10, 10, 10, 10, 0]
+    assert _signed(vchart.land_ring([0, 0, 10, 0, 10, 10, 0, 10])) < 0

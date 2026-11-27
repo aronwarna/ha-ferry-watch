@@ -1974,5 +1974,7 @@ def add_overview(tile: dict, rows: dict[str, list]) -> None:
     for key in ("xdepth", "contour", "land"):
         if rows.get(key):
             tile[key] = (tile.get(key) or []) + rows[key]
+    if tile.get("land"):
+        tile["land"] = [V.land_ring(ring) for ring in tile["land"]]
     if rows.get("xdepth"):
         tile["xdepth"].sort(key=lambda row: row[0])
