@@ -7,6 +7,7 @@ RUN apk add --no-cache --virtual .build-deps gcc musl-dev \
     && apk del .build-deps
 
 COPY app /app
+COPY CHANGELOG.md /app/CHANGELOG.md
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
